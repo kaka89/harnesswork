@@ -9,6 +9,7 @@ import {
   onCleanup,
   onMount,
 } from "solid-js";
+import { useNavigate } from "@solidjs/router";
 import { t } from "../../i18n";
 import type { Agent, Part, Session } from "@opencode-ai/sdk/v2/client";
 import type {
@@ -309,6 +310,7 @@ function describePermissionRequest(permission: PendingPermission | null) {
 
 export default function SessionView(props: SessionViewProps) {
   const FLUSH_PROMPT_EVENT = "openwork:flushPromptDraft";
+  const navigate = useNavigate();
   const { showThinking } = useSessionDisplayPreferences();
   const platform = usePlatform();
   const sessionActions = useSessionActions();
@@ -2917,6 +2919,17 @@ export default function SessionView(props: SessionViewProps) {
             "min-width": `${leftSidebarWidth()}px`,
           }}
         >
+          {/* 返回模式选择按钮 */}
+          <div class="shrink-0 px-1 pb-2">
+            <button
+              type="button"
+              class="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs text-gray-10 hover:text-gray-12 hover:bg-gray-4 transition-colors w-full"
+              onClick={() => navigate("/mode-select")}
+              data-testid="back-to-mode-select"
+            >
+              ← 返回模式选择
+            </button>
+          </div>
           <div class="shrink-0">
             <Show when={showUpdatePill()}>
               <button

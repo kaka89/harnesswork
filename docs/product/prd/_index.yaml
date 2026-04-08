@@ -22,7 +22,7 @@ items:
     priority: P1
     created: "2026-04-08"
     updated: "2026-04-08"
-    revision: "1.0"
+    revision: "1.2"
     impact_scope: single-app
     file: PRD-002-dual-mode-workspace.md
     branch: feature/PRD-002-dual-mode-workspace

@@ -93,10 +93,11 @@ items:
 
   - id: TASK-003-01
     title: 冷启动默认路由 + 模式选择高亮
-    status: todo
+    status: done
     plan: PLAN-003
     module: MODULE-003
     effort: 0.5d
     depends_on: []
     milestone: M1
+    branch: feature/TASK-003-01-startup-default-route
     file: task/TASK-003-01.md

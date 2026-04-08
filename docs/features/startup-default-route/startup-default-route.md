@@ -1,6 +1,6 @@
 ---
 feature: startup-default-route
-status: draft
+status: delivered
 prd: PRD-002-dual-mode-workspace
 created: "2026-04-08"
 ---

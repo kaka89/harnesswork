@@ -113,3 +113,14 @@ items:
     branch: feature/openwork-back-button
     file: ../../features/openwork-back-button/task/TASK-004-01-openwork-back-button.md
     note: 追溯补录，代码已在 main 实现
+  
+  - id: TASK-005-01
+    title: 9 个 UI 文件主题 Token 全量替换
+    status: todo
+    plan: PLAN-005
+    module: MODULE-005
+    effort: 1d
+    depends_on: []
+    milestone: M1
+    branch: feature/theme-aware-ui
+    file: ../../features/theme-aware-ui/task/TASK-005-01-theme-token-replacement.md

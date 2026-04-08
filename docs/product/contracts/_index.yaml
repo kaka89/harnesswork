@@ -10,8 +10,8 @@ items:
     revision: "1.0"
     created: "2026-04-08"
     updated: "2026-04-08"
-    file: MODULE-002-dual-mode-workspace.md
-    openapi: openapi/cockpit-docs-v1.yaml
+    file: ../../features/dual-mode-workspace/spec/MODULE-002-dual-mode-workspace.md
+    openapi: ../../features/dual-mode-workspace/spec/openapi/cockpit-docs-v1.yaml
     contract_test: src/test/contract/pact/cockpit-docs-v1.test.ts
     interfaces:
       - method: GET
@@ -32,8 +32,21 @@ items:
     revision: "1.0"
     created: "2026-04-08"
     updated: "2026-04-08"
-    file: MODULE-003-startup-default-route.md
+    file: ../../features/startup-default-route/spec/MODULE-003-startup-default-route.md
     interfaces: []
     behavior_specs_count: 5
     nfr:
       redirect_latency_ms: 16
+
+  - id: MODULE-005
+    title: 主题自适应 UI 行为规格
+    status: draft
+    source_sdd: SDD-005
+    revision: "1.0"
+    created: "2026-04-08"
+    updated: "2026-04-08"
+    file: ../../features/theme-aware-ui/spec/MODULE-005-theme-aware-ui.md
+    interfaces: []
+    behavior_specs_count: 22
+    nfr:
+      theme_switch_latency_ms: 16

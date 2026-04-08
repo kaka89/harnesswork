@@ -1,0 +1,28 @@
+# PLAN 台账
+app: harnesswork
+layer: plan
+
+items:
+  - id: PLAN-002
+    title: 双模式工作区——入口选择页 & 全链路工程驾驶舱
+    status: approved
+    author: tech-lead
+    source_prd: [PRD-002]
+    source_sdd: [SDD-002]
+    specs: [MODULE-002]
+    tasks: [TASK-002-01, TASK-002-02, TASK-002-03, TASK-002-04, TASK-002-05, TASK-002-06, TASK-002-07, TASK-002-08]
+    sprint: Sprint-01-W15
+    created: "2026-04-08"
+    file: plan/PLAN-002-dual-mode-workspace.md
+
+  - id: PLAN-003
+    title: 启动默认路由至模式选择页
+    status: draft
+    author: tech-lead
+    source_prd: [PRD-002]
+    source_sdd: [SDD-003]
+    specs: [MODULE-003]
+    tasks: [TASK-003-01]
+    sprint: Sprint-01-W15
+    created: "2026-04-08"
+    file: plan/PLAN-003-startup-default-route.md

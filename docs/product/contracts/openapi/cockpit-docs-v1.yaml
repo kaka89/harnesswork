@@ -1,0 +1,224 @@
+openapi: 3.0.3
+
+info:
+  title: Cockpit Docs API
+  description: |
+    OpenWork Server 文档读取端点，供 harnesswork 工程驾驶舱产品 Tab（DocTreePanel / DocViewerPanel）调用。
+    覆盖 GET /docs 和 GET /docs/{path} 两个端点。
+    来源规格：MODULE-002（双模式工作区接口规格），基于 SDD-002。
+  version: "1.0.0"
+  contact:
+    name: harnesswork contracts-agent
+
+servers:
+  - url: "http://localhost:{port}"
+    description: OpenWork Server（本地开发）
+    variables:
+      port:
+        default: "3000"
+        description: OpenWork Server 监听端口
+
+tags:
+  - name: docs
+    description: 工作区文档目录与内容读取
+
+paths:
+
+  /docs:
+    get:
+      summary: 列举工作区文档目录树
+      description: |
+        列举当前工作区 `docs/` 目录下的所有 `.md` 文件，最大递归深度 4 层。
+        - 从文件 YAML frontmatter 提取 `title` 和 `status`。
+        - 若文件无 frontmatter，`title` 置为文件名（含扩展名），`status` 置为 `"unknown"`。
+        对应行为规格：MODULE-002-BH-01 ~ BH-07
+      operationId: listDocs
+      tags:
+        - docs
+      responses:
+        "200":
+          description: 成功返回文档列表（docs/ 目录为空时返回空数组）
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DocEntry"
+              examples:
+                withFiles:
+                  summary: 包含多个文档
+                  value:
+                    - path: "product/prd/PRD-002.md"
+                      title: "PRD-002 双模式工作区"
+                      type: "prd"
+                      status: "draft"
+                    - path: "product/architecture/SDD-002-dual-mode-workspace.md"
+                      title: "双模式工作区——入口选择页 & 全链路工程驾驶舱"
+                      type: "sdd"
+                      status: "draft"
+                    - path: "product/contracts/MODULE-002-dual-mode-workspace.md"
+                      title: "双模式工作区接口规格"
+                      type: "module"
+                      status: "approved"
+                emptyDirectory:
+                  summary: docs/ 目录为空（BH-07）
+                  value: []
+                noFrontmatter:
+                  summary: 文件无 frontmatter（BH-06）
+                  value:
+                    - path: "notes/scratch.md"
+                      title: "scratch.md"
+                      type: "unknown"
+                      status: "unknown"
+        "404":
+          description: docs/ 目录不存在于当前工作区根路径（BH-03）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: "NOT_FOUND"
+                message: "docs/ directory not found in workspace root"
+        "500":
+          description: 文件系统读取失败（BH-04）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: "INTERNAL_ERROR"
+                message: "Failed to read docs/ directory: permission denied"
+
+  /docs/{path}:
+    get:
+      summary: 读取指定文档内容
+      description: |
+        读取 `docs/` 目录下指定相对路径的 Markdown 文件，返回原始 Markdown 文本。
+        - Server 端验证：resolved path 必须以工作区 `docs/` 目录为前缀，拒绝路径穿越（`../`）。
+        - `path` 参数需 URL 编码，服务端自动解码后读取文件。
+        对应行为规格：MODULE-002-BH-08 ~ BH-12
+      operationId: getDocByPath
+      tags:
+        - docs
+      parameters:
+        - name: path
+          in: path
+          required: true
+          description: |
+            `docs/` 目录下的相对文件路径，使用 `/` 分隔符，需 URL 编码。
+            示例：`product/prd/PRD-002.md`（原始值）→ URL 中为 `product%2Fprd%2FPRD-002.md`
+          schema:
+            type: string
+            example: "product/prd/PRD-002.md"
+      responses:
+        "200":
+          description: 成功返回文件原始 Markdown 内容（BH-08 / BH-12）
+          content:
+            text/markdown:
+              schema:
+                type: string
+                description: 文件的原始 Markdown 文本，未经任何转换或渲染
+              example: |
+                ---
+                meta:
+                  id: PRD-002-dual-mode-workspace
+                  title: 双模式工作区——入口选择页 & 全链路工程驾驶舱
+                  status: draft
+                ---
+
+                # PRD-002 双模式工作区
+
+                ## 1. 背景
+                ...
+        "403":
+          description: 路径穿越防护——resolved path 超出 docs/ 目录（BH-10）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: "FORBIDDEN"
+                message: "Path traversal detected: resolved path is outside docs/ directory"
+        "404":
+          description: 目标文件不存在（BH-09）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: "NOT_FOUND"
+                message: "Document not found: product/prd/PRD-999.md"
+        "500":
+          description: 文件读取失败（BH-11）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: "INTERNAL_ERROR"
+                message: "Failed to read file: permission denied"
+
+components:
+  schemas:
+
+    DocEntry:
+      type: object
+      description: 文档条目，代表 docs/ 目录下的一个 Markdown 文件
+      required:
+        - path
+        - title
+        - type
+        - status
+      properties:
+        path:
+          type: string
+          description: docs/ 目录下的相对路径，使用 / 分隔符
+          example: "product/prd/PRD-002.md"
+        title:
+          type: string
+          description: |
+            文件 frontmatter.title；无 frontmatter 时为文件名（含扩展名）
+          example: "PRD-002 双模式工作区"
+        type:
+          type: string
+          description: |
+            文档类型，从 frontmatter.type 提取或从路径推断；无法推断时为 "unknown"
+          enum:
+            - prd
+            - sdd
+            - plan
+            - task
+            - module
+            - unknown
+          example: "prd"
+        status:
+          type: string
+          description: |
+            文档状态，从 frontmatter.status 提取；无 frontmatter 时为 "unknown"
+          enum:
+            - draft
+            - in-review
+            - approved
+            - released
+            - unknown
+          example: "draft"
+
+    ErrorResponse:
+      type: object
+      description: 统一错误响应体
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          description: 机器可读错误码
+          enum:
+            - NOT_FOUND
+            - FORBIDDEN
+            - INTERNAL_ERROR
+          example: "NOT_FOUND"
+        message:
+          type: string
+          description: 人类可读错误描述
+          example: "Document not found: product/prd/PRD-999.md"

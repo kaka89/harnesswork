@@ -1,12 +1,26 @@
+import { onMount } from "solid-js";
+import { useNavigate, useLocation } from "@solidjs/router";
 import App from "./app";
 import { GlobalSDKProvider } from "./context/global-sdk";
 import { GlobalSyncProvider } from "./context/global-sync";
 import { LocalProvider } from "./context/local";
 import { ServerProvider } from "./context/server";
+import { usePlatform } from "./context/platform";
 import { isWebDeployment } from "./lib/openwork-deployment";
 import { isTauriRuntime } from "./utils";
 
 export default function AppEntry() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const platform = usePlatform();
+
+  onMount(() => {
+    if (!platform.storage) return;
+    const pref = platform.storage("harnesswork").getItem("mode-preference");
+    if (pref === "cockpit" && location.pathname === "/") {
+      navigate("/cockpit");
+    }
+  });
   const defaultUrl = (() => {
     // Desktop app connects to the local OpenCode engine.
     if (isTauriRuntime()) return "http://127.0.0.1:4096";

@@ -1,0 +1,102 @@
+# TASK 台账
+app: harnesswork
+layer: task
+
+items:
+  - id: TASK-002-01
+    title: 路由注册与基础框架搭建
+    status: done
+    plan: PLAN-002
+    module: MODULE-002
+    effort: 0.5d
+    depends_on: []
+    branch: feature/TASK-002-01-route-skeleton
+    milestone: M1
+    file: task/TASK-002-01.md
+
+  - id: TASK-002-02
+    title: 模式选择页（ModeSelectPage）完整实现
+    status: done
+    plan: PLAN-002
+    module: MODULE-002
+    effort: 1d
+    depends_on: [TASK-002-01]
+    branch: feature/TASK-002-02-mode-select-page
+    milestone: M1
+    file: task/TASK-002-02.md
+
+  - id: TASK-002-03
+    title: 工程驾驶舱容器页与 Tab 导航（CockpitPage + CockpitTabNav）
+    status: done
+    plan: PLAN-002
+    module: MODULE-002
+    effort: 1.5d
+    depends_on: [TASK-002-01]
+    branch: feature/TASK-002-03-cockpit-container
+    milestone: M2
+    file: task/TASK-002-03.md
+
+  - id: TASK-002-04
+    title: 产品 Tab 页（ProductTab + DocTreePanel + DocViewerPanel）
+    status: done
+    plan: PLAN-002
+    module: MODULE-002
+    effort: 2d
+    depends_on: [TASK-002-03, TASK-002-06]
+    branch: feature/TASK-002-04-product-tab
+    milestone: M2
+    file: task/TASK-002-04.md
+
+  - id: TASK-002-05
+    title: 研发 Tab 页（EngineeringTab）
+    status: done
+    plan: PLAN-002
+    module: MODULE-002
+    effort: 1d
+    depends_on: [TASK-002-03]
+    branch: feature/TASK-002-05-engineering-tab
+    milestone: M2
+    file: task/TASK-002-05.md
+
+  - id: TASK-002-06
+    title: OpenWork Server 文档端点（GET /docs + GET /docs/:path）
+    status: done
+    plan: PLAN-002
+    module: MODULE-002
+    effort: 1d
+    depends_on: []
+    branch: feature/TASK-002-06-server-docs-endpoints
+    milestone: M2
+    file: task/TASK-002-06.md
+
+  - id: TASK-002-07
+    title: 发布&运维 Tab（ReleaseTab，P1 Mock）
+    status: done
+    plan: PLAN-002
+    module: MODULE-002
+    effort: 0.5d
+    depends_on: [TASK-002-03]
+    branch: feature/TASK-002-07-release-tab-mock
+    milestone: M3
+    file: task/TASK-002-07.md
+
+  - id: TASK-002-08
+    title: 运营 Tab（GrowthTab，P1 Mock）
+    status: done
+    plan: PLAN-002
+    module: MODULE-002
+    effort: 0.5d
+    depends_on: [TASK-002-03]
+    branch: feature/TASK-002-08-growth-tab-mock
+    milestone: M3
+    file: task/TASK-002-08.md
+
+  - id: TASK-003-01
+    title: 冷启动默认路由 + 模式选择高亮
+    status: todo
+    plan: PLAN-003
+    module: MODULE-003
+    effort: 0.5d
+    depends_on: []
+    milestone: M1
+    file: task/TASK-003-01.md

@@ -1,4 +1,5 @@
 /* @refresh reload */
+import { lazy } from "solid-js";
 import { render } from "solid-js/web";
 import { HashRouter, Route, Router } from "@solidjs/router";
 
@@ -148,10 +149,15 @@ const platform: Platform = {
   fetch,
 };
 
+const ModeSelectPage = lazy(() => import("./app/pages/mode-select"));
+const CockpitPage = lazy(() => import("./app/pages/cockpit"));
+
 render(
   () => (
     <PlatformProvider value={platform}>
       <RouterComponent root={AppEntry}>
+        <Route path="/mode-select" component={ModeSelectPage} />
+        <Route path="/cockpit" component={CockpitPage} />
         <Route path="*all" component={() => null} />
       </RouterComponent>
     </PlatformProvider>

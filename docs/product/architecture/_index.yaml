@@ -1,0 +1,37 @@
+# SDD 台账
+app: harnesswork
+layer: sdd
+
+items:
+  - id: SDD-001
+    title: harnesswork 核心系统架构
+    status: approved
+    author: tech-lead
+    reviewers: [architect]
+    source_prd: [PRD-001]
+    revision: "1.0"
+    file: SDD-001-core-architecture.md
+    created: "2026-04-05"
+    updated: "2026-04-05"
+
+  - id: SDD-002
+    title: 双模式工作区——入口选择页 & 全链路工程驾驶舱
+    status: draft
+    author: architect-agent
+    reviewers: [tech-lead, architect]
+    source_prd: [PRD-002]
+    revision: "1.0"
+    file: SDD-002-dual-mode-workspace.md
+    created: "2026-04-08"
+    updated: "2026-04-08"
+
+  - id: SDD-003
+    title: 启动默认路由至模式选择页
+    status: draft
+    author: architect-agent
+    reviewers: [tech-lead]
+    source_prd: [PRD-002]
+    revision: "1.0"
+    file: SDD-003-startup-default-route.md
+    created: "2026-04-08"
+    updated: "2026-04-08"

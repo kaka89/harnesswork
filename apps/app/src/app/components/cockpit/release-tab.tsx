@@ -33,9 +33,9 @@ const PIPELINE_STATUS_CLASS: Record<string, string> = {
 };
 
 const ENV_HEALTH_CLASS: Record<string, string> = {
-  healthy:  "text-green-400",
-  degraded: "text-yellow-400",
-  down:     "text-red-400",
+  healthy:  "text-green-11",
+  degraded: "text-yellow-11",
+  down:     "text-red-11",
 };
 
 export default function ReleaseTab() {
@@ -43,25 +43,25 @@ export default function ReleaseTab() {
     <div class="flex flex-col gap-0 h-full overflow-y-auto" data-testid="release-tab">
       {/* Mock 提示 */}
       {IS_MOCK && (
-        <div class="px-4 py-2 bg-yellow-900/30 border-b border-yellow-800 text-yellow-400 text-xs">
+        <div class="px-4 py-2 bg-yellow-3/50 border-b border-yellow-7 text-yellow-11 text-xs">
           ⚠ 当前数据仅供演示（IS_MOCK = true）— P2 阶段接入真实 CI/CD API
         </div>
       )}
 
       <div class="grid grid-cols-2 gap-4 p-4 flex-1">
         {/* 流水线执行视图 */}
-        <div class="bg-gray-900 rounded-lg p-4 border border-gray-800">
-          <h3 class="text-sm font-semibold text-white mb-3">流水线执行</h3>
+        <div class="bg-dls-surface rounded-lg p-4 border border-dls-border">
+          <h3 class="text-sm font-semibold text-gray-12 mb-3">流水线执行</h3>
           <div class="flex flex-col gap-2">
             <For each={MOCK_PIPELINES}>
               {(pipe) => (
-                <div class="flex items-center gap-3 p-2 bg-gray-800 rounded">
+                <div class="flex items-center gap-3 p-2 bg-gray-4 rounded">
                   <span class={`w-2 h-2 rounded-full shrink-0 ${PIPELINE_STATUS_CLASS[pipe.status] ?? "bg-gray-500"}`} />
                   <div class="flex-1 min-w-0">
-                    <div class="text-xs text-white truncate">{pipe.name}</div>
-                    <div class="text-xs text-gray-500">{pipe.stages.join(" → ")}</div>
+                    <div class="text-xs text-gray-12 truncate">{pipe.name}</div>
+                    <div class="text-xs text-gray-9">{pipe.stages.join(" → ")}</div>
                   </div>
-                  <span class="text-xs text-gray-400 shrink-0">{pipe.status}</span>
+                  <span class="text-xs text-gray-10 shrink-0">{pipe.status}</span>
                 </div>
               )}
             </For>
@@ -69,17 +69,17 @@ export default function ReleaseTab() {
         </div>
 
         {/* 部署历史时间轴 */}
-        <div class="bg-gray-900 rounded-lg p-4 border border-gray-800">
-          <h3 class="text-sm font-semibold text-white mb-3">部署历史</h3>
+        <div class="bg-dls-surface rounded-lg p-4 border border-dls-border">
+          <h3 class="text-sm font-semibold text-gray-12 mb-3">部署历史</h3>
           <div class="flex flex-col gap-2">
             <For each={MOCK_DEPLOYMENTS}>
               {(dep) => (
-                <div class="flex items-center gap-3 p-2 border-l-2 border-green-700 pl-3">
+                <div class="flex items-center gap-3 p-2 border-l-2 border-green-7 pl-3">
                   <div class="flex-1 min-w-0">
-                    <div class="text-xs text-white">{dep.version} → <span class="text-gray-400">{dep.env}</span></div>
-                    <div class="text-xs text-gray-500">{dep.time}</div>
+                    <div class="text-xs text-gray-12">{dep.version} → <span class="text-gray-10">{dep.env}</span></div>
+                    <div class="text-xs text-gray-9">{dep.time}</div>
                   </div>
-                  <span class="text-xs text-green-400">{dep.status}</span>
+                  <span class="text-xs text-green-11">{dep.status}</span>
                 </div>
               )}
             </For>
@@ -87,17 +87,17 @@ export default function ReleaseTab() {
         </div>
 
         {/* 多环境健康看板 */}
-        <div class="bg-gray-900 rounded-lg p-4 border border-gray-800">
-          <h3 class="text-sm font-semibold text-white mb-3">环境健康</h3>
+        <div class="bg-dls-surface rounded-lg p-4 border border-dls-border">
+          <h3 class="text-sm font-semibold text-gray-12 mb-3">环境健康</h3>
           <div class="flex gap-3">
             <For each={MOCK_ENVS}>
               {(env) => (
-                <div class="flex-1 bg-gray-800 rounded p-3 text-center">
-                  <div class="text-xs text-gray-400 mb-1">{env.name}</div>
-                  <div class={`text-sm font-semibold ${ENV_HEALTH_CLASS[env.health] ?? "text-gray-400"}`}>
+                <div class="flex-1 bg-gray-4 rounded p-3 text-center">
+                  <div class="text-xs text-gray-10 mb-1">{env.name}</div>
+                  <div class={`text-sm font-semibold ${ENV_HEALTH_CLASS[env.health] ?? "text-gray-10"}`}>
                     {env.health}
                   </div>
-                  <div class="text-xs text-gray-500 mt-1">{env.uptime}</div>
+                  <div class="text-xs text-gray-9 mt-1">{env.uptime}</div>
                 </div>
               )}
             </For>
@@ -105,18 +105,18 @@ export default function ReleaseTab() {
         </div>
 
         {/* 告警摘要面板 */}
-        <div class="bg-gray-900 rounded-lg p-4 border border-gray-800">
-          <h3 class="text-sm font-semibold text-white mb-3">告警摘要</h3>
+        <div class="bg-dls-surface rounded-lg p-4 border border-dls-border">
+          <h3 class="text-sm font-semibold text-gray-12 mb-3">告警摘要</h3>
           <div class="flex flex-col gap-2">
             <For each={MOCK_ALERTS}>
               {(alert) => (
-                <div class="flex items-start gap-2 p-2 bg-gray-800 rounded">
+                <div class="flex items-start gap-2 p-2 bg-gray-4 rounded">
                   <span class="text-sm shrink-0">
                     {alert.level === "critical" ? "🔴" : alert.level === "warning" ? "⚠️" : "ℹ️"}
                   </span>
                   <div class="flex-1 min-w-0">
-                    <div class="text-xs text-white">{alert.message}</div>
-                    <div class="text-xs text-gray-500">{alert.time}</div>
+                    <div class="text-xs text-gray-12">{alert.message}</div>
+                    <div class="text-xs text-gray-9">{alert.time}</div>
                   </div>
                 </div>
               )}

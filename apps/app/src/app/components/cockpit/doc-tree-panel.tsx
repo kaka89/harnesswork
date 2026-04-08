@@ -23,11 +23,11 @@ const TYPE_LABEL: Record<string, string> = {
 
 /** draft → 灰色; approved → 绿色; released → 蓝色 */
 const STATUS_CLASS: Record<string, string> = {
-  draft: "bg-gray-700 text-gray-300",
-  approved: "bg-green-900 text-green-300",
-  released: "bg-blue-900 text-blue-300",
+  draft: "bg-gray-4 text-gray-11",
+  approved: "bg-green-3 text-green-11",
+  released: "bg-blue-3 text-blue-11",
 };
-const STATUS_CLASS_FALLBACK = "bg-gray-800 text-gray-400";
+const STATUS_CLASS_FALLBACK = "bg-gray-4 text-gray-10";
 
 function groupByType(entries: DocEntry[]): [string, DocEntry[]][] {
   const map = new Map<string, DocEntry[]>();
@@ -72,7 +72,7 @@ export default function DocTreePanel(props: DocTreePanelProps) {
       <Show when={docs.loading}>
         <div class="p-4 flex flex-col gap-2" data-testid="doc-tree-loading">
           <For each={[1, 2, 3]}>
-            {() => <div class="h-5 bg-gray-800 rounded animate-pulse" />}
+            {() => <div class="h-5 bg-gray-4 rounded animate-pulse" />}
           </For>
         </div>
       </Show>
@@ -90,7 +90,7 @@ export default function DocTreePanel(props: DocTreePanelProps) {
           when={(docs()?.length ?? 0) > 0}
           fallback={
             <p
-              class="p-4 text-gray-500 text-xs"
+              class="p-4 text-gray-9 text-xs"
               data-testid="doc-tree-empty"
             >
               暂无文档
@@ -103,15 +103,15 @@ export default function DocTreePanel(props: DocTreePanelProps) {
                 <div>
                   {/* 分组标题 */}
                   <button
-                    class="w-full flex items-center gap-2 px-4 py-1.5 text-xs font-semibold text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors text-left"
+                    class="w-full flex items-center gap-2 px-4 py-1.5 text-xs font-semibold text-gray-10 hover:text-gray-12 hover:bg-dls-hover transition-colors text-left"
                     onClick={() => toggleGroup(type)}
                     data-testid={`doc-group-${type}`}
                   >
-                    <span class="text-gray-600">
+                    <span class="text-gray-8">
                       {expandedGroups().has(type) ? "▼" : "▶"}
                     </span>
                     <span>{TYPE_LABEL[type] ?? type.toUpperCase()}</span>
-                    <span class="ml-auto text-gray-600">{entries.length}</span>
+                    <span class="ml-auto text-gray-8">{entries.length}</span>
                   </button>
 
                   {/* 文档列表（展开/折叠） */}
@@ -119,7 +119,7 @@ export default function DocTreePanel(props: DocTreePanelProps) {
                     <For each={entries}>
                       {(entry) => (
                         <button
-                          class="w-full flex items-center gap-2 px-6 py-1.5 text-xs text-gray-300 hover:text-white hover:bg-gray-800 transition-colors text-left"
+                          class="w-full flex items-center gap-2 px-6 py-1.5 text-xs text-gray-11 hover:text-gray-12 hover:bg-dls-hover transition-colors text-left"
                           onClick={() => props.onSelect(entry.path)}
                           data-testid={`doc-entry-${entry.path}`}
                         >

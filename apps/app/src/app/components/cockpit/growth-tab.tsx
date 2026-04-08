@@ -27,9 +27,9 @@ const MOCK_FEEDBACK = [
 ];
 
 const SENTIMENT_CLASS: Record<string, string> = {
-  positive: "text-green-400",
-  neutral:  "text-gray-400",
-  negative: "text-red-400",
+  positive: "text-green-11",
+  neutral:  "text-gray-10",
+  negative: "text-red-11",
 };
 
 export default function GrowthTab() {
@@ -37,18 +37,18 @@ export default function GrowthTab() {
     <div class="flex flex-col gap-0 h-full overflow-y-auto" data-testid="growth-tab">
       {/* Mock 提示 */}
       {IS_MOCK && (
-        <div class="px-4 py-2 bg-yellow-900/30 border-b border-yellow-800 text-yellow-400 text-xs">
+        <div class="px-4 py-2 bg-yellow-3/50 border-b border-yellow-7 text-yellow-11 text-xs">
           ⚠ 当前数据仅供演示（IS_MOCK = true）— P2 阶段接入真实数据平台 API
         </div>
       )}
 
       <div class="flex flex-col gap-4 p-4 flex-1">
         {/* DAU/MAU 趋势表格 */}
-        <div class="bg-gray-900 rounded-lg p-4 border border-gray-800">
-          <h3 class="text-sm font-semibold text-white mb-3">DAU / MAU 趋势</h3>
+        <div class="bg-dls-surface rounded-lg p-4 border border-dls-border">
+          <h3 class="text-sm font-semibold text-gray-12 mb-3">DAU / MAU 趋势</h3>
           <table class="w-full text-xs">
             <thead>
-              <tr class="text-gray-400 border-b border-gray-700">
+              <tr class="text-gray-10 border-b border-dls-border">
                 <th class="text-left pb-2">日期</th>
                 <th class="text-right pb-2">DAU</th>
                 <th class="text-right pb-2">MAU</th>
@@ -57,10 +57,10 @@ export default function GrowthTab() {
             <tbody>
               <For each={MOCK_DAU}>
                 {(row) => (
-                  <tr class="border-b border-gray-800 last:border-0">
-                    <td class="py-1.5 text-gray-300">{row.date}</td>
-                    <td class="py-1.5 text-right text-white font-medium">{row.dau.toLocaleString()}</td>
-                    <td class="py-1.5 text-right text-gray-400">{row.mau.toLocaleString()}</td>
+                  <tr class="border-b border-dls-border last:border-0">
+                    <td class="py-1.5 text-gray-11">{row.date}</td>
+                    <td class="py-1.5 text-right text-gray-12 font-medium">{row.dau.toLocaleString()}</td>
+                    <td class="py-1.5 text-right text-gray-10">{row.mau.toLocaleString()}</td>
                   </tr>
                 )}
               </For>
@@ -69,11 +69,11 @@ export default function GrowthTab() {
         </div>
 
         {/* 用户留存面板 */}
-        <div class="bg-gray-900 rounded-lg p-4 border border-gray-800">
-          <h3 class="text-sm font-semibold text-white mb-3">用户留存</h3>
+        <div class="bg-dls-surface rounded-lg p-4 border border-dls-border">
+          <h3 class="text-sm font-semibold text-gray-12 mb-3">用户留存</h3>
           <table class="w-full text-xs">
             <thead>
-              <tr class="text-gray-400 border-b border-gray-700">
+              <tr class="text-gray-10 border-b border-dls-border">
                 <th class="text-left pb-2">Cohort</th>
                 <th class="text-right pb-2">Day 1</th>
                 <th class="text-right pb-2">Day 7</th>
@@ -83,11 +83,11 @@ export default function GrowthTab() {
             <tbody>
               <For each={MOCK_RETENTION}>
                 {(row) => (
-                  <tr class="border-b border-gray-800 last:border-0">
-                    <td class="py-1.5 text-gray-300">{row.cohort}</td>
-                    <td class="py-1.5 text-right text-white">{row.day1}</td>
-                    <td class="py-1.5 text-right text-white">{row.day7}</td>
-                    <td class="py-1.5 text-right text-gray-400">{row.day30 ?? "--"}</td>
+                  <tr class="border-b border-dls-border last:border-0">
+                    <td class="py-1.5 text-gray-11">{row.cohort}</td>
+                    <td class="py-1.5 text-right text-gray-12">{row.day1}</td>
+                    <td class="py-1.5 text-right text-gray-12">{row.day7}</td>
+                    <td class="py-1.5 text-right text-gray-10">{row.day30 ?? "--"}</td>
                   </tr>
                 )}
               </For>
@@ -96,20 +96,20 @@ export default function GrowthTab() {
         </div>
 
         {/* 用户反馈聚合 */}
-        <div class="bg-gray-900 rounded-lg p-4 border border-gray-800">
-          <h3 class="text-sm font-semibold text-white mb-3">用户反馈</h3>
+        <div class="bg-dls-surface rounded-lg p-4 border border-dls-border">
+          <h3 class="text-sm font-semibold text-gray-12 mb-3">用户反馈</h3>
           <div class="flex flex-col gap-2">
             <For each={MOCK_FEEDBACK}>
               {(fb) => (
-                <div class="flex items-start gap-3 p-2 bg-gray-800 rounded">
-                  <span class={`text-xs shrink-0 mt-0.5 font-medium ${SENTIMENT_CLASS[fb.sentiment] ?? "text-gray-400"}`}>
+                <div class="flex items-start gap-3 p-2 bg-gray-4 rounded">
+                  <span class={`text-xs shrink-0 mt-0.5 font-medium ${SENTIMENT_CLASS[fb.sentiment] ?? "text-gray-10"}`}>
                     {fb.sentiment === "positive" ? "★" : "◆"}
                   </span>
                   <div class="flex-1 min-w-0">
-                    <div class="text-xs text-white">{fb.content}</div>
+                    <div class="text-xs text-gray-12">{fb.content}</div>
                     <div class="flex gap-2 mt-0.5">
-                      <span class="text-xs text-blue-400">{fb.channel}</span>
-                      <span class="text-xs text-gray-500">{fb.time}</span>
+                      <span class="text-xs text-blue-11">{fb.channel}</span>
+                      <span class="text-xs text-gray-9">{fb.time}</span>
                     </div>
                   </div>
                 </div>

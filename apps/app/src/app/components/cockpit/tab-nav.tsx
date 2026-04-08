@@ -47,8 +47,8 @@ export default function CockpitTabNav(props: CockpitTabNavProps) {
             class={[
               "px-4 py-2 text-sm font-medium rounded-t transition-colors",
               props.activeTab === tab.id
-                ? "border-b-2 border-blue-500 text-blue-400 bg-gray-900"
-                : "text-gray-400 hover:text-gray-200 hover:bg-gray-800",
+                ? "border-b-2 border-blue-9 text-blue-11 bg-dls-hover"
+                : "text-gray-10 hover:text-gray-12 hover:bg-dls-hover",
             ].join(" ")}
             onClick={() => props.onTabChange(tab.id)}
             onKeyDown={(e) => handleKeyDown(e, idx())}

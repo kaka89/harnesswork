@@ -13,11 +13,11 @@ export default function CockpitPage() {
   const [activeTab, setActiveTab] = createSignal<TabId>("product");
 
   return (
-    <div class="flex flex-col h-screen bg-gray-950 text-white" data-testid="cockpit-page">
+    <div class="flex flex-col h-screen bg-[var(--dls-app-bg)] text-gray-12" data-testid="cockpit-page">
       {/* 顶部固定栏：返回入口 + Tab 导航 */}
-      <header class="flex items-center gap-4 border-b border-gray-800 px-4 py-2 shrink-0">
+      <header class="flex items-center gap-4 border-b border-dls-border px-4 py-2 shrink-0">
         <button
-          class="flex items-center gap-1 text-gray-400 hover:text-gray-200 text-sm transition-colors"
+          class="flex items-center gap-1 text-gray-10 hover:text-gray-12 text-sm transition-colors"
           onClick={() => navigate("/mode-select")}
           data-testid="back-to-mode-select"
         >

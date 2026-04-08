@@ -35,7 +35,7 @@ export default function DocViewerPanel(props: DocViewerPanelProps) {
     <div class="h-full overflow-y-auto" data-testid="doc-viewer-panel">
       {/* 初始状态：未选择文档 */}
       <Show when={!props.path}>
-        <div class="h-full flex items-center justify-center text-gray-500 text-sm">
+        <div class="h-full flex items-center justify-center text-gray-9 text-sm">
           请选择左侧文档
         </div>
       </Show>
@@ -45,7 +45,7 @@ export default function DocViewerPanel(props: DocViewerPanelProps) {
         <Show when={doc.loading}>
           <div class="p-6 flex flex-col gap-3" data-testid="doc-viewer-loading">
             <For each={[1, 2, 3, 4, 5]}>
-              {() => <div class="h-4 bg-gray-800 rounded animate-pulse" />}
+              {() => <div class="h-4 bg-gray-4 rounded animate-pulse" />}
             </For>
           </div>
         </Show>
@@ -72,7 +72,7 @@ export default function DocViewerPanel(props: DocViewerPanelProps) {
                 {/* 404 */}
                 <div class="p-6">
                   <p
-                    class="text-gray-500 text-sm"
+                    class="text-gray-9 text-sm"
                     data-testid="doc-viewer-not-found"
                   >
                     文档未找到
@@ -83,7 +83,7 @@ export default function DocViewerPanel(props: DocViewerPanelProps) {
           >
             {/* 成功：渲染 Markdown HTML */}
             <article
-              class="p-6 text-gray-300 text-sm leading-relaxed max-w-4xl prose prose-invert"
+              class="p-6 text-gray-12 text-sm leading-relaxed max-w-4xl prose"
               data-testid="doc-viewer-content"
               innerHTML={doc()!.html}
             />

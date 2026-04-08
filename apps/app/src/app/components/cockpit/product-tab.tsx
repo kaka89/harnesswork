@@ -8,7 +8,7 @@ export default function ProductTab() {
   return (
     <div class="flex h-full" data-testid="product-tab">
       {/* 左侧文档树（固定宽度） */}
-      <aside class="w-64 shrink-0 border-r border-gray-800 overflow-y-auto">
+      <aside class="w-64 shrink-0 border-r border-dls-border overflow-y-auto">
         <DocTreePanel onSelect={setSelectedPath} />
       </aside>
       {/* 右侧文档内容区（撑满剩余宽度） */}

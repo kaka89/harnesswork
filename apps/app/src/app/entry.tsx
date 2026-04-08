@@ -1,5 +1,3 @@
-import { onMount } from "solid-js";
-import { useNavigate, useLocation } from "@solidjs/router";
 import App from "./app";
 import { GlobalSDKProvider } from "./context/global-sdk";
 import { GlobalSyncProvider } from "./context/global-sync";
@@ -9,17 +7,6 @@ import { isWebDeployment } from "./lib/openwork-deployment";
 import { isTauriRuntime } from "./utils";
 
 export default function AppEntry() {
-  const navigate = useNavigate();
-  const location = useLocation();
-
-  onMount(() => {
-    // F003 startup-default-route: 冷启动检测
-    // sessionStorage 随页面会话结束自动清除，刷新 = 冷启动，满足 BH-01/02/03/05
-    if (location.pathname === "/" && !sessionStorage.getItem("harnesswork:started")) {
-      sessionStorage.setItem("harnesswork:started", "1");
-      navigate("/mode-select");
-    }
-  });
   const defaultUrl = (() => {
     // Desktop app connects to the local OpenCode engine.
     if (isTauriRuntime()) return "http://127.0.0.1:4096";

@@ -2242,6 +2242,12 @@ export default function App() {
 
   const initialRoute = () => {
     if (typeof window === "undefined") return "/session";
+    // F003 startup-default-route: 冷启动检测
+    // sessionStorage 随页面会话结束自动清除，刷新 = 冷启动
+    if (!sessionStorage.getItem("harnesswork:started")) {
+      sessionStorage.setItem("harnesswork:started", "1");
+      return "/mode-select";
+    }
     return "/session";
   };
 
@@ -2251,6 +2257,11 @@ export default function App() {
 
     if (path === "" || path === "/") {
       navigate(initialRoute(), { replace: true });
+      return;
+    }
+
+    // F003: /mode-select 是合法路由，不拦截
+    if (path === "/mode-select") {
       return;
     }
 

@@ -5,20 +5,19 @@ import { GlobalSDKProvider } from "./context/global-sdk";
 import { GlobalSyncProvider } from "./context/global-sync";
 import { LocalProvider } from "./context/local";
 import { ServerProvider } from "./context/server";
-import { usePlatform } from "./context/platform";
 import { isWebDeployment } from "./lib/openwork-deployment";
 import { isTauriRuntime } from "./utils";
 
 export default function AppEntry() {
   const navigate = useNavigate();
   const location = useLocation();
-  const platform = usePlatform();
 
   onMount(() => {
-    if (!platform.storage) return;
-    const pref = platform.storage("harnesswork").getItem("mode-preference");
-    if (pref === "cockpit" && location.pathname === "/") {
-      navigate("/cockpit");
+    // F003 startup-default-route: 冷启动检测
+    // sessionStorage 随页面会话结束自动清除，刷新 = 冷启动，满足 BH-01/02/03/05
+    if (location.pathname === "/" && !sessionStorage.getItem("harnesswork:started")) {
+      sessionStorage.setItem("harnesswork:started", "1");
+      navigate("/mode-select");
     }
   });
   const defaultUrl = (() => {

@@ -1,3 +1,4 @@
+import { createSignal } from "solid-js";
 import { useNavigate } from "@solidjs/router";
 import { usePlatform } from "../context/platform";
 
@@ -10,13 +11,20 @@ export default function ModeSelectPage() {
     removeItem(key: string): void;
   };
 
+  // F003: 读取上次选择的模式偏好，用于高亮对应卡片（BH-02）
+  const [preference, setPreference] = createSignal<string | null>(
+    storage.getItem("mode-preference")
+  );
+
   const handleSelectOpenwork = () => {
     storage.setItem("mode-preference", "openwork");
+    setPreference("openwork");
     navigate("/");
   };
 
   const handleSelectCockpit = () => {
     storage.setItem("mode-preference", "cockpit");
+    setPreference("cockpit");
     navigate("/cockpit");
   };
 
@@ -36,7 +44,11 @@ export default function ModeSelectPage() {
         <div class="flex gap-6 w-full">
           {/* openwork 原始版本卡片 */}
           <button
-            class="flex-1 flex flex-col gap-3 p-6 rounded-xl border border-gray-700 hover:border-gray-400 cursor-pointer bg-gray-900 hover:bg-gray-800 transition-all text-left"
+            class={`flex-1 flex flex-col gap-3 p-6 rounded-xl border cursor-pointer bg-gray-900 transition-all text-left ${
+              preference() === "openwork"
+                ? "border-gray-400 ring-2 ring-gray-300/60 hover:border-gray-300 hover:bg-gray-800"
+                : "border-gray-700 hover:border-gray-400 hover:bg-gray-800"
+            }`}
             onClick={handleSelectOpenwork}
             data-testid="mode-openwork"
           >
@@ -52,7 +64,11 @@ export default function ModeSelectPage() {
 
           {/* harnesswork 工程驾驶舱卡片 */}
           <button
-            class="flex-1 flex flex-col gap-3 p-6 rounded-xl border border-blue-600 hover:border-blue-400 cursor-pointer bg-gray-900 hover:bg-blue-950 transition-all text-left"
+            class={`flex-1 flex flex-col gap-3 p-6 rounded-xl border cursor-pointer bg-gray-900 transition-all text-left ${
+              preference() === "cockpit"
+                ? "border-blue-400 ring-2 ring-blue-400/60 hover:border-blue-300 hover:bg-blue-950"
+                : "border-blue-600 hover:border-blue-400 hover:bg-blue-950"
+            }`}
             onClick={handleSelectCockpit}
             data-testid="mode-cockpit"
           >

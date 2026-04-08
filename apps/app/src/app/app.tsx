@@ -1,5 +1,6 @@
 import {
   Match,
+  Show,
   Switch,
   createEffect,
   createMemo,
@@ -10,6 +11,7 @@ import {
 } from "solid-js";
 
 import { useLocation, useNavigate } from "@solidjs/router";
+import ModeSelectPage from "./pages/mode-select";
 
 import type { Session } from "@opencode-ai/sdk/v2/client";
 
@@ -2345,6 +2347,10 @@ export default function App() {
   });
 
   return (
+    <Show
+      when={location.pathname !== "/mode-select"}
+      fallback={<ModeSelectPage />}
+    >
     <OpenworkServerProvider store={openworkServerStore}>
       <ModelControlsProvider store={modelControlsStore}>
         <SessionActionsProvider store={sessionActionsStore}>
@@ -2644,5 +2650,6 @@ export default function App() {
         </SessionActionsProvider>
       </ModelControlsProvider>
     </OpenworkServerProvider>
+    </Show>
   );
 }

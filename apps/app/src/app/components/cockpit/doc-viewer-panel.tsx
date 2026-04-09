@@ -22,10 +22,27 @@ function markdownToSafeHtml(md: string): string {
 
 async function fetchDocContent(path: string): Promise<DocResult> {
   if (!path) return { html: "", status: 0 };
-  const res = await fetch(`/docs/${encodeURIComponent(path)}`);
+  // 绝对路径（工作区文件树选中）→ 使用 /workspace/file 接口
+  const isAbsolute = path.startsWith("/") || /^[A-Za-z]:[/\\]/.test(path);
+  const url = isAbsolute
+    ? `/workspace/file?path=${encodeURIComponent(path)}`
+    : `/docs/${encodeURIComponent(path)}`;
+  const res = await fetch(url);
   if (!res.ok) return { html: "", status: res.status };
   const text = await res.text();
-  return { html: markdownToSafeHtml(text), status: res.status };
+  // Markdown 文件 → 渲染为 HTML；其他文件 → 纯文本预览
+  const isMarkdown = /\.(md|mdx)$/i.test(path);
+  if (isMarkdown) {
+    return { html: markdownToSafeHtml(text), status: res.status };
+  }
+  const escaped = text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  return {
+    html: `<pre class="text-xs text-gray-11 font-mono leading-relaxed overflow-x-auto whitespace-pre-wrap break-words">${escaped}</pre>`,
+    status: res.status,
+  };
 }
 
 export default function DocViewerPanel(props: DocViewerPanelProps) {
@@ -36,7 +53,7 @@ export default function DocViewerPanel(props: DocViewerPanelProps) {
       {/* 初始状态：未选择文档 */}
       <Show when={!props.path}>
         <div class="h-full flex items-center justify-center text-gray-9 text-sm">
-          请选择左侧文档
+          请选择左侧文件
         </div>
       </Show>
 

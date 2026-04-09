@@ -1276,6 +1276,53 @@ function createRoutes(
     }
   });
 
+  // —— Workspace filesystem endpoints (cockpit ProductTab) ——
+
+  // GET /workspace/readdir?path=<abs_path> — 列举指定目录的直接子项
+  addRoute(routes, "GET", "/workspace/readdir", "client", async (ctx) => {
+    const rawPath = ctx.url.searchParams.get("path");
+    if (!rawPath) throw new ApiError(400, "bad_request", "path query param is required");
+    const dirPath = decodeURIComponent(rawPath);
+    if (!existsSync(dirPath)) throw new ApiError(404, "not_found", "Directory not found");
+    try {
+      const items = await readdir(dirPath, { withFileTypes: true });
+      const entries = items
+        .map((item) => ({
+          name: item.name,
+          path: join(dirPath, item.name),
+          type: item.isDirectory() ? ("dir" as const) : ("file" as const),
+          ext:
+            item.isFile() && item.name.includes(".")
+              ? item.name.split(".").pop()
+              : undefined,
+        }))
+        .sort((a, b) => {
+          if (a.type !== b.type) return a.type === "dir" ? -1 : 1;
+          return a.name.localeCompare(b.name);
+        });
+      return jsonResponse(entries);
+    } catch {
+      throw new ApiError(500, "internal_error", "Failed to read directory");
+    }
+  });
+
+  // GET /workspace/file?path=<abs_path> — 读取工作区内任意文件内容（用于预览）
+  addRoute(routes, "GET", "/workspace/file", "client", async (ctx) => {
+    const rawPath = ctx.url.searchParams.get("path");
+    if (!rawPath) throw new ApiError(400, "bad_request", "path query param is required");
+    const filePath = decodeURIComponent(rawPath);
+    if (!existsSync(filePath)) throw new ApiError(404, "not_found", "File not found");
+    try {
+      const content = await readFile(filePath, "utf-8");
+      return new Response(content, {
+        status: 200,
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+      });
+    } catch {
+      throw new ApiError(500, "internal_error", "Failed to read file");
+    }
+  });
+
   addRoute(routes, "GET", "/w/:id/health", "none", async () => {
     return jsonResponse({ ok: true, version: SERVER_VERSION, uptimeMs: Date.now() - config.startedAt });
   });

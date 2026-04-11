@@ -17,9 +17,9 @@ delivered: "2026-04-08"
 ## 关联文档
 
 - PRD：[PRD-002-dual-mode-workspace](../../product/prd/PRD-002-dual-mode-workspace.md)
-- SDD：[SDD-002-dual-mode-workspace](../../product/architecture/SDD-002-dual-mode-workspace.md)
-- MODULE：[MODULE-002-dual-mode-workspace](../../product/contracts/MODULE-002-dual-mode-workspace.md)
-- PLAN：[PLAN-002-dual-mode-workspace](../../delivery/plan/PLAN-002-dual-mode-workspace.md)
+- SDD：[SDD-002-dual-mode-workspace](spec/SDD-002-dual-mode-workspace.md)
+- MODULE：[MODULE-002-dual-mode-workspace](spec/MODULE-002-dual-mode-workspace.md)
+- PLAN：[PLAN-002-dual-mode-workspace](plan/PLAN-002-dual-mode-workspace.md)
 
 ## 关键决策
 

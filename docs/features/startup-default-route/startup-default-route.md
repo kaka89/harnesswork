@@ -1,6 +1,6 @@
 ---
 feature: startup-default-route
-status: delivered
+status: draft
 prd: PRD-002-dual-mode-workspace
 created: "2026-04-08"
 ---
@@ -35,6 +35,7 @@ created: "2026-04-08"
 startup-default-route/
 ├── startup-default-route.md  ← 特性概览（本文件，产品侧评审对象）
 ├── spec/                      ← 接口规格（本特性为纯前端路由变更，无后端接口）
+│   └── MODULE-003-startup-default-route.md
 ├── plan/
 │   └── PLAN-003-startup-default-route.md
 └── task/

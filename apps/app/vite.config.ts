@@ -29,7 +29,6 @@ export default defineConfig({
     tailwindcss(),
     devtools({
       autoname: true,
-      // jsxLocation is required for in-page locator: map DOM → Solid components (hold Option/Alt while hovering).
       locator: {
         targetIDE: "vscode",
         jsxLocation: true,
@@ -38,6 +37,9 @@ export default defineConfig({
     }),
     solid(),
   ],
+  resolve: {
+    dedupe: ["react", "react-dom"],
+  },
   server: {
     port: devPort,
     strictPort: true,

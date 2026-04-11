@@ -8,6 +8,14 @@
     "dev:windows:x64": ".\\scripts\\dev-windows.cmd x64",
     "dev:ui": "OPENWORK_DEV_MODE=1 pnpm --filter @openwork/app dev",
     "dev:ui-demo": "pnpm --filter @openwork/ui-demo dev",
+    "dev:xingjing": "pnpm --filter @openwork/xingjing dev",
+    "dev:xingjing-server": "pnpm --filter @openwork/xingjing-server dev",
+    "dev:platform": "pnpm --filter @openwork/xingjing dev",
+    "build:platform": "pnpm --filter @openwork/xingjing build",
+    "build:xingjing": "pnpm --filter @openwork/xingjing build",
+    "build:xingjing-server": "pnpm --filter @openwork/xingjing-server build",
+    "dev:xingjing-full": "concurrently --names \"server,ui,openwork\" --prefix-colors \"magenta,cyan,blue\" \"pnpm dev:xingjing-server\" \"pnpm dev:xingjing\" \"pnpm dev:ui\"",
+    "dev:xingjing-standalone": "concurrently --names \"server,ui\" --prefix-colors \"magenta,cyan\" \"pnpm dev:xingjing-server\" \"pnpm dev:xingjing\"",
     "dev:story": "OPENWORK_DEV_MODE=1 pnpm --filter @openwork/story-book dev",
     "dev:web": "OPENWORK_DEV_MODE=1 pnpm --filter @openwork-ee/den-web dev",
     "dev:web-local": "pnpm dev:den-local",
@@ -43,6 +51,7 @@
     "tauri": "pnpm --filter @openwork/desktop exec tauri"
   },
   "devDependencies": {
+    "concurrently": "^9.1.0",
     "turbo": "^2.5.5"
   },
   "pnpm": {

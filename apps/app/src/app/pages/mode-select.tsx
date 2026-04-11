@@ -1,31 +1,29 @@
 import { createSignal } from "solid-js";
 import { useNavigate } from "@solidjs/router";
-import { usePlatform } from "../context/platform";
 
 export default function ModeSelectPage() {
   const navigate = useNavigate();
-  const platform = usePlatform();
-  const storage = platform.storage!("harnesswork") as {
-    getItem(key: string): string | null;
-    setItem(key: string, value: string): void;
-    removeItem(key: string): void;
-  };
 
-  // F003: 读取上次选择的模式偏好，用于高亮对应卡片（BH-02）
+  // 使用 localStorage 记忆上次选择的模式，高亮对应卡片
+  const storageKey = "harnesswork:mode-preference";
   const [preference, setPreference] = createSignal<string | null>(
-    storage.getItem("mode-preference")
+    typeof window !== "undefined" ? localStorage.getItem(storageKey) : null
   );
 
+  const savePreference = (mode: string) => {
+    localStorage.setItem(storageKey, mode);
+    setPreference(mode);
+  };
+
   const handleSelectOpenwork = () => {
-    storage.setItem("mode-preference", "openwork");
-    setPreference("openwork");
+    savePreference("openwork");
     navigate("/");
   };
 
-  const handleSelectCockpit = () => {
-    storage.setItem("mode-preference", "cockpit");
-    setPreference("cockpit");
-    navigate("/cockpit");
+  const handleSelectXingjing = () => {
+    savePreference("xingjing");
+    // 内部路由导航，在 openwork 窗口内嵌入星静，而非打开独立页面
+    navigate("/xingjing");
   };
 
   return (
@@ -62,23 +60,23 @@ export default function ModeSelectPage() {
             </div>
           </button>
 
-          {/* harnesswork 工程驾驶舱卡片 */}
+          {/* 星静平台卡片 */}
           <button
             class={`flex-1 flex flex-col gap-3 p-6 rounded-xl border cursor-pointer bg-dls-surface transition-all text-left ${
-              preference() === "cockpit"
-                ? "border-blue-8 ring-2 ring-blue-8/60 hover:border-blue-9 hover:bg-blue-3"
-                : "border-blue-7 hover:border-blue-8 hover:bg-blue-3"
+              preference() === "xingjing"
+                ? "border-purple-8 ring-2 ring-purple-8/60 hover:border-purple-9 hover:bg-purple-3"
+                : "border-purple-7 hover:border-purple-8 hover:bg-purple-3"
             }`}
-            onClick={handleSelectCockpit}
-            data-testid="mode-cockpit"
+            onClick={handleSelectXingjing}
+            data-testid="mode-xingjing"
           >
-            <div class="text-2xl">🚀</div>
+            <div class="text-2xl">🌙</div>
             <div>
-              <div class="font-semibold text-blue-11 text-lg">harnesswork 工程驾驶舱</div>
-              <div class="text-gray-10 text-sm mt-1">全链路研发协作</div>
+              <div class="font-semibold text-purple-11 text-lg">星静</div>
+              <div class="text-gray-10 text-sm mt-1">All-in-One 研发平台</div>
             </div>
             <div class="text-gray-9 text-xs mt-auto">
-              产品 / 研发 / 发布运维 / 运营一体化视图
+              产品规划 / 需求 / 研发 / 质量 / 发布一体化
             </div>
           </button>
         </div>

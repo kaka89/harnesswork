@@ -150,14 +150,15 @@ const platform: Platform = {
 };
 
 const ModeSelectPage = lazy(() => import("./app/pages/mode-select"));
-const CockpitPage = lazy(() => import("./app/pages/cockpit"));
+// 星静平台：懒加载
+const XingjingPage = lazy(() => import("./app/pages/xingjing"));
 
 render(
   () => (
     <PlatformProvider value={platform}>
       <RouterComponent root={AppEntry}>
         <Route path="/mode-select" component={ModeSelectPage} />
-        <Route path="/cockpit" component={CockpitPage} />
+        <Route path="/xingjing" component={XingjingPage} />
         <Route path="*all" component={() => null} />
       </RouterComponent>
     </PlatformProvider>

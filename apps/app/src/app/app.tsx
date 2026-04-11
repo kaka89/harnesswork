@@ -12,6 +12,7 @@ import {
 
 import { useLocation, useNavigate } from "@solidjs/router";
 import ModeSelectPage from "./pages/mode-select";
+import XingjingPage from "./pages/xingjing";
 
 import type { Session } from "@opencode-ai/sdk/v2/client";
 
@@ -2262,8 +2263,8 @@ export default function App() {
       return;
     }
 
-    // F003: /mode-select 是合法路由，不拦截
-    if (path === "/mode-select") {
+    // F003: /mode-select、/xingjing 是合法路由，不拦截
+    if (path === "/mode-select" || path.startsWith("/xingjing")) {
       return;
     }
 
@@ -2348,8 +2349,12 @@ export default function App() {
 
   return (
     <Show
-      when={location.pathname !== "/mode-select"}
-      fallback={<ModeSelectPage />}
+      when={location.pathname !== "/mode-select" && !location.pathname.startsWith("/xingjing")}
+      fallback={
+        location.pathname.startsWith("/xingjing")
+          ? <XingjingPage />
+          : <ModeSelectPage />
+      }
     >
     <OpenworkServerProvider store={openworkServerStore}>
       <ModelControlsProvider store={modelControlsStore}>

@@ -91,14 +91,14 @@ const SortableSkillCard: React.FC<SortableSkillCardProps> = ({
     <div ref={setNodeRef} style={style}>
       <Card
         size="small"
-        style={{ borderRadius: 8, border: `1px solid ${borderColor}`, background: '#fff' }}
+        style={{ borderRadius: 8, border: `1px solid ${borderColor}`, background: 'var(--dls-surface)' }}
       >
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
           {/* Drag handle */}
           <div
             {...listeners}
             {...attributes}
-            style={{ cursor: 'grab', color: '#ccc', paddingTop: 2, flexShrink: 0 }}
+            style={{ cursor: 'grab', color: 'var(--gray-8)', paddingTop: 2, flexShrink: 0 }}
           >
             <HolderOutlined />
           </div>
@@ -169,11 +169,11 @@ const DraggablePoolSkill: React.FC<DraggablePoolSkillProps> = ({ skill, onDirect
         size="small"
         style={{
           borderRadius: 8, border: `1px solid ${categoryColor[cat] || '#d9d9d9'}33`,
-          background: '#fafafa', cursor: 'grab', marginBottom: 6,
+          background: 'var(--dls-bg-subtle)', cursor: 'grab', marginBottom: 6,
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <div {...listeners} {...attributes} style={{ cursor: 'grab', color: '#ccc', flexShrink: 0 }}>
+          <div {...listeners} {...attributes} style={{ cursor: 'grab', color: 'var(--gray-8)', flexShrink: 0 }}>
             <HolderOutlined style={{ fontSize: 12 }} />
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -207,7 +207,7 @@ const AgentSkillDropZone: React.FC<{ children: React.ReactNode }> = ({ children 
         minHeight: 60,
         border: `2px dashed ${isOver ? '#1264e5' : 'transparent'}`,
         borderRadius: 8,
-        background: isOver ? '#e6f0ff' : 'transparent',
+        background: isOver ? 'var(--dls-info-bg-alt)' : 'transparent',
         transition: 'all 0.2s',
         padding: isOver ? 4 : 0,
       }}
@@ -321,7 +321,7 @@ const SkillEditModal: React.FC<SkillEditModalProps> = ({
 
         {/* Input Parameters */}
         <Form.Item label="输入参数">
-          <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: 12 }}>
+          <div style={{ border: '1px solid var(--dls-border-light)', borderRadius: 8, padding: 12 }}>
             {inputParams.map((param, idx) => (
               <div
                 key={idx}
@@ -610,7 +610,7 @@ const AgentWorkshop: React.FC = () => {
                 )}
                 <Card
                   hoverable onClick={() => openDrawer(agent)}
-                  style={{ borderRadius: 12, border: `1px solid ${agent.borderColor}`, background: `linear-gradient(135deg, ${agent.bgColor} 0%, #fff 100%)`, width: '100%', height: '100%' }}
+                  style={{ borderRadius: 12, border: `1px solid ${agent.borderColor}`, background: `linear-gradient(135deg, ${agent.bgColor} 0%, var(--dls-surface) 100%)`, width: '100%', height: '100%' }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
                     <span style={{ fontSize: 28 }}>{agent.emoji}</span>
@@ -627,7 +627,7 @@ const AgentWorkshop: React.FC = () => {
                       const cat = def?.category || '';
                       const status = getSkillStatus(agent.id, s);
                       return (
-                        <div key={s} style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '3px 8px', borderRadius: 6, background: '#fff', border: `1px solid ${agent.borderColor}`, fontSize: 11 }}>
+                        <div key={s} style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '3px 8px', borderRadius: 6, background: 'var(--dls-surface)', border: `1px solid ${agent.borderColor}`, fontSize: 11 }}>
                           {status && <span style={{ color: skillStatusConfig[status]?.color, fontSize: 10 }}>{skillStatusConfig[status]?.icon}</span>}
                           <span style={{ fontWeight: 500 }}>{s}</span>
                           {cat && <Tag style={{ fontSize: 10, lineHeight: '16px', padding: '0 4px', margin: 0 }} color={categoryColor[cat]}>{cat}</Tag>}
@@ -635,7 +635,7 @@ const AgentWorkshop: React.FC = () => {
                       );
                     })}
                     {skills.length > 3 && (
-                      <div style={{ padding: '3px 8px', borderRadius: 6, background: '#f5f5f5', fontSize: 11, color: '#8c8c8c' }}>+{skills.length - 3}</div>
+                      <div style={{ padding: '3px 8px', borderRadius: 6, background: 'var(--dls-bg-subtle)', fontSize: 11, color: 'var(--dls-text-muted)' }}>+{skills.length - 3}</div>
                     )}
                   </div>
                   {count > 0 && (
@@ -650,7 +650,7 @@ const AgentWorkshop: React.FC = () => {
         <Col xs={24} sm={12} lg={8} style={{ display: 'flex', flexDirection: 'column' }}>
           <Card
             hoverable onClick={openCreateModal}
-            style={{ borderRadius: 12, border: '2px dashed #d9d9d9', background: '#fafafa', width: '100%', height: '100%', minHeight: 180, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+            style={{ borderRadius: 12, border: '2px dashed var(--dls-border)', background: 'var(--dls-bg-subtle)', width: '100%', height: '100%', minHeight: 180, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
             styles={{ body: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', width: '100%' } }}
           >
             <PlusOutlined style={{ fontSize: 32, color: '#bfbfbf', marginBottom: 8 }} />
@@ -781,7 +781,7 @@ const AgentWorkshop: React.FC = () => {
                   children: (
                     <div>
                       <Title level={5} style={{ marginBottom: 12, fontSize: 14 }}>指派任务</Title>
-                      <div style={{ maxHeight: 220, overflowY: 'auto', border: '1px solid #f0f0f0', borderRadius: 8, padding: 8, marginBottom: 12 }}>
+                      <div style={{ maxHeight: 220, overflowY: 'auto', border: '1px solid var(--dls-border-light)', borderRadius: 8, padding: 8, marginBottom: 12 }}>
                         <Checkbox.Group value={pendingTasks} onChange={(v) => setPendingTasks(v as string[])} style={{ width: '100%' }}>
                           <Space direction="vertical" style={{ width: '100%' }}>
                             {taskList.map((task) => {
@@ -813,7 +813,7 @@ const AgentWorkshop: React.FC = () => {
                       ) : (
                         <Collapse
                           accordion size="small"
-                          style={{ background: '#fafafa', borderRadius: 8 }}
+                          style={{ background: 'var(--dls-bg-subtle)', borderRadius: 8 }}
                           items={assignments
                             .filter((a) => a.agentId === selectedAgent.id)
                             .map((a) => {
@@ -898,7 +898,7 @@ const AgentWorkshop: React.FC = () => {
               {emojiPresets.map((e) => (
                 <div key={e} onClick={() => setSelectedEmoji(e)}
                   style={{ width: 40, height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, borderRadius: 8, cursor: 'pointer',
-                    border: selectedEmoji === e ? '2px solid #1264e5' : '1px solid #f0f0f0', background: selectedEmoji === e ? '#e6f0ff' : '#fafafa' }}>
+                    border: selectedEmoji === e ? '2px solid #1264e5' : '1px solid var(--dls-border-light)', background: selectedEmoji === e ? 'var(--dls-info-bg-alt)' : 'var(--dls-bg-subtle)' }}>
                   {e}
                 </div>
               ))}
@@ -919,7 +919,7 @@ const AgentWorkshop: React.FC = () => {
             </div>
           </Form.Item>
           <Form.Item label="预览">
-            <Card size="small" style={{ borderRadius: 10, border: `1px solid ${selectedColor.borderColor}`, background: `linear-gradient(135deg, ${selectedColor.bgColor} 0%, #fff 100%)` }}>
+            <Card size="small" style={{ borderRadius: 10, border: `1px solid ${selectedColor.borderColor}`, background: `linear-gradient(135deg, ${selectedColor.bgColor} 0%, var(--dls-surface) 100%)` }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span style={{ fontSize: 22 }}>{selectedEmoji}</span>
                 <div>

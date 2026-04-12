@@ -146,7 +146,7 @@ const SoloProduct: React.FC = () => {
           <div
             style={{
               padding: '8px 14px',
-              background: '#fffbe6',
+              background: 'var(--dls-warning-bg)',
               border: '1px solid #ffe58f',
               borderRadius: 8,
               marginBottom: 16,
@@ -176,7 +176,7 @@ const SoloProduct: React.FC = () => {
           <div
             style={{
               padding: '8px 14px',
-              background: '#fffbe6',
+              background: 'var(--dls-warning-bg)',
               border: '1px solid #ffe58f',
               borderRadius: 8,
               marginBottom: 16,
@@ -258,7 +258,7 @@ const SoloProduct: React.FC = () => {
                   style={{
                     marginTop: 12,
                     padding: '8px 12px',
-                    background: '#f6ffed',
+                    background: 'var(--dls-success-bg)',
                     borderRadius: 6,
                     fontSize: 12,
                     color: '#389e0d',

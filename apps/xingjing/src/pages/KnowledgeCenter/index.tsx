@@ -230,12 +230,12 @@ const KnowledgeQA: React.FC = () => {
               <Card
                 size="small"
                 style={{
-                  background: msg.role === 'user' ? '#e6f4ff' : '#fafafa',
-                  borderColor: msg.role === 'user' ? '#91caff' : '#f0f0f0',
+                  background: msg.role === 'user' ? 'var(--dls-info-bg)' : 'var(--dls-bg-subtle)',
+                  borderColor: msg.role === 'user' ? 'var(--dls-info-border)' : 'var(--dls-border-light)',
                 }}
                 bodyStyle={{ padding: '8px 12px' }}
               >
-                <div style={{ fontSize: 13, lineHeight: 1.7, color: '#333' }}>
+                <div style={{ fontSize: 13, lineHeight: 1.7, color: 'var(--dls-text-body)' }}>
                   {formatContent(msg.content)}
                 </div>
               </Card>
@@ -263,7 +263,7 @@ const KnowledgeQA: React.FC = () => {
         {loading && (
           <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
             <Avatar size={32} style={{ background: '#1264e5' }} icon={<RobotOutlined />} />
-            <Card size="small" style={{ background: '#fafafa' }} bodyStyle={{ padding: '8px 12px' }}>
+            <Card size="small" style={{ background: 'var(--dls-bg-subtle)' }} bodyStyle={{ padding: '8px 12px' }}>
               <Spin size="small" />
               <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>正在检索知识库...</Text>
             </Card>

@@ -212,7 +212,7 @@ const SoloFocus: React.FC = () => {
                       padding: '10px 12px',
                       borderRadius: 8,
                       background: done ? '#f9f9f9' : '#fafafa',
-                      border: '1px solid #f0f0f0',
+                      border: '1px solid var(--dls-border-light)',
                       cursor: 'pointer',
                       opacity: done ? 0.6 : 1,
                       transition: 'all 0.2s',
@@ -326,14 +326,14 @@ const SoloFocus: React.FC = () => {
                     width: 14,
                     height: 14,
                     borderRadius: 3,
-                    background: i < 14 ? '#fa8c16' : '#f0f0f0',
+                    background: i < 14 ? '#fa8c16' : 'var(--dls-border-light)',
                   }}
                 />
               ))}
               {Array.from({ length: 7 }).map((_, i) => (
                 <div
                   key={`empty-${i}`}
-                  style={{ width: 14, height: 14, borderRadius: 3, background: '#f0f0f0' }}
+                  style={{ width: 14, height: 14, borderRadius: 3, background: 'var(--dls-border-light)' }}
                 />
               ))}
             </div>

@@ -47,8 +47,8 @@ const AgentCard: React.FC<{ agent: AgentDef; status: AgentStatus; currentTask?: 
     <Card
       size="small"
       style={{
-        borderColor: isActive ? agent.borderColor : status === 'done' ? '#b7eb8f' : '#f0f0f0',
-        background: isActive ? agent.bgColor : status === 'done' ? '#f6ffed' : '#fafafa',
+        borderColor: isActive ? agent.borderColor : status === 'done' ? 'var(--dls-success-border)' : 'var(--dls-border-light)',
+        background: isActive ? agent.bgColor : status === 'done' ? 'var(--dls-success-bg)' : 'var(--dls-bg-subtle)',
         transition: 'all 0.4s ease',
         boxShadow: isActive ? `0 0 0 2px ${agent.borderColor}` : 'none',
       }}
@@ -59,7 +59,7 @@ const AgentCard: React.FC<{ agent: AgentDef; status: AgentStatus; currentTask?: 
             width: 36,
             height: 36,
             borderRadius: 8,
-            background: isActive ? agent.color : status === 'done' ? '#52c41a' : '#d9d9d9',
+            background: isActive ? agent.color : status === 'done' ? '#52c41a' : 'var(--gray-8)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -238,8 +238,8 @@ const EnterpriseAutopilot: React.FC = () => {
         <Card
           style={{
             marginBottom: 20,
-            background: 'linear-gradient(135deg, #e6f0ff 0%, #f0f5ff 100%)',
-            border: '1px dashed #91c5ff',
+            background: 'linear-gradient(135deg, var(--dls-info-bg-alt) 0%, var(--dls-info-bg) 100%)',
+            border: '1px dashed var(--dls-info-border)',
             textAlign: 'center',
           }}
         >
@@ -411,8 +411,8 @@ const EnterpriseAutopilot: React.FC = () => {
                 style={{
                   marginTop: 12,
                   padding: '10px 14px',
-                  background: '#f6ffed',
-                  border: '1px solid #b7eb8f',
+                  background: 'var(--dls-success-bg)',
+                  border: '1px solid var(--dls-success-border)',
                   borderRadius: 8,
                   display: 'flex',
                   alignItems: 'center',
@@ -467,7 +467,7 @@ const EnterpriseAutopilot: React.FC = () => {
                         <Text strong style={{ fontSize: 12 }}>{step.artifact!.title}</Text>
                       </div>
                       <Text
-                        style={{ fontSize: 11, color: '#595959', whiteSpace: 'pre-line', lineHeight: 1.7 }}
+                        style={{ fontSize: 11, color: 'var(--dls-text-secondary)', whiteSpace: 'pre-line', lineHeight: 1.7 }}
                       >
                         {step.artifact!.content}
                       </Text>

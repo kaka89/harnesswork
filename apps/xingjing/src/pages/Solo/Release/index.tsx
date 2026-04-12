@@ -87,7 +87,7 @@ const SoloRelease: React.FC = () => {
       <div
         style={{
           padding: '8px 14px',
-          background: '#fffbe6',
+          background: 'var(--dls-warning-bg)',
           border: '1px solid #ffe58f',
           borderRadius: 8,
           marginBottom: 16,
@@ -157,7 +157,7 @@ const SoloRelease: React.FC = () => {
                       ) : step.done ? (
                         <CheckCircleOutlined style={{ color: '#52c41a', fontSize: 12 }} />
                       ) : (
-                        <div style={{ width: 12, height: 12, borderRadius: '50%', background: '#f0f0f0', border: '1px solid #d9d9d9' }} />
+                        <div style={{ width: 12, height: 12, borderRadius: '50%', background: 'var(--dls-border-light)', border: '1px solid var(--dls-border)' }} />
                       )}
                       <Text style={{ color: step.active ? '#1264e5' : step.done ? '#1f1f1f' : '#bfbfbf', fontSize: 12 }}>
                         {step.label}
@@ -381,7 +381,7 @@ const SoloRelease: React.FC = () => {
         <div
           style={{
             padding: '6px 10px',
-            background: '#f6ffed',
+            background: 'var(--dls-success-bg)',
             borderRadius: 6,
             fontSize: 12,
             color: '#52c41a',

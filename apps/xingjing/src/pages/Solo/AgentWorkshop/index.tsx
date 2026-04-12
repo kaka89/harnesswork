@@ -89,7 +89,7 @@ const SortableSkillCard: React.FC<SortableSkillCardProps> = ({
     <div ref={setNodeRef} style={style}>
       <Card
         size="small"
-        style={{ borderRadius: 8, border: `1px solid ${borderColor}`, background: '#fff' }}
+        style={{ borderRadius: 8, border: `1px solid ${borderColor}`, background: 'var(--dls-surface)' }}
       >
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
           <div {...listeners} {...attributes} style={{ cursor: 'grab', color: '#b7eb8f', paddingTop: 2, flexShrink: 0 }}>
@@ -154,7 +154,7 @@ const DraggablePoolSkill: React.FC<DraggablePoolSkillProps> = ({ skill, onDirect
         size="small"
         style={{
           borderRadius: 8, border: `1px solid ${categoryColor[cat] || '#b7eb8f'}44`,
-          background: '#f6ffed', cursor: 'grab', marginBottom: 6,
+          background: 'var(--dls-success-bg)', cursor: 'grab', marginBottom: 6,
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -306,7 +306,7 @@ const SkillEditModal: React.FC<SkillEditModalProps> = ({
         </Form.Item>
 
         <Form.Item label="输入参数">
-          <div style={{ border: '1px solid #d9f7be', borderRadius: 8, padding: 12, background: '#f6ffed' }}>
+          <div style={{ border: '1px solid var(--dls-success-border)', borderRadius: 8, padding: 12, background: 'var(--dls-success-bg)' }}>
             {inputParams.map((param, idx) => (
               <div
                 key={idx}
@@ -587,14 +587,14 @@ const SoloAgentWorkshop: React.FC = () => {
                       const cat = def?.category || '';
                       const status = getSkillStatus(agent.id, s);
                       return (
-                        <div key={s} style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '3px 8px', borderRadius: 6, background: '#fff', border: `1px solid ${agent.borderColor}`, fontSize: 11 }}>
+                        <div key={s} style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '3px 8px', borderRadius: 6, background: 'var(--dls-surface)', border: `1px solid ${agent.borderColor}`, fontSize: 11 }}>
                           {status && <span style={{ color: skillStatusConfig[status]?.color, fontSize: 10 }}>{skillStatusConfig[status]?.icon}</span>}
                           <span style={{ fontWeight: 500 }}>{s}</span>
                           {cat && <Tag style={{ fontSize: 10, lineHeight: '16px', padding: '0 4px', margin: 0 }} color={categoryColor[cat]}>{cat}</Tag>}
                         </div>
                       );
                     })}
-                    {skills.length > 3 && <div style={{ padding: '3px 8px', borderRadius: 6, background: '#f5f5f5', fontSize: 11, color: '#8c8c8c' }}>+{skills.length - 3}</div>}
+                    {skills.length > 3 && <div style={{ padding: '3px 8px', borderRadius: 6, background: 'var(--dls-bg-subtle)', fontSize: 11, color: 'var(--dls-text-muted)' }}>+{skills.length - 3}</div>}
                   </div>
                   {count > 0 && (
                     <div style={{ marginTop: 8, fontSize: 12, color: agent.color }}><ThunderboltOutlined /> 已绑定 {count} 个任务</div>
@@ -607,7 +607,7 @@ const SoloAgentWorkshop: React.FC = () => {
 
         <Col xs={24} sm={12} lg={6}>
           <Card hoverable onClick={openCreateModal}
-            style={{ borderRadius: 12, border: '2px dashed #b7eb8f', background: '#f6ffed', width: '100%', height: '100%', minHeight: 180, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+            style={{ borderRadius: 12, border: '2px dashed var(--dls-success-border)', background: 'var(--dls-success-bg)', width: '100%', height: '100%', minHeight: 180, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
             styles={{ body: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', width: '100%' } }}>
             <PlusOutlined style={{ fontSize: 32, color: '#52c41a', marginBottom: 8 }} />
             <Text style={{ fontSize: 14, color: '#52c41a' }}>创建新的 AI搭档</Text>
@@ -769,7 +769,7 @@ const SoloAgentWorkshop: React.FC = () => {
                       ) : (
                         <Collapse
                           accordion size="small"
-                          style={{ background: '#f6ffed', borderRadius: 8 }}
+                          style={{ background: 'var(--dls-success-bg)', borderRadius: 8 }}
                           items={assignments
                             .filter((a) => a.agentId === selectedAgent.id)
                             .map((a) => {

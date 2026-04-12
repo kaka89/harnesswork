@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Layout, Menu, Segmented, Avatar, Badge, Tag, Tooltip, Drawer, Select, Button, Divider } from 'antd';
+import { Layout, Menu, Avatar, Badge, Tag, Tooltip, Drawer, Select, Button, Divider } from 'antd';
 import {
   ThunderboltOutlined,
   BulbOutlined,
@@ -9,8 +9,6 @@ import {
   BookOutlined,
   UserOutlined,
   RobotOutlined,
-  FireOutlined,
-  CoffeeOutlined,
   SendOutlined,
   PlayCircleOutlined,
   TeamOutlined,
@@ -68,7 +66,7 @@ const SoloLayout: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { appMode, products, currentProject, setProject, setAppMode, setAiPanelOpen } = useAppStore();
-  const [openKeys, setOpenKeys] = useState<string[]>([]);
+  const [openKeys, setOpenKeys] = useState<string[]>(['/solo/autopilot-group']);
   const [energyMode, setEnergyMode] = useState<EnergyMode>('deep');
   const [aiDrawerOpen, setAiDrawerOpen] = useState(false);
   const [aiInput, setAiInput] = useState('');
@@ -152,8 +150,8 @@ const SoloLayout: React.FC = () => {
         theme="light"
         width={200}
         style={{
-          borderRight: '1px solid #f0f0f0',
-          boxShadow: '2px 0 8px rgba(0,0,0,0.04)',
+          borderRight: '1px solid var(--dls-border)',
+          background: 'var(--dls-surface)',
           display: 'flex',
           flexDirection: 'column',
         }}
@@ -165,7 +163,7 @@ const SoloLayout: React.FC = () => {
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            borderBottom: '1px solid #f0f0f0',
+            borderBottom: '1px solid var(--dls-border)',
             cursor: 'pointer',
             flexDirection: 'column',
             padding: '6px 0',
@@ -177,18 +175,18 @@ const SoloLayout: React.FC = () => {
             <RobotOutlined />
             星静
           </div>
-          <div style={{ fontSize: 10, color: '#8c8c8c', lineHeight: 1 }}>复命曰常，知常曰明</div>
+          <div style={{ fontSize: 10, color: 'var(--dls-text-muted)', lineHeight: 1 }}>复命曰常，知常曰明</div>
         </div>
 
         {/* Mode Switcher */}
-        <div style={{ padding: '12px 12px', borderBottom: '1px solid #f0f0f0' }}>
+        <div style={{ padding: '12px 12px', borderBottom: '1px solid var(--dls-border)' }}>
           <div
             style={{
               display: 'flex',
-              background: '#f5f5f5',
+              background: 'var(--dls-hover)',
               borderRadius: 12,
               padding: 4,
-              border: '1px solid #f0f0f0',
+              border: '1px solid var(--dls-border)',
             }}
           >
             {[
@@ -203,13 +201,13 @@ const SoloLayout: React.FC = () => {
                   padding: '6px 12px',
                   borderRadius: 8,
                   border: 'none',
-                  background: appMode === option.value ? 'white' : 'transparent',
-                  color: appMode === option.value ? 'rgba(0,0,0,0.88)' : 'rgba(0,0,0,0.45)',
+                  background: appMode === option.value ? 'var(--dls-selected-bg)' : 'transparent',
+                  color: appMode === option.value ? 'var(--dls-selected-text)' : 'var(--dls-unselected-text)',
                   cursor: 'pointer',
                   fontWeight: appMode === option.value ? 600 : 500,
                   fontSize: 12,
                   transition: 'all 0.2s',
-                  boxShadow: appMode === option.value ? '0 1px 2px rgba(0,0,0,0.08)' : 'none',
+                  boxShadow: appMode === option.value ? 'var(--dls-selected-shadow)' : 'none',
                 }}
               >
                 {option.label}
@@ -242,7 +240,7 @@ const SoloLayout: React.FC = () => {
                   position: 'absolute', right: 16, top: '50%',
                   transform: `translateY(-50%) rotate(${isOpen ? 90 : 0}deg)`,
                   transition: 'transform 0.2s',
-                  fontSize: 14, color: '#8c8c8c',
+                  fontSize: 14, color: 'var(--dls-text-muted)',
                   lineHeight: 1, cursor: 'pointer', userSelect: 'none',
                 }}
               >
@@ -257,26 +255,59 @@ const SoloLayout: React.FC = () => {
         <div
           style={{
             padding: '12px',
-            borderTop: '1px solid #f0f0f0',
+            borderTop: '1px solid var(--dls-border)',
             position: 'absolute',
             bottom: 0,
             width: '100%',
-            background: '#fff',
+            background: 'var(--dls-surface)',
           }}
         >
-          <div style={{ fontSize: 11, color: '#8c8c8c', marginBottom: 6 }}>今日工作模式</div>
-          <Segmented
-            value={energyMode}
-            options={[
-              { label: <span><FireOutlined /> 专注</span>, value: 'deep' },
-              { label: <span><CoffeeOutlined /> 碎片</span>, value: 'light' },
-            ]}
-            onChange={(v) => setEnergyMode(v as EnergyMode)}
-            block
-            size="small"
-            style={{ width: '100%' }}
-          />
-          <div style={{ fontSize: 10, color: '#8c8c8c', marginTop: 4, textAlign: 'center' }}>
+          <div style={{ fontSize: 11, color: 'var(--dls-text-secondary)', marginBottom: 6 }}>今日工作模式</div>
+          <div
+            style={{
+              display: 'flex',
+              gap: 4,
+              padding: 4,
+              background: 'var(--dls-hover)',
+              borderRadius: 8,
+            }}
+          >
+            <button
+              onClick={() => setEnergyMode('deep')}
+              style={{
+                flex: 1,
+                padding: '4px 8px',
+                fontSize: 12,
+                borderRadius: 6,
+                border: 'none',
+                background: energyMode === 'deep' ? 'var(--dls-selected-bg)' : 'transparent',
+                color: energyMode === 'deep' ? 'var(--dls-selected-text)' : 'var(--dls-unselected-text)',
+                cursor: 'pointer',
+                transition: 'all 0.2s',
+                boxShadow: energyMode === 'deep' ? 'var(--dls-selected-shadow)' : 'none',
+              }}
+            >
+              🔥 专注
+            </button>
+            <button
+              onClick={() => setEnergyMode('light')}
+              style={{
+                flex: 1,
+                padding: '4px 8px',
+                fontSize: 12,
+                borderRadius: 6,
+                border: 'none',
+                background: energyMode === 'light' ? 'var(--dls-selected-bg)' : 'transparent',
+                color: energyMode === 'light' ? 'var(--dls-selected-text)' : 'var(--dls-unselected-text)',
+                cursor: 'pointer',
+                transition: 'all 0.2s',
+                boxShadow: energyMode === 'light' ? 'var(--dls-selected-shadow)' : 'none',
+              }}
+            >
+              ☕ 碎片
+            </button>
+          </div>
+          <div style={{ fontSize: 10, color: 'var(--dls-text-secondary)', marginTop: 4, textAlign: 'center' }}>
             {energyMode === 'deep' ? '深度工作时间 · 减少打扰' : '碎片时间 · 处理轻量任务'}
           </div>
         </div>
@@ -285,19 +316,19 @@ const SoloLayout: React.FC = () => {
       <Layout>
         <Header
           style={{
-            background: '#fff',
+            background: 'var(--dls-surface)',
             padding: '0 24px',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            borderBottom: '1px solid #f0f0f0',
+            borderBottom: '1px solid var(--dls-border)',
             height: 56,
           }}
         >
           <div
             style={{
               fontSize: 13,
-              color: '#8c8c8c',
+              color: 'var(--dls-text-muted)',
               fontStyle: 'italic',
               letterSpacing: 2,
               userSelect: 'none',
@@ -349,16 +380,34 @@ const SoloLayout: React.FC = () => {
           </div>
         </Header>
 
-        <Content style={{ padding: 24, overflow: 'auto', paddingBottom: 80 }}>
+        <Content style={{ padding: 24, overflow: 'auto', paddingBottom: 80, background: 'var(--dls-app-bg)' }}>
           <Outlet />
         </Content>
       </Layout>
 
       {/* AI Float Button */}
       <div
-        className="ai-float-btn"
         onClick={() => setAiDrawerOpen(true)}
-        style={{ background: '#52c41a' }}
+        style={{
+          position: 'fixed',
+          bottom: 24,
+          right: 24,
+          zIndex: 1000,
+          width: 56,
+          height: 56,
+          borderRadius: '50%',
+          background: '#52c41a',
+          color: 'white',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: 24,
+          cursor: 'pointer',
+          boxShadow: '0 4px 16px rgba(82, 196, 26, 0.4)',
+          transition: 'transform 0.2s',
+        }}
+        onMouseEnter={(e) => { e.currentTarget.style.transform = 'scale(1.1)'; }}
+        onMouseLeave={(e) => { e.currentTarget.style.transform = 'scale(1)'; }}
       >
         <RobotOutlined />
       </div>
@@ -393,8 +442,8 @@ const SoloLayout: React.FC = () => {
                   maxWidth: '85%',
                   padding: '10px 14px',
                   borderRadius: msg.role === 'user' ? '16px 16px 4px 16px' : '16px 16px 16px 4px',
-                  background: msg.role === 'user' ? '#52c41a' : '#f5f5f5',
-                  color: msg.role === 'user' ? '#fff' : '#1f1f1f',
+                  background: msg.role === 'user' ? '#52c41a' : 'var(--dls-chat-assist-bg)',
+                  color: msg.role === 'user' ? '#fff' : 'var(--dls-chat-assist-text)',
                   fontSize: 13,
                   lineHeight: 1.6,
                   whiteSpace: 'pre-wrap',
@@ -407,7 +456,7 @@ const SoloLayout: React.FC = () => {
         </div>
 
         {/* Quick Questions */}
-        <div style={{ padding: '8px 16px', borderTop: '1px solid #f0f0f0', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        <div style={{ padding: '8px 16px', borderTop: '1px solid var(--dls-border-light)', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           {['今天先做什么？', '假设验证进展', '用户留存分析'].map((q) => (
             <Tag
               key={q}
@@ -428,7 +477,7 @@ const SoloLayout: React.FC = () => {
             placeholder={`问我任何关于 ${displayProductName} 的问题...`}
             style={{
               flex: 1,
-              border: '1px solid #d9d9d9',
+              border: '1px solid var(--dls-border)',
               borderRadius: 8,
               padding: '8px 12px',
               fontSize: 13,

@@ -63,7 +63,7 @@ const PRSubmit: React.FC = () => {
         </div>
 
         <Title level={5}>PR Checklist（自检）</Title>
-        <div style={{ background: '#fafafa', padding: 16, borderRadius: 8 }}>
+        <div style={{ background: 'var(--dls-bg-subtle)', padding: 16, borderRadius: 8 }}>
           {checklist.map((item) => (
             <div key={item.key} style={{ padding: '6px 0' }}>
               <Checkbox

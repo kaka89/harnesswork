@@ -187,7 +187,7 @@ const DevWorkshop: React.FC = () => {
         </div>
         <Text style={{ fontSize: 13 }}>已读取：TASK-001-02 + CONTRACT-001 + SDD-001 §3</Text>
         {agentMessages.map((msg, idx) => (
-          <div key={idx} style={{ marginTop: 8, padding: '6px 10px', background: msg.role === 'user' ? '#e6f7ff' : '#fff', borderRadius: 6, fontSize: 13, whiteSpace: 'pre-wrap' }}>
+          <div key={idx} style={{ marginTop: 8, padding: '6px 10px', background: msg.role === 'user' ? 'var(--dls-info-bg)' : 'var(--dls-surface)', borderRadius: 6, fontSize: 13, whiteSpace: 'pre-wrap' }}>
             <Text strong style={{ fontSize: 12 }}>{msg.role === 'user' ? '你' : 'dev-agent'}：</Text><br />
             {msg.content}
           </div>

@@ -111,7 +111,7 @@ const SoloKnowledge: React.FC = () => {
       <div
         style={{
           padding: '8px 14px',
-          background: '#fffbe6',
+          background: 'var(--dls-warning-bg)',
           border: '1px solid #ffe58f',
           borderRadius: 8,
           marginBottom: 16,

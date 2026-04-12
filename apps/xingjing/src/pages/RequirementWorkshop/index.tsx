@@ -191,7 +191,7 @@ const RequirementWorkshop: React.FC = () => {
             style={{
               marginBottom: 8,
               padding: '6px 10px',
-              background: msg.role === 'user' ? '#e6f7ff' : '#fff',
+              background: msg.role === 'user' ? 'var(--dls-info-bg)' : 'var(--dls-surface)',
               borderRadius: 6,
               fontSize: 13,
               whiteSpace: 'pre-wrap',

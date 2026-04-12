@@ -38,8 +38,8 @@ const SoloBrainCard: React.FC<{
   return (
     <Card
       style={{
-        borderColor: isActive ? agent.borderColor : isDone ? '#b7eb8f' : '#f0f0f0',
-        background: isActive ? agent.bgColor : isDone ? '#f6ffed' : '#fafafa',
+        borderColor: isActive ? agent.borderColor : isDone ? 'var(--dls-success-border)' : 'var(--dls-border-light)',
+        background: isActive ? agent.bgColor : isDone ? 'var(--dls-success-bg)' : 'var(--dls-bg-subtle)',
         transition: 'all 0.4s ease',
         boxShadow: isActive ? `0 0 12px ${agent.borderColor}88` : 'none',
         textAlign: 'center',
@@ -197,7 +197,7 @@ const SoloAutopilot: React.FC = () => {
         <Card
           style={{
             marginBottom: 20,
-            background: 'linear-gradient(135deg, #f6ffed 0%, #f0fff0 100%)',
+            background: 'linear-gradient(135deg, var(--dls-success-bg) 0%, var(--dls-success-bg) 100%)',
             border: '1px dashed #95de64',
             textAlign: 'center',
           }}
@@ -369,8 +369,8 @@ const SoloAutopilot: React.FC = () => {
                 style={{
                   marginTop: 12,
                   padding: '10px 14px',
-                  background: '#f6ffed',
-                  border: '1px solid #b7eb8f',
+                  background: 'var(--dls-success-bg)',
+                  border: '1px solid var(--dls-success-border)',
                   borderRadius: 8,
                 }}
               >

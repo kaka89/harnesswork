@@ -13,6 +13,7 @@ import {
 import { useLocation, useNavigate } from "@solidjs/router";
 import ModeSelectPage from "./pages/mode-select";
 import XingjingPage from "./pages/xingjing";
+import XingjingNativePage from "./pages/xingjing-native";
 
 import type { Session } from "@opencode-ai/sdk/v2/client";
 
@@ -2263,7 +2264,7 @@ export default function App() {
       return;
     }
 
-    // F003: /mode-select、/xingjing 是合法路由，不拦截
+    // F003: /mode-select、/xingjing、/xingjing-solid 是合法路由，不拦截
     if (path === "/mode-select" || path.startsWith("/xingjing")) {
       return;
     }
@@ -2348,14 +2349,17 @@ export default function App() {
   });
 
   return (
-    <Show
-      when={location.pathname !== "/mode-select" && !location.pathname.startsWith("/xingjing")}
-      fallback={
-        location.pathname.startsWith("/xingjing")
-          ? <XingjingPage />
-          : <ModeSelectPage />
-      }
-    >
+    <Switch>
+      <Match when={location.pathname === "/mode-select"}>
+        <ModeSelectPage />
+      </Match>
+      <Match when={location.pathname.startsWith("/xingjing-solid")}>
+        <XingjingNativePage />
+      </Match>
+      <Match when={location.pathname.startsWith("/xingjing")}>
+        <XingjingPage />
+      </Match>
+      <Match when={true}>
     <OpenworkServerProvider store={openworkServerStore}>
       <ModelControlsProvider store={modelControlsStore}>
         <SessionActionsProvider store={sessionActionsStore}>
@@ -2655,6 +2659,7 @@ export default function App() {
         </SessionActionsProvider>
       </ModelControlsProvider>
     </OpenworkServerProvider>
-    </Show>
+      </Match>
+    </Switch>
   );
 }

@@ -26,12 +26,18 @@ export default function ModeSelectPage() {
     navigate("/xingjing");
   };
 
+  const handleSelectXingjingSolid = () => {
+    savePreference("xingjing-solid");
+    // 内部路由导航，在 openwork 窗口内嵌入星静 SolidJS 版，而非打开独立页面
+    navigate("/xingjing-solid");
+  };
+
   return (
     <div
       class="flex items-center justify-center min-h-screen bg-[var(--dls-app-bg)] text-gray-12"
       data-testid="mode-select-page"
     >
-      <div class="flex flex-col items-center gap-8 max-w-2xl w-full px-8">
+      <div class="flex flex-col items-center gap-8 max-w-4xl w-full px-8">
         {/* 标题区 */}
         <div class="text-center">
           <h1 class="text-3xl font-bold mb-2">选择工作模式</h1>
@@ -60,7 +66,7 @@ export default function ModeSelectPage() {
             </div>
           </button>
 
-          {/* 星静平台卡片 */}
+          {/* 星静平台卡片 (React iframe版) */}
           <button
             class={`flex-1 flex flex-col gap-3 p-6 rounded-xl border cursor-pointer bg-dls-surface transition-all text-left ${
               preference() === "xingjing"
@@ -72,11 +78,31 @@ export default function ModeSelectPage() {
           >
             <div class="text-2xl">🌙</div>
             <div>
-              <div class="font-semibold text-purple-11 text-lg">星静</div>
+              <div class="font-semibold text-purple-11 text-lg">星静 React 版</div>
               <div class="text-gray-10 text-sm mt-1">All-in-One 研发平台</div>
             </div>
             <div class="text-gray-9 text-xs mt-auto">
               产品规划 / 需求 / 研发 / 质量 / 发布一体化
+            </div>
+          </button>
+
+          {/* 星静 SolidJS 原生版卡片 */}
+          <button
+            class={`flex-1 flex flex-col gap-3 p-6 rounded-xl border cursor-pointer bg-dls-surface transition-all text-left ${
+              preference() === "xingjing-solid"
+                ? "border-green-8 ring-2 ring-green-8/60 hover:border-green-9 hover:bg-green-3"
+                : "border-green-7 hover:border-green-8 hover:bg-green-3"
+            }`}
+            onClick={handleSelectXingjingSolid}
+            data-testid="mode-xingjing-solid"
+          >
+            <div class="text-2xl">✨</div>
+            <div>
+              <div class="font-semibold text-green-11 text-lg">星静（原生集成版）</div>
+              <div class="text-gray-10 text-sm mt-1">All-in-One 研发平台 · 独立/团队双模式</div>
+            </div>
+            <div class="text-gray-9 text-xs mt-auto">
+              原生 SolidJS 深度融合 · 无 iframe · 高性能
             </div>
           </button>
         </div>

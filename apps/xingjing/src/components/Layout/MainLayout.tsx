@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Layout, Menu, Select, Avatar, Dropdown, Segmented, Button, Divider } from 'antd';
+import { Layout, Menu, Select, Avatar, Dropdown, Button, Divider } from 'antd';
 import {
   FileTextOutlined,
   DeploymentUnitOutlined,
@@ -184,13 +184,13 @@ const MainLayout: React.FC = () => {
                   padding: '6px 12px',
                   borderRadius: 8,
                   border: 'none',
-                  background: appMode === option.value ? 'white' : 'transparent',
-                  color: appMode === option.value ? 'var(--dls-text-primary)' : 'var(--dls-text-secondary)',
+                  background: appMode === option.value ? 'var(--dls-selected-bg)' : 'transparent',
+                  color: appMode === option.value ? 'var(--dls-selected-text)' : 'var(--dls-unselected-text)',
                   cursor: 'pointer',
                   fontWeight: appMode === option.value ? 600 : 500,
                   fontSize: 12,
                   transition: 'all 0.2s',
-                  boxShadow: appMode === option.value ? '0 1px 2px rgba(0,0,0,0.08)' : 'none',
+                  boxShadow: appMode === option.value ? 'var(--dls-selected-shadow)' : 'none',
                 }}
               >
                 {option.label}

@@ -59,7 +59,7 @@ const TaskCard: React.FC<{ task: SoloTask; active?: boolean }> = ({ task, active
               style={{
                 marginTop: 8,
                 padding: '6px 10px',
-                background: '#fffbe6',
+                background: 'var(--dls-warning-bg)',
                 borderRadius: 6,
                 fontSize: 12,
                 color: '#7c5b00',
@@ -147,7 +147,7 @@ const SoloBuild: React.FC = () => {
           <div
             style={{
               padding: '8px 14px',
-              background: '#fffbe6',
+              background: 'var(--dls-warning-bg)',
               border: '1px solid #ffe58f',
               borderRadius: 8,
               marginBottom: 16,
@@ -198,7 +198,7 @@ const SoloBuild: React.FC = () => {
           <div
             style={{
               padding: '8px 14px',
-              background: '#fffbe6',
+              background: 'var(--dls-warning-bg)',
               border: '1px solid #ffe58f',
               borderRadius: 8,
               marginBottom: 16,
@@ -220,7 +220,7 @@ const SoloBuild: React.FC = () => {
                 </div>
                 <Row gutter={12}>
                   <Col span={8}>
-                    <div style={{ background: '#fff9e6', borderRadius: 6, padding: '8px 10px' }}>
+                    <div style={{ background: 'var(--dls-warning-bg-alt)', borderRadius: 6, padding: '8px 10px' }}>
                       <Text type="secondary" style={{ fontSize: 11 }}>❓ 问题</Text>
                       <div style={{ fontSize: 13, marginTop: 4 }}>{adr.question}</div>
                     </div>
@@ -232,7 +232,7 @@ const SoloBuild: React.FC = () => {
                     </div>
                   </Col>
                   <Col span={8}>
-                    <div style={{ background: '#f6ffed', borderRadius: 6, padding: '8px 10px' }}>
+                    <div style={{ background: 'var(--dls-success-bg)', borderRadius: 6, padding: '8px 10px' }}>
                       <Text type="secondary" style={{ fontSize: 11 }}>💡 原因</Text>
                       <div style={{ fontSize: 13, marginTop: 4 }}>{adr.reason}</div>
                     </div>

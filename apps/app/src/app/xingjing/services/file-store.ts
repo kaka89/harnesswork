@@ -498,11 +498,14 @@ export async function saveBacklog(workDir: string, items: BacklogRecord[]): Prom
 export interface ProjectSettings {
   llm?: {
     modelName: string;
+    modelID?: string;       // OpenCode model ID
+    providerID?: string;    // OpenCode provider ID
     apiUrl: string;
     apiKey: string;
     temperature: number;
     maxTokens: number;
   };
+  llmProviderKeys?: Record<string, string>; // per-provider API Keys
   git?: {
     repoUrl: string;
     defaultBranch: string;

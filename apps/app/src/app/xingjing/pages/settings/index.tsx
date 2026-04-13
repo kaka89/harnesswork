@@ -90,8 +90,15 @@ const LLMTab: Component = () => {
   const [testResult, setTestResult] = createSignal('');
   // OpenWork 同步状态：null=未检查, true=已同步, false=本地保存
   const [owSyncStatus, setOwSyncStatus] = createSignal<null | boolean>(null);
+  // Bug 2：per-provider API Keys 缓存（key=providerID, value=apiKey）
+  const [providerKeys, setProviderKeys] = createSignal<Record<string, string>>({});
 
-  // onMount：优先从 OpenWork 读取当前模型配置
+  // Bug 1 fix: 响应 store 的异步更新（loadFromFiles 完成时同步到本地 config）
+  createEffect(() => {
+    setConfig({ ...state.llmConfig });
+  });
+
+  // onMount：优先从 OpenWork 读取当前模型配置，并加载 per-provider keys
   onMount(async () => {
     try {
       const owConfig = await actions.readOpencodeConfig();
@@ -117,22 +124,46 @@ const LLMTab: Component = () => {
     } catch {
       // 降级：保持本地 settings.yaml 的配置（已在 state.llmConfig）
     }
+    // 加载 per-provider API Keys
+    try {
+      const workDir = productStore.activeProduct()?.workDir;
+      if (workDir) {
+        const settings = await loadProjectSettings(workDir);
+        const keys: Record<string, string> = { ...(settings.llmProviderKeys ?? {}) };
+        // 以 store 中当前 provider 的 key 为准（可能比文件更新）
+        const cur = state.llmConfig;
+        if (cur.providerID && cur.apiKey) {
+          keys[cur.providerID] = cur.apiKey;
+        }
+        setProviderKeys(keys);
+      }
+    } catch {
+      // 静默降级
+    }
   });
 
   // 当前选中模型的完整配置项
   const currentModelOpt = (): ModelOption | undefined =>
     modelOptions.find(o => o.modelID === config().modelID || o.value === config().modelName);
 
-  // 选择模型时自动带出 API 地址、providerID、modelID
+  // 选择模型时自动带出 API 地址、providerID、modelID，并按 provider 切换 API Key
   const handleModelChange = (value: string) => {
     const opt = modelOptions.find(o => o.value === value);
     if (!opt) return;
+    // Bug 2 fix: 保存当前 provider 的 apiKey
+    const cur = config();
+    if (cur.providerID && cur.apiKey) {
+      setProviderKeys(prev => ({ ...prev, [cur.providerID!]: cur.apiKey }));
+    }
+    // 恢复目标 provider 已保存的 apiKey
+    const restoredKey = providerKeys()[opt.providerID] ?? '';
     setConfig(prev => ({
       ...prev,
       modelName: opt.label,
       modelID: opt.modelID,
       providerID: opt.providerID,
       apiUrl: opt.defaultApiUrl || prev.apiUrl,
+      apiKey: restoredKey,
     }));
   };
 
@@ -433,11 +464,17 @@ const LLMTab: Component = () => {
       const owWritten = await actions.writeOpencodeConfig(owConfigContent);
       setOwSyncStatus(owWritten);
 
-      // 4. 持久化到 .xingjing/settings.yaml（兜底）
+      // 4. 持久化到 .xingjing/settings.yaml（包含 per-provider keys 居底）
       const workDir = productStore.activeProduct()?.workDir;
       let persisted = false;
       if (workDir) {
-        persisted = await saveProjectSettings(workDir, { llm: cfg });
+        // 同步当前 provider 最新 key 到 providerKeys
+        const allKeys = {
+          ...providerKeys(),
+          ...(cfg.providerID ? { [cfg.providerID]: cfg.apiKey } : {}),
+        };
+        setProviderKeys(allKeys);
+        persisted = await saveProjectSettings(workDir, { llm: cfg, llmProviderKeys: allKeys });
       }
 
       if (owWritten) {

@@ -147,6 +147,16 @@ const EnterpriseAutopilot = () => {
   const [dispatchPlan, setDispatchPlan] = createSignal<DispatchItem[]>([]);
   const [agentStreamTexts, setAgentStreamTexts] = createSignal<Record<string, string>>({});
   const [agentExecStatuses, setAgentExecStatuses] = createSignal<Record<string, AgentExecutionStatus>>({});
+  const [agentError, setAgentError] = createSignal<string | null>(null);
+
+  // 获取当前配置的模型（传给 callAgent）
+  const getConfiguredModel = () => {
+    const llm = store.state.llmConfig;
+    if (llm.providerID && llm.modelID && llm.providerID !== 'custom') {
+      return { providerID: llm.providerID, modelID: llm.modelID };
+    }
+    return undefined;
+  };
 
   let timelineRef: HTMLDivElement | undefined;
   const timersRef: ReturnType<typeof setTimeout>[] = [];
@@ -219,9 +229,11 @@ const EnterpriseAutopilot = () => {
   const handleStart = async () => {
     if (!goal().trim()) return;
     reset();
+    setAgentError(null);
     setRunState('running');
 
     const workDir = store.productStore.activeProduct()?.workDir;
+    const model = getConfiguredModel();
     const { targetAgent, cleanText } = parseMention(goal(), TEAM_AGENTS);
 
     if (targetAgent) {
@@ -229,6 +241,7 @@ const EnterpriseAutopilot = () => {
       setAgentStatuses((prev) => ({ ...prev, [targetAgent.id]: 'thinking' }));
       await runDirectAgent(targetAgent, cleanText, {
         workDir,
+        model,
         onStatus: (status) => {
           const legacyMap: Record<AgentExecutionStatus, AgentStatus> = {
             idle: 'idle', pending: 'waiting', thinking: 'thinking',
@@ -246,8 +259,10 @@ const EnterpriseAutopilot = () => {
           setRunState('done');
         },
         onError: (err) => {
-          console.warn('[autopilot] direct agent failed, falling back to mock:', err);
-          startMockSimulation();
+          console.warn('[autopilot] @mention direct agent failed:', err);
+          setAgentStatuses((prev) => ({ ...prev, [targetAgent.id]: 'idle' }));
+          setAgentError(`调用 ${targetAgent.name} 失败：${err}`);
+          setRunState('idle');
         },
       });
       return;
@@ -257,6 +272,7 @@ const EnterpriseAutopilot = () => {
     await runOrchestratedAutopilot(cleanText, {
       availableAgents: TEAM_AGENTS,
       workDir,
+      model,
       onOrchestrating: (text) => {
         setOrchestratorText(text);
         setProgress(10);
@@ -313,8 +329,9 @@ const EnterpriseAutopilot = () => {
         setRunState('done');
       },
       onError: (err) => {
-        console.warn('[autopilot] orchestration failed, falling back to mock:', err);
-        startMockSimulation();
+        console.warn('[autopilot] orchestration failed:', err);
+        setAgentError(`编排执行失败：${err}`);
+        setRunState('idle');
       },
     });
   };
@@ -502,6 +519,34 @@ const EnterpriseAutopilot = () => {
             </button>
           </div>
         </div>
+        {/* Agent 调用错误提示 */}
+        <Show when={agentError() !== null}>
+          <div style={{
+            'margin-top': '10px',
+            padding: '10px 14px',
+            'border-radius': '6px',
+            'font-size': '13px',
+            background: '#fff2f0',
+            border: '1px solid #ffccc7',
+            color: '#cf1322',
+            display: 'flex',
+            'align-items': 'flex-start',
+            gap: '8px',
+          }}>
+            <span>⚠️</span>
+            <div style={{ flex: '1' }}>
+              <div style={{ 'font-weight': '600', 'margin-bottom': '4px' }}>AI 调用失败</div>
+              <div>{agentError()}</div>
+              <div style={{ 'margin-top': '6px', 'font-size': '12px', color: '#8c1a11' }}>
+                请前往「设置 → 大模型配置」检查 API Key 是否已保存。
+              </div>
+            </div>
+            <button
+              onClick={() => setAgentError(null)}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#cf1322', padding: '0' }}
+            >✕</button>
+          </div>
+        </Show>
         {runState() !== 'idle' && (
           <div style={{ 'margin-top': '12px' }}>
             <div style={{ display: 'flex', 'justify-content': 'space-between', 'margin-bottom': '4px' }}>

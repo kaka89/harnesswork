@@ -1,9 +1,12 @@
-import { createSignal, Show, For, onCleanup } from 'solid-js';
-import { FileText, PlayCircle, CheckCircle, Clock, Zap, Loader2 } from 'lucide-solid';
+import { createSignal, Show, For, onCleanup, onMount } from 'solid-js';
+import { useNavigate } from '@solidjs/router';
+import { FileText, PlayCircle, CheckCircle, Clock, Zap, Loader2, Settings } from 'lucide-solid';
 import CreateProductModal from '../../../components/product/new-product-modal';
 import { useAppStore } from '../../../stores/app-store';
 import { themeColors, chartColors } from '../../../utils/colors';
 import { soloWorkflowSteps, soloSampleGoals } from '../../../mock/autopilot';
+import { modelOptions } from '../../../mock/settings';
+import { loadProjectSettings } from '../../../services/file-store';
 import {
   SOLO_AGENTS,
   runOrchestratedAutopilot,
@@ -140,6 +143,7 @@ type RunState = 'idle' | 'running' | 'done';
 
 const SoloAutopilot = () => {
   const { state, productStore } = useAppStore();
+  const navigate = useNavigate();
   const soloProducts = () => state.products.filter((p: { mode: string }) => p.mode === 'solo');
 
   const [createModalOpen, setCreateModalOpen] = createSignal(false);
@@ -160,6 +164,51 @@ const SoloAutopilot = () => {
   const [agentStreamTexts, setAgentStreamTexts] = createSignal<Record<string, string>>({});
   const [agentExecStatuses, setAgentExecStatuses] = createSignal<Record<string, AgentExecutionStatus>>({});
   const [agentError, setAgentError] = createSignal<string | null>(null);
+
+  // ─── 模型选择器状态 ───────────────────────────────────────────────────────────
+  // per-provider 已配置的 API Keys（从 settings.yaml 读取）
+  const [providerKeys, setProviderKeys] = createSignal<Record<string, string>>({});
+  // 当前会话选用的模型 ID（默认取 state.llmConfig.modelID）
+  const [sessionModelId, setSessionModelId] = createSignal<string>(
+    state.llmConfig.modelID ?? 'deepseek-chat'
+  );
+
+  // 已填写 API Key 的模型列表（排除 custom）
+  const configuredModels = () =>
+    modelOptions.filter(
+      (opt) =>
+        opt.providerID !== 'custom' &&
+        (providerKeys()[opt.providerID]?.trim().length ?? 0) > 0,
+    );
+
+  // 反查当前会话选用模型的完整配置，传给 callAgent
+  const getSessionModel = () => {
+    const opt = modelOptions.find((o) => o.modelID === sessionModelId());
+    if (!opt || opt.providerID === 'custom') return undefined;
+    if (!providerKeys()[opt.providerID]) return undefined;
+    return { providerID: opt.providerID, modelID: opt.modelID };
+  };
+
+  // onMount：加载持久化的 providerKeys，合并 store 内存最新值
+  onMount(async () => {
+    const workDir = productStore.activeProduct()?.workDir;
+    if (workDir) {
+      try {
+        const settings = await loadProjectSettings(workDir);
+        const keys: Record<string, string> = { ...(settings.llmProviderKeys ?? {}) };
+        const cur = state.llmConfig;
+        if (cur.providerID && cur.apiKey) keys[cur.providerID] = cur.apiKey;
+        setProviderKeys(keys);
+        // 若当前 sessionModelId 不在已配置列表，切换到第一个已配置模型
+        const configured = modelOptions.filter(
+          (opt) => opt.providerID !== 'custom' && (keys[opt.providerID]?.trim().length ?? 0) > 0,
+        );
+        if (configured.length > 0 && !configured.find((o) => o.modelID === sessionModelId())) {
+          setSessionModelId(configured[0].modelID);
+        }
+      } catch { /* 静默降级 */ }
+    }
+  });
 
   let timelineRef: HTMLDivElement | undefined;
   const timersRef: ReturnType<typeof setTimeout>[] = [];
@@ -279,15 +328,6 @@ const SoloAutopilot = () => {
     });
   };
 
-  // 获取当前配置的模型（传给 callAgent，确保使用用户配置的 provider）
-  const getConfiguredModel = () => {
-    const llm = state.llmConfig;
-    if (llm.providerID && llm.modelID && llm.providerID !== 'custom') {
-      return { providerID: llm.providerID, modelID: llm.modelID };
-    }
-    return undefined;
-  };
-
   // ─── handleStart: 两阶段 Orchestrator 调度 + mock 降级 ───
   const handleStart = async () => {
     if (!goal().trim()) return;
@@ -296,7 +336,7 @@ const SoloAutopilot = () => {
     setRunState('running');
 
     const workDir = productStore.activeProduct()?.workDir;
-    const model = getConfiguredModel();
+    const model = getSessionModel();  // 使用会话内用户选择的模型
     const { targetAgent, cleanText } = parseMention(goal(), SOLO_AGENTS);
 
     if (targetAgent) {
@@ -482,7 +522,55 @@ const SoloAutopilot = () => {
             agents={SOLO_AGENTS}
           />
         </div>
-        <div style={{ 'margin-bottom': '12px', display: 'flex', 'justify-content': 'flex-end' }}>
+        <div style={{ 'margin-bottom': '12px', display: 'flex', 'align-items': 'center', 'justify-content': 'space-between', gap: '8px', 'flex-wrap': 'wrap' }}>
+          {/* 左：模型选择器 */}
+          <div style={{ display: 'flex', 'align-items': 'center', gap: '8px', 'flex-wrap': 'wrap' }}>
+            <Show
+              when={configuredModels().length > 0}
+              fallback={
+                <span style={{ 'font-size': '12px', color: themeColors.textMuted }}>暂无已配置模型</span>
+              }
+            >
+              <select
+                value={sessionModelId()}
+                onChange={(e) => setSessionModelId(e.currentTarget.value)}
+                disabled={runState() === 'running'}
+                style={{
+                  'font-size': '12px',
+                  padding: '4px 8px',
+                  'border-radius': '6px',
+                  border: `1px solid ${themeColors.border}`,
+                  background: themeColors.surface,
+                  color: themeColors.text,
+                  cursor: runState() === 'running' ? 'not-allowed' : 'pointer',
+                  outline: 'none',
+                }}
+              >
+                <For each={configuredModels()}>
+                  {(opt) => <option value={opt.modelID}>{opt.label}</option>}
+                </For>
+              </select>
+            </Show>
+            <button
+              onClick={() => navigate('/solo/settings?tab=llm')}
+              style={{
+                'font-size': '12px',
+                color: chartColors.success,
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                padding: '0',
+                display: 'flex',
+                'align-items': 'center',
+                gap: '3px',
+                'text-decoration': 'underline',
+              }}
+            >
+              <Settings size={12} />去配置更多模型
+            </button>
+          </div>
+
+          {/* 右：启动按鈕 */}
           <button
             onClick={handleStart}
             disabled={runState() === 'running' || !goal().trim()}

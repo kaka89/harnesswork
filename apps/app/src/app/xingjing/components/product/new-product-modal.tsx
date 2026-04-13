@@ -305,23 +305,32 @@ function useGitInput() {
 
 // ─── 主组件 ────────────────────────────────────────────────────────────────
 
+/** 编码格式校验：仅允许英文字母和数字，不允许空格或特殊字符 */
+function isValidCode(code: string): boolean {
+  return /^[a-zA-Z0-9]+$/.test(code.trim());
+}
+
 const NewProductModal: Component<Props> = (props) => {
   const { productStore } = useAppStore();
 
   // ── 通用字段 ──
   const [productType, setProductType] = createSignal<ProductType>('team');
   const [name, setName] = createSignal('');
+  const [productCode, setProductCode] = createSignal('');
   const [workDir, setWorkDir] = createSignal('');
   const [creating, setCreating] = createSignal(false);
   const [error, setError] = createSignal('');
 
   // ── 独立版（Solo）专用 ──
   const [appName, setAppName] = createSignal('');
+  const [soloAppCode, setSoloAppCode] = createSignal('');
   const soloGit = useGitInput();
 
   // ── 团队版（Team）专用 ──
   const [domainName, setDomainName] = createSignal('');
+  const [domainCode, setDomainCode] = createSignal('');
   const [firstAppName, setFirstAppName] = createSignal('');
+  const [firstAppCode, setFirstAppCode] = createSignal('');
   const plGit = useGitInput();
   const domainGit = useGitInput();
   const appGit = useGitInput();
@@ -350,13 +359,29 @@ const NewProductModal: Component<Props> = (props) => {
   const handleSubmit = async (e: Event) => {
     e.preventDefault();
     if (!name().trim()) { setError('请填写产品名称'); return; }
+    if (!productCode().trim() || !isValidCode(productCode())) {
+      setError('产品编码只能包含英文字母和数字，不能有空格或特殊字符');
+      return;
+    }
     if (!workDir().trim()) { setError('请选择工作目录'); return; }
 
     if (productType() === 'solo') {
       if (!appName().trim()) { setError('请填写首个应用名'); return; }
+      if (!soloAppCode().trim() || !isValidCode(soloAppCode())) {
+        setError('应用编码只能包含英文字母和数字，不能有空格或特殊字符');
+        return;
+      }
     } else {
       if (!domainName().trim()) { setError('请填写首个 Domain 名称'); return; }
+      if (!domainCode().trim() || !isValidCode(domainCode())) {
+        setError('Domain 编码只能包含英文字母和数字，不能有空格或特殊字符');
+        return;
+      }
       if (!firstAppName().trim()) { setError('请填写首个 App 名称'); return; }
+      if (!firstAppCode().trim() || !isValidCode(firstAppCode())) {
+        setError('App 编码只能包含英文字母和数字，不能有空格或特殊字符');
+        return;
+      }
     }
 
     setError('');
@@ -364,9 +389,16 @@ const NewProductModal: Component<Props> = (props) => {
     try {
       if (productType() === 'solo') {
         soloGit.commitToken();
-        await productStore.initializeProductDir(workDir().trim(), name().trim(), appName().trim());
+        await productStore.initializeProductDir(
+          workDir().trim(),
+          name().trim(),
+          appName().trim(),
+          productCode().trim(),
+          soloAppCode().trim(),
+        );
         await productStore.addProduct({
           name: name().trim(),
+          code: productCode().trim(),
           workDir: workDir().trim(),
           gitUrl: soloGit.gitUrl().trim() || undefined,
           description: '',
@@ -382,6 +414,11 @@ const NewProductModal: Component<Props> = (props) => {
           domainName().trim(),
           firstAppName().trim(),
           {
+            productCode: productCode().trim(),
+            domainCode: domainCode().trim(),
+            appCode: firstAppCode().trim(),
+          },
+          {
             pl: plGit.gitUrl().trim() || undefined,
             domain: domainGit.gitUrl().trim() || undefined,
             app: appGit.gitUrl().trim() || undefined,
@@ -389,6 +426,7 @@ const NewProductModal: Component<Props> = (props) => {
         );
         await productStore.addProduct({
           name: name().trim(),
+          code: productCode().trim(),
           workDir: workDir().trim(),
           description: '',
           productType: 'team',
@@ -406,10 +444,14 @@ const NewProductModal: Component<Props> = (props) => {
 
   const resetForm = () => {
     setName('');
+    setProductCode('');
     setWorkDir('');
     setAppName('');
+    setSoloAppCode('');
     setDomainName('');
+    setDomainCode('');
     setFirstAppName('');
+    setFirstAppCode('');
     soloGit.reset();
     plGit.reset();
     domainGit.reset();
@@ -491,6 +533,24 @@ const NewProductModal: Component<Props> = (props) => {
               />
             </div>
 
+            {/* 产品编码（通用） */}
+            <div>
+              <label class="block text-sm font-medium mb-1" style={{ color: themeColors.textSecondary }}>
+                产品编码 <span style={{ color: chartColors.error }}>*</span>
+              </label>
+              <input
+                type="text"
+                class="w-full rounded-lg px-3 py-2 text-sm font-mono outline-none"
+                style={inputStyle()}
+                placeholder="例：myproduct（仅英文字母和数字）"
+                value={productCode()}
+                onInput={(e) => setProductCode(e.currentTarget.value)}
+              />
+              <p class="text-xs mt-1" style={{ color: themeColors.textMuted }}>
+                作为目录名使用：产品线目录 = <code>{productCode() || 'code'}-pl</code>
+              </p>
+            </div>
+
             {/* 工作目录（通用，团队版为父目录） */}
             <div>
               <label class="block text-sm font-medium mb-1" style={{ color: themeColors.textSecondary }}>
@@ -547,12 +607,26 @@ const NewProductModal: Component<Props> = (props) => {
                   type="text"
                   class="w-full rounded-lg px-3 py-2 text-sm outline-none"
                   style={inputStyle()}
-                  placeholder="例：api-server"
+                  placeholder="例：支付服务"
                   value={appName()}
                   onInput={(e) => setAppName(e.currentTarget.value)}
                 />
+              </div>
+
+              <div>
+                <label class="block text-sm font-medium mb-1" style={{ color: themeColors.textSecondary }}>
+                  应用编码 <span style={{ color: chartColors.error }}>*</span>
+                </label>
+                <input
+                  type="text"
+                  class="w-full rounded-lg px-3 py-2 text-sm font-mono outline-none"
+                  style={inputStyle()}
+                  placeholder="例：paymentapi（仅英文字母和数字）"
+                  value={soloAppCode()}
+                  onInput={(e) => setSoloAppCode(e.currentTarget.value)}
+                />
                 <p class="text-xs mt-1" style={{ color: themeColors.textMuted }}>
-                  将用于 apps/ 目录结构
+                  App 目录名 = <code>{soloAppCode() || 'code'}</code>
                 </p>
               </div>
 
@@ -610,10 +684,26 @@ const NewProductModal: Component<Props> = (props) => {
                     type="text"
                     class="w-full rounded-lg px-3 py-2 text-sm outline-none"
                     style={inputStyle()}
-                    placeholder="例：用户域 / user-domain"
+                    placeholder="例：支付域"
                     value={domainName()}
                     onInput={(e) => setDomainName(e.currentTarget.value)}
                   />
+                </div>
+                <div class="mb-3">
+                  <label class="block text-sm font-medium mb-1" style={{ color: themeColors.textSecondary }}>
+                    Domain 编码 <span style={{ color: chartColors.error }}>*</span>
+                  </label>
+                  <input
+                    type="text"
+                    class="w-full rounded-lg px-3 py-2 text-sm font-mono outline-none"
+                    style={inputStyle()}
+                    placeholder="例：paymentdomain（仅英文字母和数字）"
+                    value={domainCode()}
+                    onInput={(e) => setDomainCode(e.currentTarget.value)}
+                  />
+                  <p class="text-xs mt-1" style={{ color: themeColors.textMuted }}>
+                    Domain 目录名 = <code>{domainCode() || 'code'}</code>
+                  </p>
                 </div>
                 <GitInputRow
                   label="Domain Git 地址"
@@ -645,10 +735,26 @@ const NewProductModal: Component<Props> = (props) => {
                     type="text"
                     class="w-full rounded-lg px-3 py-2 text-sm outline-none"
                     style={inputStyle()}
-                    placeholder="例：api-server"
+                    placeholder="例：支付服务"
                     value={firstAppName()}
                     onInput={(e) => setFirstAppName(e.currentTarget.value)}
                   />
+                </div>
+                <div class="mb-3">
+                  <label class="block text-sm font-medium mb-1" style={{ color: themeColors.textSecondary }}>
+                    App 编码 <span style={{ color: chartColors.error }}>*</span>
+                  </label>
+                  <input
+                    type="text"
+                    class="w-full rounded-lg px-3 py-2 text-sm font-mono outline-none"
+                    style={inputStyle()}
+                    placeholder="例：paymentapi（仅英文字母和数字）"
+                    value={firstAppCode()}
+                    onInput={(e) => setFirstAppCode(e.currentTarget.value)}
+                  />
+                  <p class="text-xs mt-1" style={{ color: themeColors.textMuted }}>
+                    App 目录名 = <code>{firstAppCode() || 'code'}</code>
+                  </p>
                 </div>
                 <GitInputRow
                   label="App Git 地址"

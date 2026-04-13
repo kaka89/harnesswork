@@ -4,11 +4,16 @@
  * 直接在 openwork 主应用内以原生 SolidJS 组件渲染星静，
  * 使用嵌套 Router (base="/xingjing-solid") 处理子路由，
  * 无需 iframe，实现深度融合。
+ *
+ * 认证守卫：onMount 时校验 xingjing-server token，
+ * 未登录则渲染 AuthPage，登录后进入主应用。
  */
-import { lazy, Suspense } from 'solid-js';
+import { lazy, Suspense, createSignal, onMount, Show } from 'solid-js';
 import { Router, Route, useNavigate } from '@solidjs/router';
 import { AppStoreProvider } from '../xingjing/stores/app-store';
 import MainLayout, { BackNavigationContext } from '../xingjing/components/layouts/main-layout';
+import { checkAuth, currentUser } from '../xingjing/services/auth-service';
+import AuthPage from '../xingjing/pages/auth';
 
 // 团队版页面
 const Autopilot = lazy(() => import('../xingjing/pages/autopilot'));
@@ -40,6 +45,39 @@ const SoloAgentWorkshop = lazy(() => import('../xingjing/pages/solo/agent-worksh
 export default function XingjingNativePage() {
   // 使用外层 Router 的 navigate，通过 Context 传入 MainLayout 的返回按钮
   const outerNavigate = useNavigate();
+
+  // ── 认证状态 ────────────────────────────────────────────────────────────────
+  // authChecked: 初始身份检查是否已完成（避免未检查完成就渲染内容）
+  const [authChecked, setAuthChecked] = createSignal(false);
+
+  onMount(() => {
+    checkAuth().finally(() => setAuthChecked(true));
+  });
+
+  // ── 认证守卫 ────────────────────────────────────────────────────────────────
+  return (
+    <Show
+      when={authChecked()}
+      fallback={
+        <div class="flex items-center justify-center h-screen bg-[var(--dls-app-bg)] text-gray-10 text-sm">
+          验证身份中...
+        </div>
+      }
+    >
+      <Show
+        when={currentUser()}
+        fallback={<AuthPage onSuccess={() => setAuthChecked(true)} />}
+      >
+        <XingjingApp outerNavigate={outerNavigate} />
+      </Show>
+    </Show>
+  );
+}
+
+// ── Inner app (only rendered when authenticated) ────────────────────────────────
+
+function XingjingApp(props: { outerNavigate: ReturnType<typeof useNavigate> }) {
+  const outerNavigate = props.outerNavigate;
 
   return (
     <div class="flex flex-col h-screen bg-[var(--dls-app-bg)] text-gray-12">

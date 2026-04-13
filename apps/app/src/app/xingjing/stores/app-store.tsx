@@ -11,6 +11,7 @@ import {
   loadProjectSettings, saveProjectSettings,
 } from '../services/file-store';
 import { callAgent, type CallAgentOptions } from '../services/opencode-client';
+import { currentUser } from '../services/auth-service';
 
 export type Role = 'pm' | 'architect' | 'developer' | 'qa' | 'sre' | 'manager';
 export type AppMode = 'team' | 'solo';
@@ -139,6 +140,14 @@ export const AppStoreProvider: ParentComponent = (props) => {
       // 文件不存在时保留 mock 数据（首次使用），静默降级
     }
   }
+
+  // ── 将真实登录用户名同步到 state.currentUser ──
+  createEffect(() => {
+    const user = currentUser();
+    if (user?.name) {
+      setState('currentUser', user.name);
+    }
+  });
 
   // ── 当活跃产品切换时，加载对应项目数据 ──
   createEffect(() => {

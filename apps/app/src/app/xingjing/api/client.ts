@@ -3,6 +3,8 @@
  * Handles all API communication with xingjing-server
  */
 
+import { getAuthToken } from '../services/auth-service';
+
 const BASE_URL = import.meta.env.VITE_XINGJING_API_URL ?? 'http://localhost:4100';
 
 export interface RequestOptions extends Omit<RequestInit, 'method' | 'body'> {
@@ -16,9 +18,15 @@ export interface RequestOptions extends Omit<RequestInit, 'method' | 'body'> {
 async function request<T>(path: string, options?: RequestOptions): Promise<T> {
   const { body, ...init } = options ?? {};
 
+  const token = getAuthToken();
+  const authHeaders: Record<string, string> = token
+    ? { Authorization: `Bearer ${token}` }
+    : {};
+
   const res = await fetch(`${BASE_URL}${path}`, {
     headers: {
       'Content-Type': 'application/json',
+      ...authHeaders,
       ...init.headers,
     },
     ...init,

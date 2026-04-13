@@ -136,6 +136,26 @@ const MainLayout: ParentComponent = (props) => {
     return location.pathname === path || location.pathname.startsWith(path + '/');
   };
 
+  // 判断某个分组下是否有子菜单处于激活状态
+  const isGroupActive = (children: { key: string }[]) =>
+    children.some(child => isActive(child.key));
+
+  // Solo: green-3 背景 + green-11 文字 + green-9 左边框
+  // Team: purple-3 背景 + purple-11 文字 + purple-9 左边框
+  const activeItemClass = () =>
+    isSoloMode()
+      ? 'bg-green-3 text-green-11 font-medium border-l-2 border-green-9'
+      : 'bg-purple-3 text-purple-11 font-medium border-l-2 border-purple-9';
+
+  // 分组父级标题激活态（子项选中时稍浅背景）
+  const activeGroupHeaderClass = () =>
+    isSoloMode()
+      ? 'bg-green-2 text-green-10 font-semibold border-l-2 border-green-9'
+      : 'bg-purple-2 text-purple-10 font-semibold border-l-2 border-purple-9';
+
+  // 未选中时的边框占位，保持布局稳定不抖动
+  const inactiveBorder = 'border-l-2 border-transparent';
+
   const handleModeSwitch = (mode: 'team' | 'solo') => {
     actions.setAppMode(mode);
     if (mode === 'solo') {
@@ -281,8 +301,8 @@ const MainLayout: ParentComponent = (props) => {
                     <button
                       class={`w-full px-4 py-2.5 text-left text-sm hover:bg-[var(--dls-hover)] flex items-center gap-3 transition-colors ${
                         isActive(item.key)
-                          ? (isSoloMode() ? 'bg-[var(--green-9)]/10 text-[var(--green-9)] font-medium' : 'bg-[var(--purple-9)]/10 text-[var(--purple-9)] font-medium')
-                          : 'text-[var(--dls-text-secondary)]'
+                          ? activeItemClass()
+                          : `text-[var(--dls-text-secondary)] ${inactiveBorder}`
                       }`}
                       onClick={() => navigate(item.key)}
                     >
@@ -294,8 +314,10 @@ const MainLayout: ParentComponent = (props) => {
                   <div>
                     {/* Group header */}
                     <button
-                      class={`w-full px-4 py-2.5 text-left text-sm font-semibold hover:bg-[var(--dls-hover)] flex items-center gap-3 transition-colors ${
-                        isSoloMode() ? 'text-[var(--green-9)]' : 'text-[var(--purple-9)]'
+                      class={`w-full px-4 py-2.5 text-left text-sm hover:bg-[var(--dls-hover)] flex items-center gap-3 transition-colors ${
+                        isGroupActive(item.children!)
+                          ? activeGroupHeaderClass()
+                          : `${isSoloMode() ? 'text-green-9' : 'text-purple-9'} font-semibold ${inactiveBorder}`
                       }`}
                       onClick={() => {
                         if ((item as any).navigateTo) navigate((item as any).navigateTo);
@@ -314,10 +336,8 @@ const MainLayout: ParentComponent = (props) => {
                             <button
                               class={`w-full pl-10 pr-3 py-2 text-left text-sm hover:bg-[var(--dls-hover)] flex items-center gap-3 transition-colors rounded mx-1 ${
                                 isActive(child.key)
-                                  ? (isSoloMode()
-                                    ? 'bg-[var(--green-9)]/10 text-[var(--green-9)]'
-                                    : 'bg-[var(--purple-9)]/10 text-[var(--purple-9)]')
-                                  : 'text-[var(--dls-text-secondary)]'
+                                  ? activeItemClass()
+                                  : `text-[var(--dls-text-secondary)] ${inactiveBorder}`
                               }`}
                               style={{ width: 'calc(100% - 8px)' }}
                               onClick={() => navigate(child.key)}

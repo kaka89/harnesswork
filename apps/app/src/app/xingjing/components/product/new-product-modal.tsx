@@ -9,7 +9,7 @@ import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 import { useAppStore } from '../../stores/app-store';
 import { themeColors, chartColors } from '../../utils/colors';
 import { isTauriRuntime } from '../../../utils';
-import { pickDirectory, runGitLsRemote } from '../../../lib/tauri';
+import { pickDirectory, runGitLsRemote, checkGitInstalled, installGit } from '../../../lib/tauri';
 import { getGitToken, setGitToken } from '../../services/product-store';
 
 interface Props {
@@ -321,6 +321,13 @@ const NewProductModal: Component<Props> = (props) => {
   const [creating, setCreating] = createSignal(false);
   const [error, setError] = createSignal('');
 
+  // ── Git 安装确认弹窗状态 ──
+  const [showGitInstallDialog, setShowGitInstallDialog] = createSignal(false);
+  const [gitInstalling, setGitInstalling] = createSignal(false);
+  const [gitInstallError, setGitInstallError] = createSignal('');
+  // 暂存提交事件，待 git 安装完成后继续执行
+  let pendingSubmitFn: (() => Promise<void>) | null = null;
+
   // ── 独立版（Solo）专用 ──
   const [appName, setAppName] = createSignal('');
   const [soloAppCode, setSoloAppCode] = createSignal('');
@@ -384,6 +391,23 @@ const NewProductModal: Component<Props> = (props) => {
       }
     }
 
+    // 桌面端：先检测 git 是否可用
+    if (isTauriRuntime()) {
+      const { installed } = await checkGitInstalled();
+      if (!installed) {
+        // 暂存创建逻辑，待用户确认安装后继续
+        pendingSubmitFn = doCreateProduct;
+        setGitInstallError('');
+        setShowGitInstallDialog(true);
+        return;
+      }
+    }
+
+    await doCreateProduct();
+  };
+
+  /** 实际创建产品的逻辑（检测 git 通过后执行） */
+  const doCreateProduct = async () => {
     setError('');
     setCreating(true);
     try {
@@ -442,6 +466,24 @@ const NewProductModal: Component<Props> = (props) => {
     }
   };
 
+  /** 用户确认安装 git */
+  const handleConfirmInstallGit = async () => {
+    setGitInstalling(true);
+    setGitInstallError('');
+    const result = await installGit();
+    setGitInstalling(false);
+    if (result.ok) {
+      setShowGitInstallDialog(false);
+      // 安装成功，继续执行创建
+      if (pendingSubmitFn) {
+        pendingSubmitFn = null;
+        await doCreateProduct();
+      }
+    } else {
+      setGitInstallError(result.output ?? '安装失败，请手动安装 git');
+    }
+  };
+
   const resetForm = () => {
     setName('');
     setProductCode('');
@@ -476,6 +518,53 @@ const NewProductModal: Component<Props> = (props) => {
         class="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
         onClick={(e) => { if (e.target === e.currentTarget) props.onClose(); }}
       >
+        {/* Git 安装确认弹窗 */}
+        <Show when={showGitInstallDialog()}>
+          <div
+            class="fixed inset-0 z-60 flex items-center justify-center bg-black/50"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              class="rounded-2xl shadow-2xl w-full max-w-sm mx-4 p-6"
+              style={{ background: themeColors.surface }}
+            >
+              <h3 class="text-base font-semibold mb-3" style={{ color: themeColors.text }}>
+                需要安装 Git
+              </h3>
+              <p class="text-sm mb-4" style={{ color: themeColors.textSecondary }}>
+                Git 未安装，OpenWork 需要安装 Git 才能初始化仓库。是否立即安装？
+              </p>
+              <Show when={gitInstallError()}>
+                <p
+                  class="text-xs rounded-lg px-3 py-2 mb-3"
+                  style={{ color: chartColors.error, background: themeColors.errorBg }}
+                >
+                  {gitInstallError()}
+                </p>
+              </Show>
+              <div class="flex gap-3">
+                <button
+                  type="button"
+                  disabled={gitInstalling()}
+                  class="flex-1 rounded-lg py-2 text-sm transition-colors disabled:opacity-50"
+                  style={{ border: `1px solid ${themeColors.border}`, color: themeColors.textSecondary, background: themeColors.surface }}
+                  onClick={() => { setShowGitInstallDialog(false); pendingSubmitFn = null; }}
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  disabled={gitInstalling()}
+                  class="flex-1 rounded-lg py-2 text-sm font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                  style={{ background: themeColors.purple, color: 'white' }}
+                  onClick={handleConfirmInstallGit}
+                >
+                  {gitInstalling() ? '正在安装 Git…' : '立即安装'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </Show>
         <div
           class="rounded-2xl shadow-2xl w-full max-w-lg mx-4 p-6 overflow-y-auto"
           style={{ background: themeColors.surface, 'max-height': '90vh' }}

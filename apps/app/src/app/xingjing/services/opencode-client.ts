@@ -10,17 +10,36 @@
 
 import { createClient } from '../../lib/opencode';
 import { createSignal, onCleanup } from 'solid-js';
+import { engineInfo } from '../../lib/tauri';
+import { isTauriRuntime } from '../../utils';
 
 // ─── Client 单例 ────────────────────────────────────────────────────────────
 
 let _client: ReturnType<typeof createClient> | null = null;
 let _baseUrl = 'http://127.0.0.1:4096';
 let _directory = '';
+let _username = '';
+let _password = '';
 
-export function initXingjingClient(baseUrl: string, directory: string) {
+export function initXingjingClient(baseUrl: string, directory: string, auth?: { username?: string; password?: string }) {
   _baseUrl = baseUrl;
   _directory = directory;
-  _client = createClient(baseUrl, directory);
+  _username = auth?.username ?? '';
+  _password = auth?.password ?? '';
+  _client = createClient(baseUrl, directory, _username && _password ? { username: _username, password: _password } : undefined);
+}
+
+/**
+ * 返回 Basic Auth 请求头值（用于裸 fetch 调用的认证）
+ */
+export function getAuthHeader(): string | null {
+  if (!_username || !_password) return null;
+  try {
+    const encoded = btoa(`${_username}:${_password}`);
+    return `Basic ${encoded}`;
+  } catch {
+    return null;
+  }
 }
 
 export function getXingjingClient() {
@@ -28,6 +47,33 @@ export function getXingjingClient() {
     _client = createClient(_baseUrl, _directory);
   }
   return _client;
+}
+
+/**
+ * 刷新 baseUrl：Tauri 运行时从 engineInfo 动态获取最新端口，
+ * 解决 OpenCode 重启后动态端口变更导致 SSE 连接失败的问题。
+ */
+async function refreshBaseUrl(): Promise<string> {
+  if (isTauriRuntime()) {
+    try {
+      const info = await engineInfo();
+      if (info.running && info.baseUrl) {
+        const url = info.baseUrl.replace(/\/$/, '');
+        const username = info.opencodeUsername?.trim() ?? '';
+        const password = info.opencodePassword?.trim() ?? '';
+        const urlChanged = url !== _baseUrl;
+        const authChanged = username !== _username || password !== _password;
+        if (urlChanged || authChanged) {
+          _baseUrl = url;
+          _username = username;
+          _password = password;
+          _client = createClient(url, _directory, username && password ? { username, password } : undefined);
+        }
+        return url;
+      }
+    } catch { /* 降级到缓存值 */ }
+  }
+  return _baseUrl;
 }
 
 // ─── 文件 API ───────────────────────────────────────────────────────────────
@@ -482,14 +528,36 @@ export interface CallAgentOptions {
 }
 
 /**
+ * 将 SDK event.subscribe() 返回的原始事件解析为 { type, props } 格式。
+ * 兼容两种包装：直接 { type, properties } 或嵌套 { payload: { type, properties } }.
+ */
+function normalizeRawEvent(raw: unknown): { type: string; props: Record<string, unknown> } | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.type === 'string') {
+    return { type: r.type, props: (r.properties ?? r) as Record<string, unknown> };
+  }
+  if (r.payload && typeof r.payload === 'object') {
+    const p = r.payload as Record<string, unknown>;
+    if (typeof p.type === 'string') {
+      return { type: p.type, props: (p.properties ?? p) as Record<string, unknown> };
+    }
+  }
+  return null;
+}
+
+/**
  * 使用外部注入的 client（来自 OpenWork）调用 AI Agent。
- * 与 callAgent 逻辑相同，但使用传入的 client 而非内部单例。
+ *
+ * 采用 SDK 的 client.event.subscribe() 替代原生 EventSource，
+ * 确保在 Tauri/WKWebView 环境下正确使用 tauriFetch 并携带认证头。
  */
 export async function callAgentWithClient(
   client: ReturnType<typeof createClient>,
   opts: CallAgentOptions,
 ): Promise<void> {
-  const baseUrl = _baseUrl; // SSE 仍使用当前已知地址
+  await refreshBaseUrl();
+
   let sessionId: string | null = null;
   try {
     const result = await client.session.create({
@@ -506,50 +574,130 @@ export async function callAgentWithClient(
 
   let accumulated = '';
   let done = false;
-  let eventSource: EventSource | null = null;
-  try {
-    eventSource = new EventSource(`${baseUrl}/event`);
-  } catch {
-    opts.onError?.('无法连接 SSE 事件流（外部 client）');
-    return;
-  }
+  const controller = new AbortController();
+  // 跟踪本会话关联的 messageID，用于过滤 message.part.delta 事件
+  const sessionMsgIds = new Set<string>();
 
   const cleanup = () => {
     if (!done) {
       done = true;
-      try { eventSource?.close(); } catch { /* ignore */ }
+      controller.abort();
     }
   };
 
-  eventSource.onmessage = (e: MessageEvent) => {
-    if (done) return;
+  // 启动事件流监听（fire-and-forget，回调式通知结果）
+  void (async () => {
     try {
-      const data = JSON.parse(e.data as string) as Record<string, unknown>;
-      if (String(data.sessionID ?? '') !== sessionId) return;
-      if (data.type === 'message.part') {
-        const part = data.part as Record<string, unknown> | undefined;
-        if (part?.type === 'text') {
-          const text = String(part.text ?? part.content ?? '');
-          accumulated += text;
-          opts.onText?.(accumulated);
-        }
-      } else if (data.type === 'session.completed') {
-        cleanup();
-        opts.onDone?.(accumulated);
-      } else if (data.type === 'session.error') {
-        cleanup();
-        opts.onError?.(String(data.message ?? '未知错误'));
-      }
-    } catch { /* ignore */ }
-  };
+      const sub = await client.event.subscribe(undefined, { signal: controller.signal });
+      for await (const raw of sub.stream as AsyncIterable<unknown>) {
+        if (done) break;
+        const evt = normalizeRawEvent(raw);
+        if (!evt) continue;
+        const p = evt.props;
 
-  eventSource.onerror = () => {
-    if (!done) {
+        // ── 新格式: message.part.updated ──
+        if (evt.type === 'message.part.updated') {
+          const part = p.part as Record<string, unknown> | undefined;
+          if (!part || String(part.sessionID ?? '') !== sessionId) continue;
+          if (part.messageID) sessionMsgIds.add(String(part.messageID));
+          if (part.type === 'text') {
+            const fullText = String(part.text ?? '');
+            if (fullText.length >= accumulated.length) {
+              accumulated = fullText;
+              opts.onText?.(accumulated);
+            } else if (typeof p.delta === 'string' && p.delta) {
+              accumulated += p.delta;
+              opts.onText?.(accumulated);
+            }
+          }
+          continue;
+        }
+
+        // ── 新格式: message.part.delta ──
+        if (evt.type === 'message.part.delta') {
+          const msgId = typeof p.messageID === 'string' ? p.messageID : null;
+          if (msgId && sessionMsgIds.has(msgId)) {
+            const delta = typeof p.delta === 'string' ? p.delta : '';
+            const field = typeof p.field === 'string' ? p.field : '';
+            if (delta && field === 'text') {
+              accumulated += delta;
+              opts.onText?.(accumulated);
+            }
+          }
+          continue;
+        }
+
+        // ── 旧格式: message.part ──
+        if (evt.type === 'message.part') {
+          if (String(p.sessionID ?? '') !== sessionId) continue;
+          const part = p.part as Record<string, unknown> | undefined;
+          if (part?.type === 'text') {
+            const text = String(part.text ?? part.content ?? '');
+            accumulated += text;
+            opts.onText?.(accumulated);
+          }
+          continue;
+        }
+
+        // ── 错误: session.error ──
+        if (evt.type === 'session.error') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid && sid !== sessionId) continue;
+          cleanup();
+          const errObj = p.error as Record<string, unknown> | undefined;
+          const errMsg = errObj
+            ? String(errObj.message ?? errObj.name ?? '未知错误')
+            : String(p.message ?? '未知错误');
+          opts.onError?.(errMsg);
+          return;
+        }
+
+        // ── 完成: session.completed (旧) ──
+        if (evt.type === 'session.completed') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid && sid !== sessionId) continue;
+          cleanup();
+          opts.onDone?.(accumulated);
+          return;
+        }
+
+        // ── 完成: session.idle (新) ──
+        if (evt.type === 'session.idle') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid !== sessionId) continue;
+          cleanup();
+          opts.onDone?.(accumulated);
+          return;
+        }
+
+        // ── 完成: session.status + idle (新) ──
+        if (evt.type === 'session.status') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid !== sessionId) continue;
+          const status = String(p.status ?? '');
+          if (status === 'idle' || status === 'completed') {
+            cleanup();
+            opts.onDone?.(accumulated);
+            return;
+          }
+        }
+      }
+
+      // 事件流结束但未收到完成信号
+      if (!done) {
+        cleanup();
+        if (accumulated) opts.onDone?.(accumulated);
+        else opts.onError?.('SSE 事件流意外结束（外部 client）');
+      }
+    } catch (e) {
+      if (done) return;
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.toLowerCase().includes('abort')) return;
       cleanup();
       if (accumulated) opts.onDone?.(accumulated);
-      else opts.onError?.('SSE 连接中断（外部 client）');
+      else opts.onError?.(`SSE 连接失败: ${msg}`);
     }
-  };
+  })();
 
   const fullPrompt = opts.systemPrompt
     ? `${opts.systemPrompt}\n\n---\n\n${opts.userPrompt}`
@@ -572,74 +720,146 @@ export async function callAgentWithClient(
 /**
  * 调用 AI Agent：创建会话 → 发送提示词 → 流式接收结果 → 完成回调
  *
- * 若 OpenCode 不可用，会自动降级并通过 onError 通知。
+ * 采用 SDK 的 client.event.subscribe() 替代原生 EventSource，
+ * 确保在 Tauri/WKWebView 环境下正确使用 tauriFetch。
  */
 export async function callAgent(opts: CallAgentOptions): Promise<void> {
-  const sessionId = await sessionCreate({
-    title: opts.title ?? `xingjing-${Date.now()}`,
-    directory: opts.directory,
-  });
+  await refreshBaseUrl();
+
+  const client = getXingjingClient();
+  let sessionId: string | null = null;
+  try {
+    const result = await client.session.create({
+      body: {
+        ...(opts.title ? { title: opts.title } : { title: `xingjing-${Date.now()}` }),
+      },
+      ...(opts.directory ?? _directory ? { directory: opts.directory ?? _directory } : {}),
+    } as Parameters<typeof client.session.create>[0]);
+    sessionId = (result.data as { id: string } | undefined)?.id ?? null;
+  } catch { /* fall through */ }
 
   if (!sessionId) {
-    opts.onError?.('无法创建 AI 会话，请检查 OpenCode 服务是否启动（端口 4096）');
+    opts.onError?.('无法创建 AI 会话，请检查 OpenCode 服务是否启动');
     return;
   }
 
   let accumulated = '';
   let done = false;
-
-  // 订阅 SSE 事件流
-  let eventSource: EventSource | null = null;
-  try {
-    eventSource = new EventSource(`${_baseUrl}/event`);
-  } catch {
-    opts.onError?.('无法连接 SSE 事件流');
-    return;
-  }
+  const controller = new AbortController();
+  const sessionMsgIds = new Set<string>();
 
   const cleanup = () => {
     if (!done) {
       done = true;
-      try { eventSource?.close(); } catch { /* ignore */ }
+      controller.abort();
     }
   };
 
-  eventSource.onmessage = (e: MessageEvent) => {
-    if (done) return;
+  // 启动事件流监听
+  void (async () => {
     try {
-      const data = JSON.parse(e.data as string) as Record<string, unknown>;
-      // 过滤当前 session 的事件
-      if (String(data.sessionID ?? '') !== sessionId) return;
+      const sub = await client.event.subscribe(undefined, { signal: controller.signal });
+      for await (const raw of sub.stream as AsyncIterable<unknown>) {
+        if (done) break;
+        const evt = normalizeRawEvent(raw);
+        if (!evt) continue;
+        const p = evt.props;
 
-      if (data.type === 'message.part') {
-        // 流式文本片段
-        const part = data.part as Record<string, unknown> | undefined;
-        if (part?.type === 'text') {
-          const text = String(part.text ?? part.content ?? '');
-          accumulated += text;
-          opts.onText?.(accumulated);
+        if (evt.type === 'message.part.updated') {
+          const part = p.part as Record<string, unknown> | undefined;
+          if (!part || String(part.sessionID ?? '') !== sessionId) continue;
+          if (part.messageID) sessionMsgIds.add(String(part.messageID));
+          if (part.type === 'text') {
+            const fullText = String(part.text ?? '');
+            if (fullText.length >= accumulated.length) {
+              accumulated = fullText;
+              opts.onText?.(accumulated);
+            } else if (typeof p.delta === 'string' && p.delta) {
+              accumulated += p.delta;
+              opts.onText?.(accumulated);
+            }
+          }
+          continue;
         }
-      } else if (data.type === 'session.completed') {
-        cleanup();
-        opts.onDone?.(accumulated);
-      } else if (data.type === 'session.error') {
-        cleanup();
-        opts.onError?.(String(data.message ?? '未知错误'));
-      }
-    } catch { /* ignore parse error */ }
-  };
 
-  eventSource.onerror = () => {
-    if (!done) {
-      cleanup();
-      // 若没有累积到内容，则报错；否则视为完成
-      if (accumulated) {
-        opts.onDone?.(accumulated);
-      } else {
-        opts.onError?.('SSE 连接中断');
+        if (evt.type === 'message.part.delta') {
+          const msgId = typeof p.messageID === 'string' ? p.messageID : null;
+          if (msgId && sessionMsgIds.has(msgId)) {
+            const delta = typeof p.delta === 'string' ? p.delta : '';
+            const field = typeof p.field === 'string' ? p.field : '';
+            if (delta && field === 'text') {
+              accumulated += delta;
+              opts.onText?.(accumulated);
+            }
+          }
+          continue;
+        }
+
+        if (evt.type === 'message.part') {
+          if (String(p.sessionID ?? '') !== sessionId) continue;
+          const part = p.part as Record<string, unknown> | undefined;
+          if (part?.type === 'text') {
+            const text = String(part.text ?? part.content ?? '');
+            accumulated += text;
+            opts.onText?.(accumulated);
+          }
+          continue;
+        }
+
+        if (evt.type === 'session.error') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid && sid !== sessionId) continue;
+          cleanup();
+          const errObj = p.error as Record<string, unknown> | undefined;
+          const errMsg = errObj
+            ? String(errObj.message ?? errObj.name ?? '未知错误')
+            : String(p.message ?? '未知错误');
+          opts.onError?.(errMsg);
+          return;
+        }
+
+        if (evt.type === 'session.completed') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid && sid !== sessionId) continue;
+          cleanup();
+          opts.onDone?.(accumulated);
+          return;
+        }
+
+        if (evt.type === 'session.idle') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid !== sessionId) continue;
+          cleanup();
+          opts.onDone?.(accumulated);
+          return;
+        }
+
+        if (evt.type === 'session.status') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid !== sessionId) continue;
+          const status = String(p.status ?? '');
+          if (status === 'idle' || status === 'completed') {
+            cleanup();
+            opts.onDone?.(accumulated);
+            return;
+          }
+        }
       }
+
+      if (!done) {
+        cleanup();
+        if (accumulated) opts.onDone?.(accumulated);
+        else opts.onError?.('SSE 事件流意外结束');
+      }
+    } catch (e) {
+      if (done) return;
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.toLowerCase().includes('abort')) return;
+      cleanup();
+      if (accumulated) opts.onDone?.(accumulated);
+      else opts.onError?.(`SSE 连接失败: ${msg}`);
     }
-  };
+  })();
 
   // 发送提示词
   const fullPrompt = opts.systemPrompt
@@ -653,6 +873,163 @@ export async function callAgent(opts: CallAgentOptions): Promise<void> {
   if (!ok) {
     cleanup();
     opts.onError?.('发送提示词失败，请检查 OpenCode 连接');
+  }
+}
+
+// ─── 直连 LLM API（OpenCode 不可用时的降级路径）────────────────────────────
+
+/**
+ * 直连 LLM 配置（独立于 OpenCode）
+ */
+export interface DirectLLMConfig {
+  apiUrl: string;
+  apiKey: string;
+  modelID?: string;
+  providerID?: string;
+  maxTokens?: number;
+  temperature?: number;
+}
+
+/**
+ * 直连 LLM API 调用 Agent（OpenCode 不可用时的降级实现）。
+ *
+ * 支持 OpenAI 兼容接口（POST /chat/completions，stream=true）和
+ * Anthropic 接口（POST /messages）。
+ * 调用方通过 opts.onText / opts.onDone / opts.onError 接收结果（与 callAgent 接口一致）。
+ */
+export async function callAgentDirect(
+  opts: CallAgentOptions,
+  llmConfig: DirectLLMConfig,
+): Promise<void> {
+  if (!llmConfig.apiKey) {
+    opts.onError?.('直连模式需要配置 API Key');
+    return;
+  }
+
+  const apiUrl = llmConfig.apiUrl.replace(/\/$/,  '');
+  const modelId = llmConfig.modelID || 'deepseek-chat';
+  const isAnthropic = llmConfig.providerID === 'anthropic';
+
+  // 构建消息列表
+  const systemContent = opts.systemPrompt ?? '';
+  const userContent = opts.userPrompt;
+  const messages: Array<{ role: string; content: string }> = [];
+  if (!isAnthropic && systemContent) {
+    messages.push({ role: 'system', content: systemContent });
+  }
+  messages.push({ role: 'user', content: userContent });
+
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  let endpoint: string;
+  let body: unknown;
+
+  if (isAnthropic) {
+    headers['x-api-key'] = llmConfig.apiKey;
+    headers['anthropic-version'] = '2023-06-01';
+    endpoint = `${apiUrl}/messages`;
+    body = {
+      model: modelId,
+      max_tokens: llmConfig.maxTokens ?? 4096,
+      ...(systemContent ? { system: systemContent } : {}),
+      messages: [{ role: 'user', content: userContent }],
+      stream: true,
+    };
+  } else {
+    headers['Authorization'] = `Bearer ${llmConfig.apiKey}`;
+    endpoint = `${apiUrl}/chat/completions`;
+    body = {
+      model: modelId,
+      messages,
+      stream: true,
+      max_tokens: llmConfig.maxTokens ?? 4096,
+      temperature: llmConfig.temperature ?? 0.7,
+    };
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    opts.onError?.(`直连 API 网络错误: ${msg}`);
+    return;
+  }
+
+  if (!response.ok) {
+    let detail = '';
+    try {
+      const errJson = await response.json() as { error?: { message?: string }; message?: string };
+      detail = errJson.error?.message ?? errJson.message ?? '';
+    } catch {
+      detail = (await response.text()).slice(0, 120);
+    }
+    opts.onError?.(`直连 API 错误 ${response.status}: ${detail}`);
+    return;
+  }
+
+  // 流式读取
+  const reader = response.body?.getReader();
+  if (!reader) {
+    opts.onError?.('直连 API 未返回可读流');
+    return;
+  }
+
+  const decoder = new TextDecoder();
+  let accumulated = '';
+  let streamDone = false;
+
+  try {
+    while (!streamDone) {
+      const { done, value } = await reader.read();
+      if (done) { streamDone = true; break; }
+      const chunk = decoder.decode(value, { stream: true });
+      for (const line of chunk.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data: ')) continue;
+        const data = trimmed.slice(6);
+        if (data === '[DONE]') { streamDone = true; break; }
+        try {
+          if (isAnthropic) {
+            // Anthropic stream events: content_block_delta
+            const parsed = JSON.parse(data) as {
+              type?: string;
+              delta?: { type?: string; text?: string };
+            };
+            if (parsed.type === 'content_block_delta' && parsed.delta?.type === 'text_delta') {
+              const delta = parsed.delta.text ?? '';
+              if (delta) {
+                accumulated += delta;
+                opts.onText?.(accumulated);
+              }
+            }
+          } else {
+            const parsed = JSON.parse(data) as {
+              choices?: Array<{ delta?: { content?: string }; finish_reason?: string }>;
+            };
+            const delta = parsed.choices?.[0]?.delta?.content ?? '';
+            if (delta) {
+              accumulated += delta;
+              opts.onText?.(accumulated);
+            }
+            if (parsed.choices?.[0]?.finish_reason === 'stop') {
+              streamDone = true;
+            }
+          }
+        } catch { /* 忽略单行解析错误 */ }
+      }
+    }
+    opts.onDone?.(accumulated);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (accumulated) {
+      opts.onDone?.(accumulated);
+    } else {
+      opts.onError?.(`直连 API 流式读取失败: ${msg}`);
+    }
   }
 }
 

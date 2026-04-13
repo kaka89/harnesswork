@@ -35,6 +35,8 @@ async function resolveOpenCodeBaseUrl(): Promise<string> {
 export interface TeamDomain {
   id: string;
   name: string;
+  /** 用户输入的英文编码，用作目录名 */
+  code?: string;
   slug: string;
   dir: string;        // 绝对路径 {workDir}/{slug}
   gitUrl?: string;
@@ -44,6 +46,8 @@ export interface TeamDomain {
 export interface TeamApp {
   id: string;
   name: string;
+  /** 用户输入的英文编码，用作目录名 */
+  code?: string;
   slug: string;
   dir: string;        // 绝对路径 {workDir}/apps/{slug}
   gitUrl?: string;
@@ -61,6 +65,8 @@ export interface TeamStructure {
 export interface XingjingProduct {
   id: string;
   name: string;
+  /** 用户输入的英文编码，用作产品线目录名前缀（{code}-pl）*/
+  code?: string;
   workDir: string;
   gitUrl?: string;
   createdAt: string;
@@ -242,9 +248,17 @@ export function createProductStore() {
    * 在指定 workDir 下初始化完整的 Solo Monorepo 目录结构
    * 使用 Tauri 原生文件写入（不依赖 OpenCode），自动 mkdir -p 所有父目录
    * 严格对照 KNOWLEDGE-LIFECYCLE.md §7.1-7.4 + §8.3
+   * @param productCode 产品英文编码，用作产品线/Domain 目录名
+   * @param appCode     应用英文编码，用作 App 目录名
    */
-  async function initializeProductDir(workDir: string, productName: string, appName: string) {
-    const fileList = buildProductFileList(productName, appName);
+  async function initializeProductDir(
+    workDir: string,
+    productName: string,
+    appName: string,
+    productCode: string,
+    appCode: string,
+  ) {
+    const fileList = buildProductFileList(productName, appName, productCode, appCode);
     const result = await initProductDir(workDir, fileList);
     if (!result.ok) {
       throw new Error(result.error ?? '目录初始化失败');
@@ -262,22 +276,22 @@ export function createProductStore() {
     productName: string,
     domainName: string,
     appName: string,
+    /** 各层用户输入的英文编码，直接用作目录名 */
+    codes: {
+      productCode: string;
+      domainCode: string;
+      appCode: string;
+    },
     gitUrls?: {
       pl?: string;
       domain?: string;
       app?: string;
     },
   ): Promise<TeamStructure> {
-    // --- 生成 slug ---
-    const toKebab = (s: string) =>
-      s.trim().replace(/[\s_]+/g, '-').replace(/([a-z])([A-Z])/g, '$1-$2')
-        .replace(/[^a-zA-Z0-9\u4e00-\u9fff-]/g, '-').replace(/-+/g, '-')
-        .replace(/^-|-$/g, '').toLowerCase();
-
-    const kebab = toKebab(productName);
-    const plSlug = `${kebab}-pl`;
-    const domainSlug = toKebab(domainName);
-    const appSlug = toKebab(appName);
+    // --- 使用用户输入的编码作为 slug ---
+    const plSlug = `${codes.productCode}-pl`;
+    const domainSlug = codes.domainCode;
+    const appSlug = codes.appCode;
 
     const plDir = `${workDir}/${plSlug}`;
     const domainDir = `${workDir}/${domainSlug}`;
@@ -318,6 +332,7 @@ export function createProductStore() {
       domains: [{
         id: `domain-${Date.now()}`,
         name: domainName,
+        code: codes.domainCode,
         slug: domainSlug,
         dir: domainDir,
         gitUrl: gitUrls?.domain || undefined,
@@ -325,6 +340,7 @@ export function createProductStore() {
       apps: [{
         id: `app-${Date.now() + 1}`,
         name: appName,
+        code: codes.appCode,
         slug: appSlug,
         dir: appDir,
         gitUrl: gitUrls?.app || undefined,
@@ -335,19 +351,14 @@ export function createProductStore() {
   /** 向已有团队版产品新增 Domain（创建目录 + git init + 更新注册表） */
   async function addDomainToTeamProduct(
     productId: string,
-    domainInfo: { name: string; gitUrl?: string },
+    domainInfo: { name: string; code: string; gitUrl?: string },
   ) {
     const product = products().find(p => p.id === productId);
     if (!product || product.productType !== 'team' || !product.teamStructure) {
       throw new Error('目标产品不是团队版产品');
     }
 
-    const toKebab = (s: string) =>
-      s.trim().replace(/[\s_]+/g, '-').replace(/([a-z])([A-Z])/g, '$1-$2')
-        .replace(/[^a-zA-Z0-9\u4e00-\u9fff-]/g, '-').replace(/-+/g, '-')
-        .replace(/^-|-$/g, '').toLowerCase();
-
-    const domainSlug = toKebab(domainInfo.name);
+    const domainSlug = domainInfo.code;
     const domainDir = `${product.workDir}/${domainSlug}`;
 
     const domainFiles = buildTeamDomainFiles(domainInfo.name, product.name);
@@ -359,6 +370,7 @@ export function createProductStore() {
     const newDomain: TeamDomain = {
       id: `domain-${Date.now()}`,
       name: domainInfo.name,
+      code: domainInfo.code,
       slug: domainSlug,
       dir: domainDir,
       gitUrl: domainInfo.gitUrl || undefined,
@@ -382,19 +394,14 @@ export function createProductStore() {
   /** 向已有团队版产品新增 App（创建目录 + git init + 更新注册表） */
   async function addAppToTeamProduct(
     productId: string,
-    appInfo: { name: string; gitUrl?: string },
+    appInfo: { name: string; code: string; gitUrl?: string },
   ) {
     const product = products().find(p => p.id === productId);
     if (!product || product.productType !== 'team' || !product.teamStructure) {
       throw new Error('目标产品不是团队版产品');
     }
 
-    const toKebab = (s: string) =>
-      s.trim().replace(/[\s_]+/g, '-').replace(/([a-z])([A-Z])/g, '$1-$2')
-        .replace(/[^a-zA-Z0-9\u4e00-\u9fff-]/g, '-').replace(/-+/g, '-')
-        .replace(/^-|-$/g, '').toLowerCase();
-
-    const appSlug = toKebab(appInfo.name);
+    const appSlug = appInfo.code;
     const appDir = `${product.workDir}/apps/${appSlug}`;
 
     const appFiles = buildTeamAppFiles(appInfo.name, product.name);
@@ -406,6 +413,7 @@ export function createProductStore() {
     const newApp: TeamApp = {
       id: `app-${Date.now()}`,
       name: appInfo.name,
+      code: appInfo.code,
       slug: appSlug,
       dir: appDir,
       gitUrl: appInfo.gitUrl || undefined,

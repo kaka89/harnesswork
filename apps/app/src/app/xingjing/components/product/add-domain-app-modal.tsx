@@ -106,6 +106,7 @@ const AddDomainAppModal: Component<Props> = (props) => {
   const { productStore } = useAppStore();
 
   const [itemName, setItemName] = createSignal('');
+  const [itemCode, setItemCode] = createSignal('');
   const [gitUrl, setGitUrl] = createSignal('');
   const [gitStatus, setGitStatus] = createSignal<GitCheckStatus>('idle');
   const [gitStatusMsg, setGitStatusMsg] = createSignal('');
@@ -117,7 +118,9 @@ const AddDomainAppModal: Component<Props> = (props) => {
 
   const modeLabel = () => props.mode === 'domain' ? 'Domain' : 'App';
   const namePlaceholder = () =>
-    props.mode === 'domain' ? '例：支付域 / payment-domain' : '例：payment-service';
+    props.mode === 'domain' ? '例：支付域' : '例：支付服务';
+  const codePlaceholder = () =>
+    props.mode === 'domain' ? '例：paymentdomain（仅英文字母和数字）' : '例：paymentapi（仅英文字母和数字）';
 
   const handleGitInput = (val: string) => {
     setGitUrl(val);
@@ -153,6 +156,10 @@ const AddDomainAppModal: Component<Props> = (props) => {
   const handleSubmit = async (e: Event) => {
     e.preventDefault();
     if (!itemName().trim()) { setError(`请填写 ${modeLabel()} 名称`); return; }
+    if (!itemCode().trim() || !/^[a-zA-Z0-9]+$/.test(itemCode().trim())) {
+      setError(`${modeLabel()} 编码只能包含英文字母和数字，不能有空格或特殊字符`);
+      return;
+    }
     setError('');
     setSubmitting(true);
     try {
@@ -162,15 +169,18 @@ const AddDomainAppModal: Component<Props> = (props) => {
       if (props.mode === 'domain') {
         await productStore.addDomainToTeamProduct(props.product.id, {
           name: itemName().trim(),
+          code: itemCode().trim(),
           gitUrl: gitUrl().trim() || undefined,
         });
       } else {
         await productStore.addAppToTeamProduct(props.product.id, {
           name: itemName().trim(),
+          code: itemCode().trim(),
           gitUrl: gitUrl().trim() || undefined,
         });
       }
       setItemName('');
+      setItemCode('');
       setGitUrl('');
       setGitStatus('idle');
       setGitStatusMsg('');
@@ -249,10 +259,25 @@ const AddDomainAppModal: Component<Props> = (props) => {
                 value={itemName()}
                 onInput={(e) => setItemName(e.currentTarget.value)}
               />
+            </div>
+
+            {/* 编码 */}
+            <div>
+              <label class="block text-sm font-medium mb-1" style={{ color: themeColors.textSecondary }}>
+                {modeLabel()} 编码 <span style={{ color: chartColors.error }}>*</span>
+              </label>
+              <input
+                type="text"
+                class="w-full rounded-lg px-3 py-2 text-sm font-mono outline-none"
+                style={inputStyle()}
+                placeholder={codePlaceholder()}
+                value={itemCode()}
+                onInput={(e) => setItemCode(e.currentTarget.value)}
+              />
               <p class="text-xs mt-1" style={{ color: themeColors.textMuted }}>
                 {props.mode === 'domain'
-                  ? `将在 ${props.product.workDir}/{slug}/ 创建独立 git 仓库`
-                  : `将在 ${props.product.workDir}/apps/{slug}/ 创建独立 git 仓库`}
+                  ? `Domain 目录名 = ${itemCode() || 'code'}（将在 ${props.product.workDir}/ 下创建）`
+                  : `App 目录名 = ${itemCode() || 'code'}（将在 ${props.product.workDir}/apps/ 下创建）`}
               </p>
             </div>
 

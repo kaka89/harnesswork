@@ -445,19 +445,22 @@ export function buildTeamRootConfig(
 // ─── 主入口 ───────────────────────────────────────────────────────────────
 
 /**
- * 根据产品名和首个应用名，生成完整的 Solo Monorepo 文件清单
- * @param productName 产品名（原始输入）
- * @param appName     首个应用名（原始输入）
+ * 根据产品名、首个应用名及编码，生成完整的 Solo Monorepo 文件清单
+ * @param productName 产品名（原始输入，用于文档内容）
+ * @param appName     首个应用名（原始输入，用于文档内容）
+ * @param productCode 产品英文编码，直接用作产品线目录名（{productCode}-pl）和 Domain 目录名（{productCode}-domain）
+ * @param appCode     应用英文编码，直接用作 App 目录名
  * @returns 文件清单（path 相对于 workDir）
  */
 export function buildProductFileList(
   productName: string,
   appName: string,
+  productCode: string,
+  appCode: string,
 ): ProductFileEntry[] {
-  const kebab = toKebabCase(productName);
-  const pl = `${kebab}-pl`;
-  const domain = `${kebab}-domain`;
-  const app = toKebabCase(appName);
+  const pl = `${productCode}-pl`;
+  const domain = `${productCode}-domain`;
+  const app = appCode;
 
   return [
     // .xingjing/config.yaml（星静自身配置）

@@ -10,7 +10,7 @@ pub struct XingjingFileEntry {
     pub content: String,
 }
 
-/// 在 workDir 下批量写入文件，自动创建父目录（mkdir -p）
+/// 在 workDir 下批量写入文件，自动创建目标目录及所有父目录（mkdir -p）
 ///
 /// 返回成功写入的文件数量，失败时返回第一个错误信息。
 #[tauri::command]
@@ -20,12 +20,10 @@ pub fn xingjing_init_product_dir(
 ) -> Result<usize, String> {
     let base = PathBuf::from(work_dir.trim());
 
-    if !base.exists() {
-        return Err(format!(
-            "工作目录不存在: {}",
-            base.display()
-        ));
-    }
+    // 目标目录不存在时自动创建（支持创建团队版中尚未存在的产品线/Domain/App 子目录）
+    fs::create_dir_all(&base).map_err(|e| {
+        format!("创建工作目录失败 {}: {e}", base.display())
+    })?;
 
     let total = files.len();
     for entry in &files {

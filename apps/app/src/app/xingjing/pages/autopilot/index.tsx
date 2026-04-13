@@ -1,6 +1,5 @@
 import { createSignal, createMemo, onMount, onCleanup, Show, For } from 'solid-js';
 import {
-  teamAgents,
   teamWorkflowSteps,
   teamSampleGoals,
   type AgentDef,
@@ -13,8 +12,16 @@ import {
   Bug, Rocket, BarChart3, Users, Plus, AlertCircle, Send
 } from 'lucide-solid';
 import { useAppStore } from '../../stores/app-store';
-import { aiSessionsApi } from '../../api';
 import { themeColors, chartColors } from '../../utils/colors';
+import {
+  TEAM_AGENTS,
+  runOrchestratedAutopilot,
+  runDirectAgent,
+  parseMention,
+  type DispatchItem,
+  type AgentExecutionStatus,
+} from '../../services/autopilot-executor';
+import MentionInput from '../../components/autopilot/mention-input';
 
 const agentIcon: Record<string, any> = {
   'pm-agent': FileText,
@@ -130,15 +137,16 @@ const EnterpriseAutopilot = () => {
   const [goal, setGoal] = createSignal('');
   const [runState, setRunState] = createSignal<RunState>('idle');
   const [agentStatuses, setAgentStatuses] = createSignal<Record<string, AgentStatus>>(
-    Object.fromEntries(teamAgents.map((a) => [a.id, 'idle']))
+    Object.fromEntries(TEAM_AGENTS.map((a) => [a.id, 'idle' as AgentStatus]))
   );
   const [agentTasks, setAgentTasks] = createSignal<Record<string, string>>({});
   const [visibleSteps, setVisibleSteps] = createSignal<WorkflowStep[]>([]);
   const [artifacts, setArtifacts] = createSignal<WorkflowStep[]>([]);
   const [progress, setProgress] = createSignal(0);
-  const [sessionResult, setSessionResult] = createSignal<string | null>(null);
-  const [sessionId, setSessionId] = createSignal<string | null>(null);
-  const [isUsingApi, setIsUsingApi] = createSignal(false);
+  const [orchestratorText, setOrchestratorText] = createSignal('');
+  const [dispatchPlan, setDispatchPlan] = createSignal<DispatchItem[]>([]);
+  const [agentStreamTexts, setAgentStreamTexts] = createSignal<Record<string, string>>({});
+  const [agentExecStatuses, setAgentExecStatuses] = createSignal<Record<string, AgentExecutionStatus>>({});
 
   let timelineRef: HTMLDivElement | undefined;
   const timersRef: ReturnType<typeof setTimeout>[] = [];
@@ -151,14 +159,15 @@ const EnterpriseAutopilot = () => {
   const reset = () => {
     clearTimers();
     setRunState('idle');
-    setAgentStatuses(Object.fromEntries(teamAgents.map((a) => [a.id, 'idle'])));
+    setAgentStatuses(Object.fromEntries(TEAM_AGENTS.map((a) => [a.id, 'idle' as AgentStatus])));
     setAgentTasks({});
     setVisibleSteps([]);
     setArtifacts([]);
     setProgress(0);
-    setSessionResult(null);
-    setSessionId(null);
-    setIsUsingApi(false);
+    setOrchestratorText('');
+    setDispatchPlan([]);
+    setAgentStreamTexts({});
+    setAgentExecStatuses({});
   };
 
   const startMockSimulation = () => {
@@ -212,49 +221,102 @@ const EnterpriseAutopilot = () => {
     reset();
     setRunState('running');
 
-    try {
-      // 尝试创建真实 AI 会话
-      const session = await aiSessionsApi.create(goal());
-      setSessionId(session.id);
-      setIsUsingApi(true);
+    const workDir = store.productStore.activeProduct()?.workDir;
+    const { targetAgent, cleanText } = parseMention(goal(), TEAM_AGENTS);
 
-      // 轮询会话状态
-      const cleanup = await aiSessionsApi.poll(
-        session.id,
-        (updatedSession) => {
-          // 更新 Agent 状态
-          if (updatedSession.agentStates) {
-            const newStatuses: Record<string, AgentStatus> = {};
-            updatedSession.agentStates.forEach((state) => {
-              newStatuses[state.agentId] = state.status as AgentStatus;
-            });
-            setAgentStatuses(newStatuses);
-          }
-
-          // 更新进度
-          if (updatedSession.progress !== undefined) {
-            setProgress(updatedSession.progress);
-          }
-
-          // 检查完成状态
-          if (updatedSession.status === 'done') {
-            setRunState('done');
-            setSessionResult(updatedSession.result || '任务完成');
-          } else if (updatedSession.status === 'failed') {
-            setRunState('idle');
-            setSessionResult('任务失败，请重试');
-          }
+    if (targetAgent) {
+      // @mention 直接调用模式：跳过 Orchestrator
+      setAgentStatuses((prev) => ({ ...prev, [targetAgent.id]: 'thinking' }));
+      await runDirectAgent(targetAgent, cleanText, {
+        workDir,
+        onStatus: (status) => {
+          const legacyMap: Record<AgentExecutionStatus, AgentStatus> = {
+            idle: 'idle', pending: 'waiting', thinking: 'thinking',
+            working: 'working', done: 'done', error: 'done',
+          };
+          setAgentStatuses((prev) => ({ ...prev, [targetAgent.id]: legacyMap[status] }));
         },
-        2000 // 每 2 秒轮询一次
-      );
-
-      onCleanup(cleanup);
-    } catch (err) {
-      console.warn('API unavailable, using mock simulation', err);
-      setIsUsingApi(false);
-      // 降级到本地模拟
-      startMockSimulation();
+        onStream: (text) => {
+          setAgentStreamTexts((prev) => ({ ...prev, [targetAgent.id]: text }));
+          setProgress(50);
+        },
+        onDone: (fullText) => {
+          setAgentStreamTexts((prev) => ({ ...prev, [targetAgent.id]: fullText }));
+          setProgress(100);
+          setRunState('done');
+        },
+        onError: (err) => {
+          console.warn('[autopilot] direct agent failed, falling back to mock:', err);
+          startMockSimulation();
+        },
+      });
+      return;
     }
+
+    // Orchestrated 模式：两阶段调度
+    await runOrchestratedAutopilot(cleanText, {
+      availableAgents: TEAM_AGENTS,
+      workDir,
+      onOrchestrating: (text) => {
+        setOrchestratorText(text);
+        setProgress(10);
+      },
+      onOrchestratorDone: (plan) => {
+        setDispatchPlan(plan);
+        const statuses: Record<string, AgentExecutionStatus> = {};
+        plan.forEach(({ agentId }) => {
+          statuses[agentId] = 'pending';
+        });
+        setAgentExecStatuses(statuses);
+        setProgress(20);
+      },
+      onAgentStatus: (agentId, status) => {
+        setAgentExecStatuses((prev) => ({ ...prev, [agentId]: status }));
+        const legacyMap: Record<AgentExecutionStatus, AgentStatus> = {
+          idle: 'idle', pending: 'waiting', thinking: 'thinking',
+          working: 'working', done: 'done', error: 'done',
+        };
+        setAgentStatuses((prev) => ({ ...prev, [agentId]: legacyMap[status] }));
+      },
+      onAgentStream: (agentId, text) => {
+        setAgentStreamTexts((prev) => ({ ...prev, [agentId]: text }));
+        const doneCount = Object.values(agentExecStatuses()).filter(
+          (s) => s === 'done',
+        ).length;
+        setProgress(
+          20 + Math.round((doneCount / Math.max(dispatchPlan().length, 1)) * 70),
+        );
+      },
+      onDone: (results) => {
+        // 从 Agent 输出中提取产出物
+        const artifactSteps: WorkflowStep[] = [];
+        Object.entries(results).forEach(([agentId, text]) => {
+          const agent = TEAM_AGENTS.find((a) => a.id === agentId);
+          const artMatch = text.match(/###\s+产出物[：:]\s*(.+)\n([\s\S]+)/);
+          if (artMatch && agent) {
+            artifactSteps.push({
+              id: `real-${agentId}`,
+              agentId,
+              agentName: agent.name,
+              action: '执行完成',
+              output: '',
+              durationMs: 0,
+              artifact: {
+                title: artMatch[1].trim(),
+                content: artMatch[2].trim().slice(0, 500),
+              },
+            });
+          }
+        });
+        setArtifacts(artifactSteps);
+        setProgress(100);
+        setRunState('done');
+      },
+      onError: (err) => {
+        console.warn('[autopilot] orchestration failed, falling back to mock:', err);
+        startMockSimulation();
+      },
+    });
   };
 
   onMount(() => {
@@ -353,21 +415,13 @@ const EnterpriseAutopilot = () => {
           <Zap size={16} style={{ color: chartColors.primary }} />
           输入目标，启动 Agent 自动驾驶
         </div>
-        <textarea
+        <MentionInput
           value={goal()}
-          onInput={(e) => setGoal(e.currentTarget.value)}
-          placeholder="描述你的目标，例如：为苍穹财务增加「智能费用报销审批」功能..."
+          onChange={setGoal}
           disabled={runState() === 'running'}
-          style={{
-            width: '100%',
-            'min-height': '80px',
-            'margin-bottom': '12px',
-            'font-size': '14px',
-            padding: '8px 12px',
-            'border': `1px solid ${themeColors.border}`,
-            'border-radius': '6px',
-            'font-family': 'inherit',
-          }}
+          placeholder="描述你的目标，或输入 @ 直接调用某个 Agent，例如：为苍穹财务增加「智能费用报销审批」功能..."
+          agents={TEAM_AGENTS}
+          style={{ 'margin-bottom': '12px' }}
         />
         <div style={{ display: 'flex', 'align-items': 'center', gap: '8px', 'flex-wrap': 'wrap' }}>
           <span style={{ 'font-size': '12px', color: themeColors.textMuted }}>快速示例：</span>
@@ -454,7 +508,7 @@ const EnterpriseAutopilot = () => {
               <span style={{ 'font-size': '12px', color: themeColors.textMuted }}>
                 {runState() === 'done'
                   ? '所有 Agent 执行完成'
-                  : `正在执行... ${doneCount()}/${teamAgents.length} 个 Agent 完成`}
+                  : `正在执行... ${doneCount()}/${TEAM_AGENTS.length} 个 Agent 完成`}
               </span>
               <span style={{ 'font-size': '12px', color: themeColors.textMuted }}>{progress()}%</span>
             </div>
@@ -492,10 +546,10 @@ const EnterpriseAutopilot = () => {
         >
           <div style={{ display: 'flex', 'align-items': 'center', gap: '6px', 'margin-bottom': '12px', 'font-weight': 600 }}>
             <Bot size={16} />
-            Agent 团队（{doneCount()}/{teamAgents.length} 完成）
+            Agent 团队（{doneCount()}/{TEAM_AGENTS.length} 完成）
           </div>
           <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
-            <For each={teamAgents}>
+            <For each={TEAM_AGENTS}>
               {(agent) => (
                 <AgentCard
                   agent={agent}
@@ -520,7 +574,7 @@ const EnterpriseAutopilot = () => {
             <Clock size={16} />
             执行时间轴
           </div>
-          {visibleSteps().length === 0 ? (
+          {visibleSteps().length === 0 && dispatchPlan().length === 0 ? (
             <div style={{ 'text-align': 'center', padding: '48px 0', color: themeColors.textMuted }}>
               <Bot size={40} style={{ 'margin-bottom': '12px', display: 'block' }} />
               <div style={{ 'font-size': '14px' }}>启动自动驾驶后，Agent 执行过程将在此实时显示</div>
@@ -534,9 +588,75 @@ const EnterpriseAutopilot = () => {
                 'padding-right': '4px',
               }}
             >
+              {/* Phase 1: Orchestrator 思考输出 */}
+              <Show when={orchestratorText() && dispatchPlan().length === 0}>
+                <div style={{
+                  padding: '10px 12px',
+                  background: themeColors.primaryBg,
+                  border: `1px solid ${themeColors.primaryBorder}`,
+                  'border-radius': '6px',
+                  'margin-bottom': '8px',
+                }}>
+                  <div style={{ 'font-size': '12px', 'font-weight': 600, color: chartColors.primary, 'margin-bottom': '4px' }}>
+                    Orchestrator 规划中...
+                  </div>
+                  <div style={{ 'font-size': '11px', color: themeColors.textSecondary, 'white-space': 'pre-wrap', 'max-height': '120px', 'overflow-y': 'auto' }}>
+                    {orchestratorText()}
+                  </div>
+                </div>
+              </Show>
+
+              {/* Phase 2: 各 Agent 流式输出 */}
+              <For each={dispatchPlan()}>
+                {(item) => {
+                  const agent = TEAM_AGENTS.find((a) => a.id === item.agentId);
+                  const text = () => agentStreamTexts()[item.agentId] ?? '';
+                  const execStatus = () => agentExecStatuses()[item.agentId] ?? 'pending';
+                  const isStreaming = () => execStatus() === 'thinking' || execStatus() === 'working';
+                  if (!agent) return null;
+                  return (
+                    <div style={{ 'padding-bottom': '12px', display: 'flex', gap: '12px' }}>
+                      <div style={{
+                        width: '20px', height: '20px', 'border-radius': '50%', 'flex-shrink': 0,
+                        'background-color': execStatus() === 'done' ? agent.color : 'transparent',
+                        border: isStreaming() ? `2px solid ${agent.color}` : `2px solid ${themeColors.border}`,
+                        display: 'flex', 'align-items': 'center', 'justify-content': 'center',
+                      }}>
+                        <Show when={isStreaming()}>
+                          <Loader2 size={12} style={{ color: agent.color, animation: 'spin 1s linear infinite' }} />
+                        </Show>
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: 'flex', 'align-items': 'center', gap: '6px', 'margin-bottom': '4px' }}>
+                          <span style={{
+                            display: 'inline-block', background: agent.color, color: 'white',
+                            padding: '0 6px', 'border-radius': '4px', 'font-size': '11px',
+                          }}>
+                            {agent.name}
+                          </span>
+                          <span style={{ 'font-size': '11px', color: themeColors.textMuted }}>
+                            {item.task.slice(0, 40)}...
+                          </span>
+                        </div>
+                        <Show when={text()}>
+                          <div style={{
+                            'font-size': '11px', color: themeColors.textSecondary,
+                            'white-space': 'pre-wrap', 'line-height': '1.6',
+                            'max-height': '200px', 'overflow-y': 'auto',
+                            background: themeColors.hover, padding: '6px 8px', 'border-radius': '4px',
+                          }}>
+                            {text()}
+                          </div>
+                        </Show>
+                      </div>
+                    </div>
+                  );
+                }}
+              </For>
+
               <For each={visibleSteps()}>
                 {(step, idx) => {
-                  const agent = teamAgents.find((a) => a.id === step.agentId)!;
+                  const agent = TEAM_AGENTS.find((a) => a.id === step.agentId)!;
                   const isLast = idx() === visibleSteps().length - 1 && runState() === 'running';
                   return (
                     <div style={{ 'padding-bottom': '16px', display: 'flex', gap: '12px' }}>
@@ -619,13 +739,8 @@ const EnterpriseAutopilot = () => {
               <div>
                 <div style={{ 'font-weight': 600, 'font-size': '13px', color: chartColors.success }}>全部完成</div>
                 <div style={{ 'font-size': '12px', color: themeColors.textMuted }}>
-                  调度 {teamAgents.length} 个 Agent，完成 {teamWorkflowSteps.length} 个任务，节省约 18 小时人工工时
+                  调度 {TEAM_AGENTS.length} 个 Agent，完成 {artifacts().length || teamWorkflowSteps.length} 个任务，节省约 18 小时人工工时
                 </div>
-                {sessionResult() && (
-                  <div style={{ 'font-size': '12px', color: chartColors.primary, 'margin-top': '4px' }}>
-                    实际结果：{sessionResult()}
-                  </div>
-                )}
               </div>
             </div>
           )}
@@ -653,7 +768,7 @@ const EnterpriseAutopilot = () => {
             <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
               <For each={artifacts()}>
                 {(step) => {
-                  const agent = teamAgents.find((a) => a.id === step.agentId)!;
+                  const agent = TEAM_AGENTS.find((a) => a.id === step.agentId)!;
                   return (
                     <div
                       style={{

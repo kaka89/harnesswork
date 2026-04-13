@@ -40,11 +40,6 @@ harnesswork 是基于 [OpenWork](https://github.com/different-ai/openwork) fork 
 | 文档类型 | 路径 | 说明 |
 |---------|------|------|
 | 特性文档 | `docs/features/{feature-name}/{feature-name}.md` | 特性需求，含关键决策和评审日志 |
-| MODULE 规格 | `docs/features/{feature-name}/spec/MODULE-{XXX}-{name}.md` | API 接口规格与行为规格 |
-| SDD（特性级） | `docs/features/{feature-name}/spec/SDD-{XXX}-{name}.md` | 特性系统设计文档（可选） |
-| OpenAPI | `docs/features/{feature-name}/spec/openapi/{name}.yaml` | 机器可读 API 契约 |
-| PLAN | `docs/features/{feature-name}/plan/PLAN-{XXX}-{name}.md` | 特性迭代计划 |
-| TASK | `docs/features/{feature-name}/task/TASK-{XXX}-{XX}.md` | 开发执行任务卡 |
 | Benchmark | `docs/features/benchmark/` | 竞品对标与 GAP 分析 |
 
 ### delivery/ — 交付文档区（执行态）

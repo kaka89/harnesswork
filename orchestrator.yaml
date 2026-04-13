@@ -44,7 +44,7 @@ stages:
   - id: module
     name: 模块规格定义
     description: 基于 approved SDD 生成 MODULE + OpenAPI + 契约测试骨架
-    agent: contracts-agent
+    agent: module-agent
     skills:
       - gen-module
       - validate-schema

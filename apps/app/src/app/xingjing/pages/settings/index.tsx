@@ -1,4 +1,5 @@
 import { Component, createSignal, For, Show, createEffect, onMount } from 'solid-js';
+import { useSearchParams } from '@solidjs/router';
 import { Palette, Bot, Github, Clock, ShieldCheck, Sun, Moon, Save, FlaskConical, Zap, CheckCircle, AlertCircle, MessageSquare, X, Send, Loader, Package, Trash2, ChevronDown, ChevronUp, FolderOpen, User, Lock, AlertTriangle, Eye, EyeOff } from 'lucide-solid';
 import { useAppStore } from '../../stores/app-store';
 import { themeColors, chartColors } from '../../utils/colors';
@@ -1837,6 +1838,20 @@ const ProductListTab: Component = () => {
 const ProfileTab: Component = () => {
   const user = currentUser;
 
+  // ── 头像 ─────────────────────────────────────────────────
+  const [avatarPreview, setAvatarPreview] = createSignal<string | null>(null);
+  const avatarSrc = () => avatarPreview() ?? user()?.avatar_url ?? null;
+
+  const handleAvatarChange = (e: Event) => {
+    const file = (e.currentTarget as HTMLInputElement).files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      setAvatarPreview(ev.target?.result as string);
+    };
+    reader.readAsDataURL(file);
+  };
+
   // ── 个人信息 ─────────────────────────────────────────────
   const [name, setName] = createSignal(user()?.name ?? '');
   const [phone, setPhone] = createSignal(user()?.phone ?? '');
@@ -1864,7 +1879,7 @@ const ProfileTab: Component = () => {
     setProfileSaving(true);
     setProfileMsg(null);
     try {
-      await updateProfile(name().trim(), phone().trim() || undefined);
+      await updateProfile(name().trim(), phone().trim() || undefined, avatarPreview() ?? user()?.avatar_url ?? undefined);
       setProfileMsg({ ok: true, text: '个人信息已更新' });
     } catch (err) {
       setProfileMsg({ ok: false, text: err instanceof Error ? err.message : '更新失败，请重试' });
@@ -1928,6 +1943,50 @@ const ProfileTab: Component = () => {
         </div>
 
         <form onSubmit={handleSaveProfile} class="space-y-4">
+          {/* 头像 */}
+          <div class="flex items-center gap-4">
+            <label class="relative cursor-pointer group" title="点击更换头像">
+              <input
+                type="file"
+                accept="image/*"
+                class="hidden"
+                onChange={handleAvatarChange}
+                disabled={profileSaving()}
+              />
+              <Show
+                when={avatarSrc()}
+                fallback={
+                  <div
+                    class="w-16 h-16 rounded-full flex items-center justify-center text-white text-xl font-semibold select-none"
+                    style={{ background: chartColors.primary }}
+                  >
+                    {(user()?.name ?? '?')[0].toUpperCase()}
+                  </div>
+                }
+              >
+                {(src) => (
+                  <img
+                    src={src()}
+                    alt="头像"
+                    class="w-16 h-16 rounded-full object-cover"
+                    style={{ border: `2px solid ${themeColors.border}` }}
+                  />
+                )}
+              </Show>
+              {/* 悬停遮罩 */}
+              <div
+                class="absolute inset-0 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                style={{ background: 'rgba(0,0,0,0.4)' }}
+              >
+                <User size={18} style={{ color: '#fff' }} />
+              </div>
+            </label>
+            <div class="space-y-0.5">
+              <p class="text-xs font-medium" style={{ color: themeColors.text }}>个人头像</p>
+              <p class="text-xs" style={{ color: themeColors.textMuted }}>点击头像选择图片（支持 JPG / PNG / GIF）</p>
+            </div>
+          </div>
+
           {/* 邮箱（只读） */}
           <div class="space-y-1.5">
             <label class="block text-xs font-medium" style={{ color: themeColors.textMuted }}>邮箱（不可修改）</label>
@@ -2191,7 +2250,8 @@ const TABS = [
 ];
 
 const Settings: Component = () => {
-  const [activeTab, setActiveTab] = createSignal('theme');
+  const [params] = useSearchParams();
+  const [activeTab, setActiveTab] = createSignal(params.tab ?? 'theme');
 
   return (
     <div>

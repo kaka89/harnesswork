@@ -24,6 +24,7 @@ export interface AuthUser {
   email: string;
   name: string;
   phone?: string;
+  avatar_url?: string;
   role: string;
   tenant_id: number;
   status: string;
@@ -177,10 +178,10 @@ export function logout(): void {
  * Update the current user's profile (name and phone).
  * On success, updates currentUser signal.
  */
-export async function updateProfile(name: string, phone?: string): Promise<AuthUser> {
+export async function updateProfile(name: string, phone?: string, avatarUrl?: string): Promise<AuthUser> {
   const resp = await apiFetch<MeResponse>('/api/v1/auth/me', {
     method: 'PUT',
-    body: JSON.stringify({ name, phone: phone ?? '' }),
+    body: JSON.stringify({ name, phone: phone ?? '', avatar_url: avatarUrl ?? '' }),
   });
   setCurrentUser(resp.data);
   return resp.data;

@@ -153,7 +153,9 @@ const ModeSelectPage = lazy(() => import("./app/pages/mode-select"));
 // 星静平台：懒加载
 const XingjingPage = lazy(() => import("./app/pages/xingjing"));
 // 原生集成版：直接嵌入 apps/app/src/app/xingjing，无 iframe
-const XingjingNativePage = lazy(() => import("./app/pages/xingjing-native"));
+const XingjingNativePageLazy = lazy(() => import("./app/pages/xingjing-native"));
+// 路由注册用包装器（路由系统不传 OpenWork 上下文，直接以空 props 渲染）
+const XingjingNativePage = () => <XingjingNativePageLazy />;
 
 render(
   () => (

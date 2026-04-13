@@ -22,7 +22,7 @@ import ProductSwitcher from '../product/product-switcher';
 import { callAgent } from '../../services/opencode-client';
 import {
   Zap, TrendingUp, FileText, Palette, Code, Timer, CheckCircle, Cloud,
-  BarChart3, BookOpen, Bot, Settings, PlayCircle, Lightbulb, Rocket, Sun, Moon
+  BarChart3, BookOpen, Bot, Settings, PlayCircle, Lightbulb, Rocket, Sun, Moon, Wifi, WifiOff
 } from 'lucide-solid';
 import { themeColors } from '../../utils/colors';
 
@@ -100,7 +100,7 @@ const [aiLoading, setAiLoading] = createSignal(false);
 const MainLayout: ParentComponent = (props) => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { state, actions } = useAppStore();
+  const { state, actions, openworkStatus } = useAppStore();
 
   const [openKeys, setOpenKeys] = createSignal<string[]>([]);
   const [currentSlogan, setCurrentSlogan] = createSignal(
@@ -473,6 +473,25 @@ const MainLayout: ParentComponent = (props) => {
                 </div>
                 <span class="font-semibold text-sm text-[var(--dls-text-primary)]">AI 虚拟团队</span>
                 <span class="text-xs px-2 py-0.5 bg-[var(--dls-success-bg)] text-[var(--green-9)] rounded-full border border-[var(--dls-success-border)]">已加载知识库</span>
+                {/* OpenWork 连接状态徽章 */}
+                <Show
+                  when={openworkStatus() === 'connected' || openworkStatus() === 'limited'}
+                  fallback={
+                    <span class="text-xs px-2 py-0.5 rounded-full flex items-center gap-1"
+                      style={{ background: 'var(--dls-error-bg, rgba(239,68,68,0.08))', color: 'var(--red-9, #dc2626)', border: '1px solid var(--dls-error-border, rgba(239,68,68,0.2))' }}
+                    >
+                      <WifiOff size={10} class="inline" />
+                      OpenWork 断开
+                    </span>
+                  }
+                >
+                  <span class="text-xs px-2 py-0.5 rounded-full flex items-center gap-1"
+                    style={{ background: openworkStatus() === 'connected' ? 'var(--dls-success-bg)' : 'var(--amber-3, #fef3c7)', color: openworkStatus() === 'connected' ? 'var(--green-9)' : 'var(--amber-11, #92400e)', border: openworkStatus() === 'connected' ? '1px solid var(--dls-success-border)' : '1px solid var(--amber-6, #fcd34d)' }}
+                  >
+                    <Wifi size={10} class="inline" />
+                    {openworkStatus() === 'connected' ? 'OpenWork 已连接' : 'OpenWork 限制模式'}
+                  </span>
+                </Show>
               </div>
               <button
                 class="text-[var(--dls-text-secondary)] hover:text-[var(--dls-text-primary)] text-lg"

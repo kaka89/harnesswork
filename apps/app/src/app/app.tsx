@@ -2346,7 +2346,18 @@ export default function App() {
         <ModeSelectPage />
       </Match>
       <Match when={location.pathname.startsWith("/xingjing-solid")}>
-        <XingjingNativePage />
+        <XingjingNativePage
+          openworkServerClient={openworkServerClient()}
+          openworkServerStatus={() => {
+            const s = openworkServerStatus();
+            return (s === 'connected' || s === 'limited') ? s : 'disconnected';
+          }}
+          opencodeClient={client()}
+          selectedModel={() => {
+            const m = modelConfig.selectedSessionModel();
+            return m ? { providerID: m.providerID, modelID: m.modelID } : null;
+          }}
+        />
       </Match>
       <Match when={location.pathname.startsWith("/xingjing")}>
         <XingjingPage />

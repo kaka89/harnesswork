@@ -10,9 +10,46 @@ import {
 } from '../../mock/agentWorkshop';
 import { taskList } from '../../mock/tasks';
 import { themeColors, chartColors } from '../../utils/colors';
-import { callAgent } from '../../services/opencode-client';
+import { callAgent, discoverAllSkills, type XingjingSkillItem, type XingjingAgentItem, type SkillPlatform } from '../../services/opencode-client';
 import { useAppStore } from '../../stores/app-store';
 import { loadAgentWorkshopData, saveAgentWorkshopData } from '../../services/file-store';
+
+// 平台徽章配色
+const PLATFORM_COLORS: Record<SkillPlatform, string> = {
+  openwork: '#7c3aed',
+  opencode: '#2563eb',
+  agents: '#16a34a',
+  claude: '#ea580c',
+  kiro: '#6b7280',
+};
+
+const PLATFORM_LABELS: Record<SkillPlatform, string> = {
+  openwork: 'OpenWork',
+  opencode: 'OpenCode',
+  agents: 'Agents',
+  claude: 'Claude',
+  kiro: 'Kiro',
+};
+
+// 平台徽章组件
+const PlatformBadge: Component<{ platform: SkillPlatform }> = (props) => (
+  <span
+    class="text-xs px-1.5 py-0.5 rounded text-white font-mono"
+    style={{ background: PLATFORM_COLORS[props.platform] }}
+  >
+    {PLATFORM_LABELS[props.platform]}
+  </span>
+);
+
+// 合并去重：openwork 优先
+function deduplicateById<T extends { id: string }>(items: T[]): T[] {
+  const seen = new Set<string>();
+  return items.filter(item => {
+    if (seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
+}
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -235,8 +272,10 @@ const SkillCard: Component<{
 // ─── Main Component ─────────────────────────────────────────────────
 
 const AgentWorkshop: Component = () => {
-  const { productStore } = useAppStore();
+  const { productStore, actions } = useAppStore();
   const [agents, setAgents] = createSignal<AgentDef[]>([...teamAgents]);
+  const [allDiscoveredSkills, setAllDiscoveredSkills] = createSignal<XingjingSkillItem[]>([]);
+  const [allDiscoveredAgents, setAllDiscoveredAgents] = createSignal<XingjingAgentItem[]>([]);
   const initAgentSkills = (): Record<string, string[]> => {
     const map: Record<string, string[]> = {};
     teamAgents.forEach((a) => { map[a.id] = [...a.skills]; });
@@ -253,6 +292,44 @@ const AgentWorkshop: Component = () => {
   // ─── 持久化助手 ───
   const getWorkDir = () => productStore.activeProduct()?.workDir ?? '';
 
+  // 解析简单 frontmatter
+  const parseOwFrontmatter = (content: string): Record<string, unknown> => {
+    const match = content.match(/^---\s*\n([\s\S]*?)\n---/);
+    const result: Record<string, unknown> = {};
+    if (!match) return result;
+    for (const line of match[1].split('\n')) {
+      const idx = line.indexOf(':');
+      if (idx < 0) continue;
+      const key = line.slice(0, idx).trim();
+      const raw = line.slice(idx + 1).trim();
+      if (raw) result[key] = raw.replace(/^["']|["']$/g, '');
+    }
+    const skillsMatch = content.match(/^skills:\s*\n((?:\s*-\s*.+\n?)*)/m);
+    if (skillsMatch) {
+      result['skills'] = skillsMatch[1].split('\n')
+        .map((l: string) => l.replace(/^\s*-\s*/, '').trim()).filter(Boolean);
+    }
+    return result;
+  };
+
+  // 生成 Agent Markdown
+  const buildAgentMarkdown = (agent: AgentDef, skills: string[]): string => {
+    const skillLines = skills.map(s => `  - ${s}`).join('\n');
+    return [
+      '---',
+      `xingjing-type: agent`,
+      `id: ${agent.id}`,
+      `name: ${agent.name}`,
+      `role: ${agent.role}`,
+      ...(skills.length > 0 ? ['skills:', ...skills.map(s => `  - ${s}`)] : []),
+      '---',
+      '',
+      `# ${agent.name}`,
+      '',
+      agent.description,
+    ].join('\n');
+  };
+
   const persistData = () => {
     const workDir = getWorkDir();
     if (!workDir) return;
@@ -265,16 +342,53 @@ const AgentWorkshop: Component = () => {
 
   onMount(async () => {
     const workDir = getWorkDir();
-    if (!workDir) return;
-    const data = await loadAgentWorkshopData(workDir, 'team');
-    if (data.agents && data.agents.length > 0) {
-      setAgents(data.agents as unknown as AgentDef[]);
+
+    // 路径1: 从文件系统加载本地持久化数据
+    if (workDir) {
+      const data = await loadAgentWorkshopData(workDir, 'team');
+      if (data.agents && data.agents.length > 0) setAgents(data.agents as unknown as AgentDef[]);
+      if (data.agentSkills && Object.keys(data.agentSkills).length > 0) setAgentSkills(data.agentSkills);
+      if (data.assignments && data.assignments.length > 0) setAssignments(data.assignments as unknown as AgentAssignment[]);
     }
-    if (data.agentSkills && Object.keys(data.agentSkills).length > 0) {
-      setAgentSkills(data.agentSkills);
+
+    // 路径2: 从 OpenWork 加载星静自建的 agent/skill（.qoder/skills/）
+    const owItems = await actions.listOpenworkSkills();
+    if (owItems.length > 0) {
+      const owSkillItems: XingjingSkillItem[] = owItems
+        .filter(s => s.name.startsWith('skill-'))
+        .map(s => ({
+          id: `openwork:${s.name}`,
+          name: s.name.replace('skill-', ''),
+          description: s.description,
+          platform: 'openwork' as SkillPlatform,
+          path: s.path ?? '',
+          editable: true,
+        }));
+
+      const owAgentItems: XingjingAgentItem[] = await Promise.all(
+        owItems.filter(s => s.name.startsWith('agent-')).map(async (item) => {
+          const detail = await actions.getOpenworkSkill(item.name);
+          const meta = parseOwFrontmatter(detail?.content ?? '');
+          return {
+            id: `openwork:${item.name}`,
+            name: (meta['name'] as string) ?? item.name,
+            description: item.description,
+            skills: (meta['skills'] as string[]) ?? [],
+            platform: 'openwork' as SkillPlatform,
+            editable: true,
+          };
+        })
+      );
+
+      setAllDiscoveredSkills(prev => deduplicateById([...owSkillItems, ...prev]));
+      setAllDiscoveredAgents(prev => deduplicateById([...owAgentItems, ...prev]));
     }
-    if (data.assignments && data.assignments.length > 0) {
-      setAssignments(data.assignments as unknown as AgentAssignment[]);
+
+    // 路径3: 多平台目录扫描（.opencode/、.agents/、.claude/、.kiro/）
+    if (workDir) {
+      const { skills: fsSkills, agents: fsAgents } = await discoverAllSkills(workDir);
+      setAllDiscoveredSkills(prev => deduplicateById([...prev, ...fsSkills]));
+      setAllDiscoveredAgents(prev => deduplicateById([...prev, ...fsAgents]));
     }
   });
 
@@ -305,6 +419,12 @@ const AgentWorkshop: Component = () => {
   const getAvailableSkills = (agentId: string) => {
     const current = agentSkills()[agentId] || [];
     return teamSkillPool.filter((s) => !current.includes(s.name));
+  };
+
+  // 全部可用的外部 Skill（多平台发现的）
+  const getExternalSkills = (agentId: string) => {
+    const current = agentSkills()[agentId] || [];
+    return allDiscoveredSkills().filter(s => !current.includes(s.id));
   };
 
   const getSkillStatus = (agentId: string, skillName: string): 'done' | 'running' | 'pending' | null => {
@@ -478,7 +598,7 @@ const AgentWorkshop: Component = () => {
     setAgentModalOpen(true);
   };
 
-  const saveAgent = () => {
+  const saveAgent = async () => {
     const name = modalName().trim();
     const role = modalRole().trim();
     const desc = modalDescription().trim();
@@ -491,34 +611,32 @@ const AgentWorkshop: Component = () => {
     const editing = editingAgent();
     if (editing) {
       const updated: AgentDef = {
-        ...editing,
-        name,
-        role,
-        description: desc,
-        emoji: selectedEmoji(),
-        color: selectedColor().color,
-        bgColor: selectedColor().bgColor,
-        borderColor: selectedColor().borderColor,
+        ...editing, name, role, description: desc,
+        emoji: selectedEmoji(), color: selectedColor().color,
+        bgColor: selectedColor().bgColor, borderColor: selectedColor().borderColor,
       };
       setAgents((prev) => prev.map((a) => (a.id === editing.id ? updated : a)));
       if (selectedAgent()?.id === editing.id) setSelectedAgent(updated);
-      alert(`AI搭档 "${name}" 已更新`);
+      // 尝试同步到 OpenWork
+      const content = buildAgentMarkdown(updated, agentSkills()[editing.id] ?? []);
+      const ok = await actions.upsertOpenworkSkill(`agent-${editing.id}`, content, desc);
+      if (!ok) alert(`AI搭档 "${name}" 已更新（本地）`);
+      else alert(`AI搭档 "${name}" 已同步到 OpenWork`);
     } else {
       const newId = `custom-agent-${Date.now()}`;
       const newAgent: AgentDef = {
-        id: newId,
-        name,
-        role,
-        description: desc,
-        emoji: selectedEmoji(),
-        color: selectedColor().color,
-        bgColor: selectedColor().bgColor,
-        borderColor: selectedColor().borderColor,
+        id: newId, name, role, description: desc,
+        emoji: selectedEmoji(), color: selectedColor().color,
+        bgColor: selectedColor().bgColor, borderColor: selectedColor().borderColor,
         skills: [],
       };
       setAgents((prev) => [...prev, newAgent]);
       setAgentSkills((prev) => ({ ...prev, [newId]: [] }));
-      alert(`AI搭档 "${name}" 已创建`);
+      // 尝试同步到 OpenWork
+      const content = buildAgentMarkdown(newAgent, []);
+      const ok = await actions.upsertOpenworkSkill(`agent-${newId}`, content, desc);
+      if (!ok) alert(`AI搭档 "${name}" 已创建（本地）`);
+      else alert(`AI搭档 "${name}" 已同步到 OpenWork`);
     }
     setAgentModalOpen(false);
     persistData();
@@ -854,10 +972,33 @@ const AgentWorkshop: Component = () => {
                       </div>
                     </Show>
                   </div>
+
+                  {/* 多平台发现的 Skill */}
+                  <Show when={getExternalSkills(selectedAgent()!.id).length > 0}>
+                    <div>
+                      <div class="text-sm font-medium mb-2 py-2" style={{ 'border-top': `1px solid ${themeColors.borderLight}`, color: themeColors.textMuted }}>
+                        多平台 Skill（只读）
+                      </div>
+                      <div class="grid grid-cols-1 gap-2 max-h-48 overflow-y-auto pr-2">
+                        <For each={getExternalSkills(selectedAgent()!.id)}>
+                          {(skill) => (
+                            <div class="rounded-lg p-3" style={{ background: themeColors.bgSubtle, border: `1px solid ${themeColors.borderLight}` }}>
+                              <div class="flex items-center gap-2 mb-1">
+                                <PlatformBadge platform={skill.platform} />
+                                <span class="text-sm font-medium" style={{ color: themeColors.text }}>{skill.name}</span>
+                              </div>
+                              <Show when={skill.description}>
+                                <div class="text-xs mb-2" style={{ color: themeColors.textMuted }}>{skill.description}</div>
+                              </Show>
+                              <div class="text-xs" style={{ color: themeColors.textMuted }}>只读 · {skill.path}</div>
+                            </div>
+                          )}
+                        </For>
+                      </div>
+                    </div>
+                  </Show>
                 </div>
               </Show>
-
-              {/* Orchestration Tab */}
               <Show when={activeTab() === 'orchestration'}>
                 <div class="space-y-4">
                   <div>

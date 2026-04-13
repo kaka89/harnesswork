@@ -10,10 +10,12 @@
  */
 import { lazy, Suspense, createSignal, onMount, Show } from 'solid-js';
 import { Router, Route, useNavigate } from '@solidjs/router';
-import { AppStoreProvider } from '../xingjing/stores/app-store';
+import { AppStoreProvider, type XingjingOpenworkContext } from '../xingjing/stores/app-store';
 import MainLayout, { BackNavigationContext } from '../xingjing/components/layouts/main-layout';
 import { checkAuth, currentUser } from '../xingjing/services/auth-service';
 import AuthPage from '../xingjing/pages/auth';
+import type { OpenworkServerClient } from '../lib/openwork-server';
+import type { createClient } from '../lib/opencode';
 
 // 团队版页面
 const Autopilot = lazy(() => import('../xingjing/pages/autopilot'));
@@ -42,12 +44,50 @@ const SoloReview = lazy(() => import('../xingjing/pages/solo/review'));
 const SoloKnowledge = lazy(() => import('../xingjing/pages/solo/knowledge'));
 const SoloAgentWorkshop = lazy(() => import('../xingjing/pages/solo/agent-workshop'));
 
-export default function XingjingNativePage() {
-  // 使用外层 Router 的 navigate，通过 Context 传入 MainLayout 的返回按钮
+interface XingjingNativePageProps {
+  /** OpenWork 服务客户端，用于查找 workspace、读写 Skill/Config */
+  openworkServerClient?: OpenworkServerClient | null;
+  /** OpenWork 连接状态 */
+  openworkServerStatus?: () => 'connected' | 'disconnected' | 'limited';
+  /** OpenWork 已初始化的 OpenCode client（复用） */
+  opencodeClient?: ReturnType<typeof createClient> | null;
+  /** OpenWork 当前选中的模型 */
+  selectedModel?: () => { providerID: string; modelID: string } | null;
+}
+
+export default function XingjingNativePage(props: XingjingNativePageProps) {
+  // 使用外层 Router 的 navigate，通过 Context 传入 MainLayout 的返回按钟
   const outerNavigate = useNavigate();
 
+  // 构建 XingjingOpenworkContext，将 OpenWork 能力注入到星静内部
+  const openworkCtx: XingjingOpenworkContext | undefined = props.openworkServerClient
+    ? {
+        resolveWorkspaceByDir: async (productDir: string) => {
+          const list = await props.openworkServerClient!.listWorkspaces().catch(() => null);
+          const match = list?.items?.find((w) => w.path === productDir)
+            ?? list?.workspaces?.find((w) => w.path === productDir);
+          return match?.id ?? null;
+        },
+        serverStatus: () => props.openworkServerStatus?.() ?? 'disconnected',
+        opencodeClient: () => props.opencodeClient ?? null,
+        selectedModel: () => props.selectedModel?.() ?? null,
+        listSkills: (workspaceId) =>
+          props.openworkServerClient!.listSkills(workspaceId)
+            .then((r) => r.items).catch(() => []),
+        getSkill: (workspaceId, name) =>
+          props.openworkServerClient!.getSkill(workspaceId, name).catch(() => null),
+        upsertSkill: (workspaceId, name, content, description) =>
+          props.openworkServerClient!.upsertSkill(workspaceId, { name, content, description })
+            .then(() => true).catch(() => false),
+        readOpencodeConfig: (workspaceId) =>
+          props.openworkServerClient!.readOpencodeConfigFile(workspaceId, 'project').catch(() => null),
+        writeOpencodeConfig: (workspaceId, content) =>
+          props.openworkServerClient!.writeOpencodeConfigFile(workspaceId, 'project', content)
+            .then(() => true).catch(() => false),
+      }
+    : undefined;
+
   // ── 认证状态 ────────────────────────────────────────────────────────────────
-  // authChecked: 初始身份检查是否已完成（避免未检查完成就渲染内容）
   const [authChecked, setAuthChecked] = createSignal(false);
 
   onMount(() => {
@@ -68,7 +108,7 @@ export default function XingjingNativePage() {
         when={currentUser()}
         fallback={<AuthPage onSuccess={() => setAuthChecked(true)} />}
       >
-        <XingjingApp outerNavigate={outerNavigate} />
+        <XingjingApp outerNavigate={outerNavigate} openworkCtx={openworkCtx} />
       </Show>
     </Show>
   );
@@ -76,7 +116,7 @@ export default function XingjingNativePage() {
 
 // ── Inner app (only rendered when authenticated) ────────────────────────────────
 
-function XingjingApp(props: { outerNavigate: ReturnType<typeof useNavigate> }) {
+function XingjingApp(props: { outerNavigate: ReturnType<typeof useNavigate>; openworkCtx?: XingjingOpenworkContext }) {
   const outerNavigate = props.outerNavigate;
 
   return (
@@ -98,7 +138,7 @@ function XingjingApp(props: { outerNavigate: ReturnType<typeof useNavigate> }) {
       {/* 原生 SolidJS 星静 */}
       <div class="flex-1 overflow-hidden">
         <BackNavigationContext.Provider value={() => outerNavigate('/mode-select')}>
-          <AppStoreProvider>
+          <AppStoreProvider openworkCtx={props.openworkCtx}>
             <Suspense fallback={
               <div class="flex items-center justify-center h-full bg-gray-50 text-gray-500 text-sm">
                 加载中...

@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 
 use serde::Deserialize;
 
@@ -55,4 +56,200 @@ pub fn xingjing_delete_product_dir(work_dir: String) -> Result<(), String> {
     }
     fs::remove_dir_all(&path)
         .map_err(|e| format!("删除目录失败 {}: {e}", path.display()))
+}
+
+// ─── Git 检测与安装 ───────────────────────────────────────────────────────────
+
+/// 尝试在常见路径中找到 git 可执行文件
+fn find_git_binary() -> Option<PathBuf> {
+    // 已知常见安装位置
+    let known_paths = [
+        "/usr/bin/git",
+        "/usr/local/bin/git",
+        "/opt/homebrew/bin/git",
+        "/opt/homebrew/opt/git/bin/git",
+        "/usr/local/Cellar/git/bin/git",
+    ];
+    for raw in &known_paths {
+        let p = PathBuf::from(raw);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+
+    // 尝试在现有 PATH 中搜索
+    if let Some(path_env) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path_env) {
+            let candidate = dir.join("git");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    // macOS: 通过 path_helper 获取完整 PATH
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(output) = Command::new("/usr/libexec/path_helper").arg("-s").output() {
+            if output.status.success() {
+                let s = String::from_utf8_lossy(&output.stdout);
+                // 解析 PATH="..."; 格式
+                if let Some(start) = s.find("PATH=\"") {
+                    let rest = &s[start + 6..];
+                    if let Some(end) = rest.find('"') {
+                        let path_val = &rest[..end];
+                        for dir in std::env::split_paths(path_val) {
+                            let candidate = dir.join("git");
+                            if candidate.exists() {
+                                return Some(candidate);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// 检测系统 git 是否已安装且可用
+///
+/// 返回 { installed: bool, version: Option<String> }
+#[tauri::command]
+pub fn xingjing_check_git_installed() -> serde_json::Value {
+    // 先尝试找到具体路径
+    if let Some(git_bin) = find_git_binary() {
+        if let Ok(out) = Command::new(&git_bin).arg("--version").output() {
+            if out.status.success() {
+                let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                return serde_json::json!({ "installed": true, "version": version });
+            }
+        }
+    }
+    // 尝试直接调用 git（靠 PATH 解析）
+    match Command::new("git").arg("--version").output() {
+        Ok(out) if out.status.success() => {
+            let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            serde_json::json!({ "installed": true, "version": version })
+        }
+        _ => serde_json::json!({ "installed": false }),
+    }
+}
+
+/// 尝试找到 brew 可执行文件
+#[cfg(target_os = "macos")]
+fn find_brew_binary() -> Option<PathBuf> {
+    let known = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"];
+    for raw in &known {
+        let p = PathBuf::from(raw);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    if let Some(path_env) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path_env) {
+            let candidate = dir.join("brew");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+/// 安装 git（按操作系统自动选择包管理器）
+///
+/// macOS: brew install git
+/// Windows: winget install Git.Git
+/// Linux: apt-get / dnf / pacman
+///
+/// 返回 { ok: bool, output: String }
+#[tauri::command]
+pub fn xingjing_install_git() -> serde_json::Value {
+    #[cfg(target_os = "macos")]
+    {
+        let brew = match find_brew_binary() {
+            Some(p) => p,
+            None => {
+                return serde_json::json!({
+                    "ok": false,
+                    "output": "未找到 Homebrew。请先安装 Homebrew：https://brew.sh"
+                });
+            }
+        };
+        match Command::new(&brew).args(["install", "git"]).output() {
+            Ok(out) => {
+                let combined = format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                if out.status.success() {
+                    serde_json::json!({ "ok": true, "output": combined })
+                } else {
+                    serde_json::json!({ "ok": false, "output": combined })
+                }
+            }
+            Err(e) => serde_json::json!({ "ok": false, "output": format!("执行 brew 失败: {e}") }),
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        match Command::new("winget")
+            .args(["install", "--id", "Git.Git", "-e", "--source", "winget"])
+            .output()
+        {
+            Ok(out) => {
+                let combined = format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                if out.status.success() {
+                    serde_json::json!({ "ok": true, "output": combined })
+                } else {
+                    serde_json::json!({ "ok": false, "output": combined })
+                }
+            }
+            Err(e) => serde_json::json!({ "ok": false, "output": format!("执行 winget 失败: {e}") }),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // 逐一尝试 apt-get 、dnf 、pacman
+        let managers: &[(&str, &[&str])] = &[
+            ("apt-get", &["-y", "install", "git"]),
+            ("dnf", &["-y", "install", "git"]),
+            ("pacman", &["-S", "--noconfirm", "git"]),
+        ];
+        for (mgr, args) in managers {
+            match Command::new(mgr).args(*args).output() {
+                Ok(out) => {
+                    let combined = format!(
+                        "{}{}",
+                        String::from_utf8_lossy(&out.stdout),
+                        String::from_utf8_lossy(&out.stderr)
+                    );
+                    if out.status.success() {
+                        return serde_json::json!({ "ok": true, "output": combined });
+                    }
+                    // 尝试下一个包管理器
+                }
+                Err(_) => continue,
+            }
+        }
+        serde_json::json!({
+            "ok": false,
+            "output": "未找到可用的包管理器（apt-get/dnf/pacman）"
+        })
+    }
+
+    // 其他平台 fallback
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        serde_json::json!({ "ok": false, "output": "当前平台暂不支持自动安装 git" })
+    }
 }

@@ -987,3 +987,30 @@ export async function initProductDir(
     return { ok: false, error: e?.message ?? String(e) };
   }
 }
+
+/**
+ * 检测系统 git 是否已安装且可用（仅 Tauri 桌面端）。
+ * 通过 Rust 后端在常见安装路径中搜索 git 可执行文件并运行 `git --version`。
+ */
+export async function checkGitInstalled(): Promise<{ installed: boolean; version?: string }> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  try {
+    return await invoke<{ installed: boolean; version?: string }>('xingjing_check_git_installed');
+  } catch {
+    return { installed: false };
+  }
+}
+
+/**
+ * 调用 Tauri 后端安装 git。
+ * macOS 使用 Homebrew、Windows 使用 winget、Linux 使用 apt-get/dnf/pacman。
+ * 安装过程中会阀塞直到完成，前端应展示加载状态。
+ */
+export async function installGit(): Promise<{ ok: boolean; output?: string }> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  try {
+    return await invoke<{ ok: boolean; output?: string }>('xingjing_install_git');
+  } catch (e: any) {
+    return { ok: false, output: e?.message ?? String(e) };
+  }
+}

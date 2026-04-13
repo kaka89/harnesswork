@@ -1,10 +1,19 @@
 import { createSignal, Show, For, onCleanup } from 'solid-js';
-import { FileText, PlayCircle, CheckCircle, Clock, Zap } from 'lucide-solid';
+import { FileText, PlayCircle, CheckCircle, Clock, Zap, Loader2 } from 'lucide-solid';
 import CreateProductModal from '../../../components/product/new-product-modal';
 import { useAppStore } from '../../../stores/app-store';
 import { themeColors, chartColors } from '../../../utils/colors';
-import { soloAgents, soloWorkflowSteps, soloSampleGoals } from '../../../mock/autopilot';
-import { callAgent } from '../../../services/opencode-client';
+import { soloWorkflowSteps, soloSampleGoals } from '../../../mock/autopilot';
+import {
+  SOLO_AGENTS,
+  runOrchestratedAutopilot,
+  runDirectAgent,
+  parseMention,
+  type AutopilotAgent,
+  type DispatchItem,
+  type AgentExecutionStatus,
+} from '../../../services/autopilot-executor';
+import MentionInput from '../../../components/autopilot/mention-input';
 
 interface AgentStatus {
   [key: string]: 'idle' | 'thinking' | 'working' | 'done' | 'waiting';
@@ -34,7 +43,7 @@ const agentNameToId: Record<string, string> = {
 };
 
 const SoloBrainCard = (props: {
-  agent: typeof soloAgents[0];
+  agent: AutopilotAgent;
   status: 'idle' | 'thinking' | 'working' | 'done' | 'waiting';
   currentTask?: string;
   doneToday: number;
@@ -137,15 +146,19 @@ const SoloAutopilot = () => {
   const [goal, setGoal] = createSignal('');
   const [runState, setRunState] = createSignal<RunState>('idle');
   const [agentStatuses, setAgentStatuses] = createSignal<AgentStatus>(
-    Object.fromEntries(soloAgents.map((a) => [a.id, 'idle']))
+    Object.fromEntries(SOLO_AGENTS.map((a) => [a.id, 'idle']))
   );
   const [agentTasks, setAgentTasks] = createSignal<AgentTasks>({});
   const [agentDone, setAgentDone] = createSignal<AgentDone>(
-    Object.fromEntries(soloAgents.map((a) => [a.id, 0]))
+    Object.fromEntries(SOLO_AGENTS.map((a) => [a.id, 0]))
   );
   const [visibleSteps, setVisibleSteps] = createSignal<typeof soloWorkflowSteps>([]);
   const [artifacts, setArtifacts] = createSignal<typeof soloWorkflowSteps>([]);
   const [progress, setProgress] = createSignal(0);
+  const [orchestratorText, setOrchestratorText] = createSignal('');
+  const [dispatchPlan, setDispatchPlan] = createSignal<DispatchItem[]>([]);
+  const [agentStreamTexts, setAgentStreamTexts] = createSignal<Record<string, string>>({});
+  const [agentExecStatuses, setAgentExecStatuses] = createSignal<Record<string, AgentExecutionStatus>>({});
 
   let timelineRef: HTMLDivElement | undefined;
   const timersRef: ReturnType<typeof setTimeout>[] = [];
@@ -158,11 +171,15 @@ const SoloAutopilot = () => {
   const reset = () => {
     clearTimers();
     setRunState('idle');
-    setAgentStatuses(Object.fromEntries(soloAgents.map((a) => [a.id, 'idle'])));
+    setAgentStatuses(Object.fromEntries(SOLO_AGENTS.map((a) => [a.id, 'idle' as const])));
     setAgentTasks({});
     setVisibleSteps([]);
     setArtifacts([]);
     setProgress(0);
+    setOrchestratorText('');
+    setDispatchPlan([]);
+    setAgentStreamTexts({});
+    setAgentExecStatuses({});
   };
 
   // ─── 解析流式文本为 Timeline 步骤 ───
@@ -184,7 +201,7 @@ const SoloAutopilot = () => {
       if (!agentId) continue;
       if (!seenAgents.includes(agentId)) seenAgents.push(agentId);
 
-      const agent = soloAgents.find(a => a.id === agentId);
+      const agent = SOLO_AGENTS.find(a => a.id === agentId);
       const lines = body.split('\n').filter(l => l.trim());
       const action = (lines[0] || '执行中...').replace(/^[-\d.*]+\s*/, '').slice(0, 80);
       const outputLines = lines.slice(1);
@@ -213,7 +230,7 @@ const SoloAutopilot = () => {
       setArtifacts(steps.filter(s => s.artifact));
       const statuses: Record<string, string> = {};
       const tasks: Record<string, string> = {};
-      soloAgents.forEach(a => { statuses[a.id] = 'thinking'; tasks[a.id] = ''; });
+      SOLO_AGENTS.forEach(a => { statuses[a.id] = 'thinking'; tasks[a.id] = ''; });
       seenAgents.forEach((id, i) => {
         if (i < seenAgents.length - 1) {
           statuses[id] = 'done'; tasks[id] = '';
@@ -225,7 +242,7 @@ const SoloAutopilot = () => {
       });
       setAgentStatuses(statuses as AgentStatus);
       setAgentTasks(tasks);
-      setProgress(Math.round((seenAgents.length / soloAgents.length) * 80));
+      setProgress(Math.round((seenAgents.length / SOLO_AGENTS.length) * 80));
     } else if (text.trim()) {
       setAgentStatuses(prev => ({ ...prev, 'product-brain': 'working' }));
       setAgentTasks(prev => ({ ...prev, 'product-brain': '分析目标中...' }));
@@ -261,47 +278,108 @@ const SoloAutopilot = () => {
     });
   };
 
-  // ─── handleStart: 真实 callAgent 调用 + mock 降级 ───
-  const handleStart = () => {
+  // ─── handleStart: 两阶段 Orchestrator 调度 + mock 降级 ───
+  const handleStart = async () => {
     if (!goal().trim()) return;
     reset();
     setRunState('running');
-    setAgentStatuses(Object.fromEntries(soloAgents.map(a => [a.id, 'thinking'])));
 
     const workDir = productStore.activeProduct()?.workDir;
-    callAgent({
-      systemPrompt: `你是星静独立版 AI 虚拟团队，负责全自动完成用户的产品目标。你同时扮演 4 个角色并行工作。
-请依次以每个角色的视角输出执行计划和结果。每个角色用 "## 角色名" 开头：
-- ## AI产品搭档
-- ## AI工程搭档
-- ## AI运营搭档
-- ## AI增长搭档
+    const { targetAgent, cleanText } = parseMention(goal(), SOLO_AGENTS);
 
-每个角色输出：
-1. 第一行：执行动作（一句话概括）
-2. 后续行：执行结果（要点列表）
-3. 如有具体产出，用 "### 产出物" 子标题标记
-保持简洁，每个角色输出不超过 8 行。`,
-      userPrompt: goal(),
-      directory: workDir,
-      title: `xingjing-solo-autopilot-${Date.now()}`,
-      onText: (accumulated) => updateFromStream(accumulated),
-      onDone: (fullText) => {
-        updateFromStream(fullText);
-        setAgentStatuses(Object.fromEntries(soloAgents.map(a => [a.id, 'done'])));
-        setAgentTasks({});
-        setAgentDone(prev => {
-          const n: AgentDone = { ...prev };
-          soloAgents.forEach(a => { n[a.id] = (n[a.id] || 0) + 1; });
-          return n;
+    if (targetAgent) {
+      // @mention 直接调用模式
+      setAgentStatuses((prev) => ({ ...prev, [targetAgent.id]: 'thinking' }));
+      await runDirectAgent(targetAgent, cleanText, {
+        workDir,
+        onStatus: (status) => {
+          const legacyMap: Record<AgentExecutionStatus, 'idle' | 'thinking' | 'working' | 'done' | 'waiting'> = {
+            idle: 'idle', pending: 'waiting', thinking: 'thinking',
+            working: 'working', done: 'done', error: 'done',
+          };
+          setAgentStatuses((prev) => ({ ...prev, [targetAgent.id]: legacyMap[status] }));
+        },
+        onStream: (text) => {
+          setAgentStreamTexts((prev) => ({ ...prev, [targetAgent.id]: text }));
+          setProgress(50);
+        },
+        onDone: (fullText) => {
+          setAgentStreamTexts((prev) => ({ ...prev, [targetAgent.id]: fullText }));
+          setAgentDone((prev) => ({ ...prev, [targetAgent.id]: (prev[targetAgent.id] || 0) + 1 }));
+          setProgress(100);
+          setRunState('done');
+        },
+        onError: (err) => {
+          console.warn('[solo-autopilot] direct agent failed, fallback to mock:', err);
+          runMockSimulation();
+        },
+      });
+      return;
+    }
+
+    // Orchestrated 两阶段模式
+    await runOrchestratedAutopilot(cleanText, {
+      availableAgents: SOLO_AGENTS,
+      workDir,
+      onOrchestrating: (text) => {
+        setOrchestratorText(text);
+        setProgress(10);
+      },
+      onOrchestratorDone: (plan) => {
+        setDispatchPlan(plan);
+        const statuses: Record<string, AgentExecutionStatus> = {};
+        plan.forEach(({ agentId }) => { statuses[agentId] = 'pending'; });
+        setAgentExecStatuses(statuses);
+        setProgress(20);
+      },
+      onAgentStatus: (agentId, status) => {
+        setAgentExecStatuses((prev) => ({ ...prev, [agentId]: status }));
+        const legacyMap: Record<AgentExecutionStatus, 'idle' | 'thinking' | 'working' | 'done' | 'waiting'> = {
+          idle: 'idle', pending: 'waiting', thinking: 'thinking',
+          working: 'working', done: 'done', error: 'done',
+        };
+        setAgentStatuses((prev) => ({ ...prev, [agentId]: legacyMap[status] }));
+        if (status === 'done') {
+          setAgentDone((prev) => ({ ...prev, [agentId]: (prev[agentId] || 0) + 1 }));
+        }
+      },
+      onAgentStream: (agentId, text) => {
+        setAgentStreamTexts((prev) => ({ ...prev, [agentId]: text }));
+        const doneCount = Object.values(agentExecStatuses()).filter(
+          (s) => s === 'done',
+        ).length;
+        setProgress(
+          20 + Math.round((doneCount / Math.max(dispatchPlan().length, 1)) * 70),
+        );
+      },
+      onDone: (results) => {
+        // 将 Agent 结果解析为 visibleSteps 供现有 UI 展示
+        const steps: typeof soloWorkflowSteps = [];
+        Object.entries(results).forEach(([agentId, text]) => {
+          const agent = SOLO_AGENTS.find((a) => a.id === agentId);
+          const actionMatch = text.match(/##\s+执行动作\s*\n([^\n]+)/);
+          const artMatch = text.match(/###\s+产出物[：:]\s*(.+)\n([\s\S]+)/);
+          if (agent) {
+            steps.push({
+              id: `real-${agentId}`,
+              agentId,
+              agentName: agent.name,
+              action: actionMatch?.[1]?.trim() ?? '执行完成',
+              output: text.slice(0, 200),
+              durationMs: 0,
+              artifact: artMatch
+                ? { title: artMatch[1].trim(), content: artMatch[2].trim().slice(0, 500) }
+                : undefined,
+            });
+          }
         });
+        setVisibleSteps(steps);
+        setArtifacts(steps.filter((s) => s.artifact));
         setProgress(100);
         setRunState('done');
       },
-      onError: () => {
-        // OpenCode 不可用，降级到 mock 模拟
-        reset();
-        setRunState('running');
+      onError: (err) => {
+        console.warn('[solo-autopilot] orchestration failed, fallback to mock:', err);
         runMockSimulation();
       },
     });
@@ -379,30 +457,16 @@ const SoloAutopilot = () => {
           <Zap size={16} style={{ color: chartColors.success }} />
           告诉 AI 你想做什么
         </div>
-        <div style={{
-          display: 'flex',
-          gap: '8px',
-          'margin-bottom': '12px',
-        }}>
-          <input
-            type="text"
+        <div style={{ 'margin-bottom': '12px' }}>
+          <MentionInput
             value={goal()}
-            onInput={(e) => setGoal(e.currentTarget.value)}
-            onKeyPress={(e) => {
-              if (e.key === 'Enter' && runState() !== 'running' && goal().trim()) handleStart();
-            }}
-            placeholder="一句话描述目标，例如：实现「段落重写」MVP 功能并上线灰度..."
+            onChange={setGoal}
             disabled={runState() === 'running'}
-            style={{
-              flex: '1',
-              'font-size': '14px',
-              'border-radius': '6px',
-              border: `1px solid ${themeColors.border}`,
-              padding: '8px 12px',
-              outline: 'none',
-              opacity: runState() === 'running' ? 0.6 : 1,
-            }}
+            placeholder="描述你的目标，或输入 @ 直接调用某个 Agent，例如：实现「段落一键重写」功能..."
+            agents={SOLO_AGENTS}
           />
+        </div>
+        <div style={{ 'margin-bottom': '12px', display: 'flex', 'justify-content': 'flex-end' }}>
           <button
             onClick={handleStart}
             disabled={runState() === 'running' || !goal().trim()}
@@ -495,7 +559,7 @@ const SoloAutopilot = () => {
       </div>
 
       <div style={{ display: 'grid', 'grid-template-columns': 'repeat(4, 1fr)', gap: '12px', 'margin-bottom': '20px' }}>
-        <For each={soloAgents}>
+        <For each={SOLO_AGENTS}>
           {(agent) => (
             <SoloBrainCard
               agent={agent}
@@ -525,17 +589,89 @@ const SoloAutopilot = () => {
             执行流（并行 · 无审批）
           </div>
           <Show
-            when={visibleSteps().length === 0}
+            when={visibleSteps().length === 0 && dispatchPlan().length === 0}
             fallback={
               <div ref={timelineRef} style={{
                 'max-height': '380px',
                 'overflow-y': 'auto',
                 'padding-right': '4px',
               }}>
+                {/* Phase 1: Orchestrator */}
+                <Show when={orchestratorText() && dispatchPlan().length === 0}>
+                  <div style={{
+                    padding: '10px 12px',
+                    background: themeColors.primaryBg,
+                    border: `1px solid ${themeColors.primaryBorder}`,
+                    'border-radius': '6px',
+                    'margin-bottom': '8px',
+                  }}>
+                    <div style={{ 'font-size': '12px', 'font-weight': 600, color: chartColors.primary, 'margin-bottom': '4px' }}>
+                      Orchestrator 规划中...
+                    </div>
+                    <div style={{ 'font-size': '11px', color: themeColors.textSecondary, 'white-space': 'pre-wrap', 'max-height': '100px', 'overflow-y': 'auto' }}>
+                      {orchestratorText()}
+                    </div>
+                  </div>
+                </Show>
+
+                {/* Phase 2: Agent 流式输出 */}
+                <For each={dispatchPlan()}>
+                  {(item) => {
+                    const agent = SOLO_AGENTS.find((a) => a.id === item.agentId);
+                    const text = () => agentStreamTexts()[item.agentId] ?? '';
+                    const execStatus = () => agentExecStatuses()[item.agentId] ?? 'pending';
+                    const isStreaming = () => execStatus() === 'thinking' || execStatus() === 'working';
+                    if (!agent) return null;
+                    return (
+                      <div style={{ 'padding-bottom': '10px', display: 'flex', gap: '10px' }}>
+                        <div style={{
+                          width: '24px', height: '24px', 'border-radius': '50%', 'flex-shrink': '0',
+                          background: execStatus() === 'done' ? agent.color : 'transparent',
+                          border: isStreaming() ? `2px solid ${agent.color}` : `2px solid ${themeColors.border}`,
+                          display: 'flex', 'align-items': 'center', 'justify-content': 'center',
+                          color: themeColors.surface, 'font-size': '14px',
+                        }}>
+                          <Show when={isStreaming()}>
+                            <Loader2 size={12} style={{ color: agent.color, animation: 'spin 1s linear infinite' }} />
+                          </Show>
+                          <Show when={!isStreaming() && execStatus() === 'done'}>
+                            {agent.emoji}
+                          </Show>
+                        </div>
+                        <div style={{ flex: '1' }}>
+                          <div style={{ display: 'flex', 'align-items': 'center', gap: '6px', 'margin-bottom': '4px' }}>
+                            <div style={{
+                              display: 'inline-flex', 'align-items': 'center',
+                              padding: '2px 8px', 'border-radius': '4px', 'font-size': '11px',
+                              border: `1px solid ${themeColors.border}`,
+                              background: agent.color + '20', color: agent.color, margin: '0',
+                            }}>
+                              {agent.name}
+                            </div>
+                            <span style={{ 'font-size': '11px', color: themeColors.textMuted }}>
+                              {item.task.slice(0, 40)}...
+                            </span>
+                          </div>
+                          <Show when={text()}>
+                            <div style={{
+                              'font-size': '11px', color: themeColors.textMuted,
+                              'white-space': 'pre-wrap', 'line-height': '1.6',
+                              'max-height': '180px', 'overflow-y': 'auto',
+                              background: themeColors.successBg, padding: '4px 8px', 'border-radius': '4px',
+                            }}>
+                              {text()}
+                            </div>
+                          </Show>
+                        </div>
+                      </div>
+                    );
+                  }}
+                </For>
+
                 <div style={{ display: 'flex', 'flex-direction': 'column', gap: '12px' }}>
                   <For each={visibleSteps()}>
                     {(step, idx) => {
-                      const agent = soloAgents.find((a) => a.id === step.agentId)!;
+                      const agent = SOLO_AGENTS.find((a) => a.id === step.agentId)!;
                       const isLast = idx() === visibleSteps().length - 1 && runState() === 'running';
                       return (
                         <div style={{
@@ -645,7 +781,7 @@ const SoloAutopilot = () => {
               <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
                 <For each={artifacts()}>
                   {(step) => {
-                    const agent = soloAgents.find((a) => a.id === step.agentId)!;
+                    const agent = SOLO_AGENTS.find((a) => a.id === step.agentId)!;
                     return (
                       <div style={{
                         padding: '10px 12px',

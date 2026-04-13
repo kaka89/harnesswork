@@ -1,4 +1,5 @@
 import { createSignal, createMemo, onMount, onCleanup, Show, For } from 'solid-js';
+import { useNavigate } from '@solidjs/router';
 import {
   teamWorkflowSteps,
   teamSampleGoals,
@@ -9,7 +10,7 @@ import {
 import CreateProductModal from '../../components/product/new-product-modal';
 import {
   Zap, Bot, CheckCircle, Loader2, Clock, PlayCircle, FileText, Network,
-  Bug, Rocket, BarChart3, Users, Plus, AlertCircle, Send
+  Bug, Rocket, BarChart3, Users, Plus, AlertCircle, Send, Settings
 } from 'lucide-solid';
 import { useAppStore } from '../../stores/app-store';
 import { themeColors, chartColors } from '../../utils/colors';
@@ -22,6 +23,8 @@ import {
   type AgentExecutionStatus,
 } from '../../services/autopilot-executor';
 import MentionInput from '../../components/autopilot/mention-input';
+import { modelOptions } from '../../mock/settings';
+import { loadProjectSettings } from '../../services/file-store';
 
 const agentIcon: Record<string, any> = {
   'pm-agent': FileText,
@@ -130,6 +133,7 @@ type RunState = 'idle' | 'running' | 'done';
 
 const EnterpriseAutopilot = () => {
   const store = useAppStore();
+  const navigate = useNavigate();
   const teamProducts = createMemo(() => store.state.products.filter((p) => p.mode === 'team'));
   const currentProject = createMemo(() => teamProducts()[0]?.id);
 
@@ -149,13 +153,24 @@ const EnterpriseAutopilot = () => {
   const [agentExecStatuses, setAgentExecStatuses] = createSignal<Record<string, AgentExecutionStatus>>({});
   const [agentError, setAgentError] = createSignal<string | null>(null);
 
-  // 获取当前配置的模型（传给 callAgent）
-  const getConfiguredModel = () => {
-    const llm = store.state.llmConfig;
-    if (llm.providerID && llm.modelID && llm.providerID !== 'custom') {
-      return { providerID: llm.providerID, modelID: llm.modelID };
-    }
-    return undefined;
+  // ─── 模型选择器状态 ───────────────────────────────────────────────────────────
+  const [providerKeys, setProviderKeys] = createSignal<Record<string, string>>({});
+  const [sessionModelId, setSessionModelId] = createSignal<string>(
+    store.state.llmConfig.modelID ?? 'deepseek-chat'
+  );
+
+  const configuredModels = () =>
+    modelOptions.filter(
+      (opt) =>
+        opt.providerID !== 'custom' &&
+        (providerKeys()[opt.providerID]?.trim().length ?? 0) > 0
+    );
+
+  const getSessionModel = () => {
+    const opt = modelOptions.find((o) => o.modelID === sessionModelId());
+    if (!opt || opt.providerID === 'custom') return undefined;
+    if (!providerKeys()[opt.providerID]) return undefined;
+    return { providerID: opt.providerID, modelID: opt.modelID };
   };
 
   let timelineRef: HTMLDivElement | undefined;
@@ -233,7 +248,7 @@ const EnterpriseAutopilot = () => {
     setRunState('running');
 
     const workDir = store.productStore.activeProduct()?.workDir;
-    const model = getConfiguredModel();
+    const model = getSessionModel();
     const { targetAgent, cleanText } = parseMention(goal(), TEAM_AGENTS);
 
     if (targetAgent) {
@@ -336,7 +351,26 @@ const EnterpriseAutopilot = () => {
     });
   };
 
-  onMount(() => {
+  onMount(async () => {
+    // 加载 per-provider API Keys
+    const workDir = store.productStore.activeProduct()?.workDir;
+    if (workDir) {
+      try {
+        const settings = await loadProjectSettings(workDir);
+        const keys: Record<string, string> = { ...(settings.llmProviderKeys ?? {}) };
+        const cur = store.state.llmConfig;
+        if (cur.providerID && cur.apiKey) keys[cur.providerID] = cur.apiKey;
+        setProviderKeys(keys);
+        const configured = modelOptions.filter(
+          (opt) => opt.providerID !== 'custom' && (keys[opt.providerID]?.trim().length ?? 0) > 0
+        );
+        if (configured.length > 0 && !configured.find((o) => o.modelID === sessionModelId())) {
+          setSessionModelId(configured[0].modelID);
+        }
+      } catch { /* 静默降级 */ }
+    }
+
+    // timeline 自动滚动
     if (timelineRef) {
       const scrollInterval = setInterval(() => {
         if (timelineRef) {
@@ -440,6 +474,52 @@ const EnterpriseAutopilot = () => {
           agents={TEAM_AGENTS}
           style={{ 'margin-bottom': '12px' }}
         />
+        {/* 模型选择器行 */}
+        <div style={{ 'margin-bottom': '12px', display: 'flex', 'align-items': 'center', gap: '8px', 'flex-wrap': 'wrap' }}>
+          <Show
+            when={configuredModels().length > 0}
+            fallback={
+              <span style={{ 'font-size': '12px', color: themeColors.textMuted }}>暂无已配置模型</span>
+            }
+          >
+            <select
+              value={sessionModelId()}
+              onChange={(e) => setSessionModelId(e.currentTarget.value)}
+              disabled={runState() === 'running'}
+              style={{
+                'font-size': '12px',
+                padding: '4px 8px',
+                'border-radius': '6px',
+                border: `1px solid ${themeColors.border}`,
+                background: themeColors.surface,
+                color: themeColors.text,
+                cursor: runState() === 'running' ? 'not-allowed' : 'pointer',
+                outline: 'none',
+              }}
+            >
+              <For each={configuredModels()}>
+                {(opt) => <option value={opt.modelID}>{opt.label}</option>}
+              </For>
+            </select>
+          </Show>
+          <button
+            onClick={() => navigate('/settings?tab=llm')}
+            style={{
+              'font-size': '12px',
+              color: chartColors.primary,
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              padding: '0',
+              display: 'flex',
+              'align-items': 'center',
+              gap: '3px',
+              'text-decoration': 'underline',
+            }}
+          >
+            <Settings size={12} />去配置更多模型
+          </button>
+        </div>
         <div style={{ display: 'flex', 'align-items': 'center', gap: '8px', 'flex-wrap': 'wrap' }}>
           <span style={{ 'font-size': '12px', color: themeColors.textMuted }}>快速示例：</span>
           <For each={teamSampleGoals}>

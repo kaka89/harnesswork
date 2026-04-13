@@ -159,6 +159,7 @@ const SoloAutopilot = () => {
   const [dispatchPlan, setDispatchPlan] = createSignal<DispatchItem[]>([]);
   const [agentStreamTexts, setAgentStreamTexts] = createSignal<Record<string, string>>({});
   const [agentExecStatuses, setAgentExecStatuses] = createSignal<Record<string, AgentExecutionStatus>>({});
+  const [agentError, setAgentError] = createSignal<string | null>(null);
 
   let timelineRef: HTMLDivElement | undefined;
   const timersRef: ReturnType<typeof setTimeout>[] = [];
@@ -278,13 +279,24 @@ const SoloAutopilot = () => {
     });
   };
 
+  // 获取当前配置的模型（传给 callAgent，确保使用用户配置的 provider）
+  const getConfiguredModel = () => {
+    const llm = state.llmConfig;
+    if (llm.providerID && llm.modelID && llm.providerID !== 'custom') {
+      return { providerID: llm.providerID, modelID: llm.modelID };
+    }
+    return undefined;
+  };
+
   // ─── handleStart: 两阶段 Orchestrator 调度 + mock 降级 ───
   const handleStart = async () => {
     if (!goal().trim()) return;
     reset();
+    setAgentError(null);
     setRunState('running');
 
     const workDir = productStore.activeProduct()?.workDir;
+    const model = getConfiguredModel();
     const { targetAgent, cleanText } = parseMention(goal(), SOLO_AGENTS);
 
     if (targetAgent) {
@@ -292,6 +304,7 @@ const SoloAutopilot = () => {
       setAgentStatuses((prev) => ({ ...prev, [targetAgent.id]: 'thinking' }));
       await runDirectAgent(targetAgent, cleanText, {
         workDir,
+        model,
         onStatus: (status) => {
           const legacyMap: Record<AgentExecutionStatus, 'idle' | 'thinking' | 'working' | 'done' | 'waiting'> = {
             idle: 'idle', pending: 'waiting', thinking: 'thinking',
@@ -310,8 +323,10 @@ const SoloAutopilot = () => {
           setRunState('done');
         },
         onError: (err) => {
-          console.warn('[solo-autopilot] direct agent failed, fallback to mock:', err);
-          runMockSimulation();
+          console.warn('[solo-autopilot] @mention direct agent failed:', err);
+          setAgentStatuses((prev) => ({ ...prev, [targetAgent.id]: 'idle' }));
+          setAgentError(`调用 ${targetAgent.name} 失败：${err}`);
+          setRunState('idle');
         },
       });
       return;
@@ -321,6 +336,7 @@ const SoloAutopilot = () => {
     await runOrchestratedAutopilot(cleanText, {
       availableAgents: SOLO_AGENTS,
       workDir,
+      model,
       onOrchestrating: (text) => {
         setOrchestratorText(text);
         setProgress(10);
@@ -486,6 +502,35 @@ const SoloAutopilot = () => {
             {runState() === 'running' ? '执行中…' : '启动'}
           </button>
         </div>
+
+        {/* Agent 调用错误提示 */}
+        <Show when={agentError() !== null}>
+          <div style={{
+            'margin-top': '10px',
+            padding: '10px 14px',
+            'border-radius': '6px',
+            'font-size': '13px',
+            background: '#fff2f0',
+            border: '1px solid #ffccc7',
+            color: '#cf1322',
+            display: 'flex',
+            'align-items': 'flex-start',
+            gap: '8px',
+          }}>
+            <span style={{ 'flex-shrink': '0', 'margin-top': '1px' }}>⚠️</span>
+            <div style={{ flex: '1' }}>
+              <div style={{ 'font-weight': '600', 'margin-bottom': '4px' }}>AI 调用失败</div>
+              <div>{agentError()}</div>
+              <div style={{ 'margin-top': '6px', 'font-size': '12px', color: '#8c1a11' }}>
+                请前往「设置 → 大模型配置」检查 API Key 是否已保存，或尝试「会话测试」按钮验证连通性。
+              </div>
+            </div>
+            <button
+              onClick={() => setAgentError(null)}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#cf1322', padding: '0', 'flex-shrink': '0' }}
+            >✕</button>
+          </div>
+        </Show>
 
         <div style={{ display: 'flex', 'align-items': 'center', gap: '6px', 'flex-wrap': 'wrap' }}>
           <span style={{ 'font-size': '12px', color: themeColors.textMuted }}>快速示例：</span>

@@ -9,6 +9,7 @@ import {
   onCleanup,
   onMount,
 } from "solid-js";
+import { useNavigate } from "@solidjs/router";
 import { t } from "../../i18n";
 import type { Agent, Part, Session } from "@opencode-ai/sdk/v2/client";
 import type {
@@ -309,6 +310,7 @@ function describePermissionRequest(permission: PendingPermission | null) {
 
 export default function SessionView(props: SessionViewProps) {
   const FLUSH_PROMPT_EVENT = "openwork:flushPromptDraft";
+  const navigate = useNavigate();
   const { showThinking } = useSessionDisplayPreferences();
   const platform = usePlatform();
   const sessionActions = useSessionActions();
@@ -2908,8 +2910,21 @@ export default function SessionView(props: SessionViewProps) {
     applyStarterPrompt(starter.prompt);
   };
   return (
-    <div class="h-[100dvh] min-h-screen w-full overflow-hidden bg-[var(--dls-app-bg)] p-3 md:p-4 text-gray-12 font-sans">
-      <div class="flex h-full w-full gap-3 md:gap-4">
+    <div class="flex flex-col h-[100dvh] min-h-screen w-full overflow-hidden bg-[var(--dls-app-bg)] text-gray-12 font-sans">
+      {/* 顶部返回栏，与星静页面保持一致风格 */}
+      <header class="flex items-center gap-4 border-b border-dls-border px-4 py-2 shrink-0">
+        <button
+          type="button"
+          class="flex items-center gap-1 text-gray-10 hover:text-gray-12 text-sm transition-colors"
+          onClick={() => navigate("/mode-select")}
+          data-testid="back-to-mode-select"
+        >
+          ← 返回模式选择
+        </button>
+        <span class="text-lg">⚡</span>
+        <span class="font-semibold text-gray-12 text-base">openwork 原始版本</span>
+      </header>
+      <div class="flex flex-1 min-h-0 w-full gap-3 md:gap-4 p-3 md:p-4">
         <aside
           class="relative hidden lg:flex shrink-0 flex-col overflow-hidden rounded-[24px] border border-dls-border bg-dls-sidebar p-2.5"
           style={{
@@ -2917,6 +2932,7 @@ export default function SessionView(props: SessionViewProps) {
             "min-width": `${leftSidebarWidth()}px`,
           }}
         >
+          {/* 下面是内容 */}
           <div class="shrink-0">
             <Show when={showUpdatePill()}>
               <button

@@ -1,4 +1,5 @@
 /* @refresh reload */
+import { lazy } from "solid-js";
 import { render } from "solid-js/web";
 import { HashRouter, Route, Router } from "@solidjs/router";
 
@@ -148,10 +149,19 @@ const platform: Platform = {
   fetch,
 };
 
+const ModeSelectPage = lazy(() => import("./app/pages/mode-select"));
+// 星静平台：懒加载
+const XingjingPage = lazy(() => import("./app/pages/xingjing"));
+// 原生集成版：直接嵌入 apps/app/src/app/xingjing，无 iframe
+const XingjingNativePage = lazy(() => import("./app/pages/xingjing-native"));
+
 render(
   () => (
     <PlatformProvider value={platform}>
       <RouterComponent root={AppEntry}>
+        <Route path="/mode-select" component={ModeSelectPage} />
+        <Route path="/xingjing" component={XingjingPage} />
+        <Route path="/xingjing-solid" component={XingjingNativePage} />
         <Route path="*all" component={() => null} />
       </RouterComponent>
     </PlatformProvider>

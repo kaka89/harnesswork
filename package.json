@@ -8,6 +8,15 @@
     "dev:windows:x64": ".\\scripts\\dev-windows.cmd x64",
     "dev:ui": "OPENWORK_DEV_MODE=1 pnpm --filter @openwork/app dev",
     "dev:ui-demo": "pnpm --filter @openwork/ui-demo dev",
+    "dev:xingjing": "pnpm --filter @openwork/xingjing dev",
+    "dev:xingjing-server": "pnpm --filter @openwork/xingjing-server dev",
+    "dev:platform": "pnpm --filter @openwork/xingjing dev",
+    "build:platform": "pnpm --filter @openwork/xingjing build",
+    "build:xingjing": "pnpm --filter @openwork/xingjing build",
+    "build:xingjing-server": "pnpm --filter @openwork/xingjing-server build",
+    "dev:xingjing-full": "concurrently --names \"server,react,openwork\" --prefix-colors \"magenta,cyan,blue\" \"pnpm dev:xingjing-server\" \"pnpm dev:xingjing\" \"PORT=3001 pnpm dev:ui\"",
+    "dev:all-xingjing": "concurrently --names \"server,react,openwork\" --prefix-colors \"magenta,cyan,blue\" \"pnpm dev:xingjing-server\" \"pnpm dev:xingjing\" \"PORT=3001 pnpm dev:ui\"",
+    "dev:xingjing-standalone": "concurrently --names \"server,ui\" --prefix-colors \"magenta,cyan\" \"pnpm dev:xingjing-server\" \"pnpm dev:xingjing\"",
     "dev:story": "OPENWORK_DEV_MODE=1 pnpm --filter @openwork/story-book dev",
     "dev:web": "OPENWORK_DEV_MODE=1 pnpm --filter @openwork-ee/den-web dev",
     "dev:web-local": "pnpm dev:den-local",
@@ -43,6 +52,7 @@
     "tauri": "pnpm --filter @openwork/desktop exec tauri"
   },
   "devDependencies": {
+    "concurrently": "^9.1.0",
     "turbo": "^2.5.5"
   },
   "pnpm": {
@@ -56,5 +66,5 @@
       "@solidjs/router@0.15.4": "patches/@solidjs__router@0.15.4.patch"
     }
   },
-  "packageManager": "pnpm@10.27.0"
+  "packageManager": "pnpm@10.27.0+sha512.72d699da16b1179c14ba9e64dc71c9a40988cbdc65c264cb0e489db7de917f20dcf4d64d8723625f2969ba52d4b7e2a1170682d9ac2a5dcaeaab732b7e16f04a"
 }

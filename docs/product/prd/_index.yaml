@@ -1,0 +1,29 @@
+# PRD 台账
+app: harnesswork
+layer: prd
+
+items:
+  - id: PRD-001-core-product
+    title: OpenWork 核心产品能力
+    status: approved
+    author: product-owner
+    priority: P0
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    revision: "1.0"
+    impact_scope: single-app
+    file: PRD-001-core-product.md
+    tags: [core, host-mode, sessions, skills, permissions, automations]
+
+  - id: PRD-002-dual-mode-workspace
+    title: 双模式工作区——入口选择页 & 全链路工程驾驶舱
+    status: approved
+    author: product-owner
+    priority: P1
+    created: "2026-04-08"
+    updated: "2026-04-08"
+    revision: "1.2"
+    impact_scope: single-app
+    file: PRD-002-dual-mode-workspace.md
+    branch: feature/PRD-002-dual-mode-workspace
+    tags: [mode-selector, cockpit, product-tab, engineering-tab, release-ops-tab, growth-tab]

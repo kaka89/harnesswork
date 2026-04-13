@@ -1,0 +1,99 @@
+# harnesswork 全链路交付编排配置
+# 基于 governance-standards/templates/PIPELINE-template.yaml
+#
+# 默认 supervised 模式：PRD、SDD、PLAN、Code 阶段需人工审批
+# 切换为 autonomous 模式：将 mode 改为 autonomous，或在触发时说"无人值守模式"
+
+app: harnesswork
+mode: supervised                       # supervised | autonomous
+max_retries: 2                         # evaluate 不通过时单阶段最大重试次数
+
+stages:
+  # ── Stage 1: 需求文档 ──
+  - id: prd
+    name: 需求文档生成
+    description: 基于用户输入生成标准化 PRD
+    agent: product-agent
+    skills:
+      - gen-prd
+      - validate-schema
+      - evaluate-doc-quality
+    gate: await-approval               # 需求需要人工确认
+    output:
+      doc: "docs/product/prd/PRD-{XXX}-{简称}.md"
+      index: "docs/product/prd/_index.yaml"
+    output_status: approved
+
+  # ── Stage 2: 系统设计 ──
+  - id: sdd
+    name: 系统设计
+    description: 基于 approved PRD 生成 SDD 架构设计
+    agent: architect-agent
+    skills:
+      - gen-sdd
+      - validate-schema
+      - evaluate-doc-quality
+    gate: await-approval               # 架构设计需要人工评审
+    output:
+      doc: "docs/product/architecture/SDD-{XXX}-{简称}.md"
+      index: "docs/product/architecture/_index.yaml"
+    output_status: approved
+    depends_on: [prd]
+
+  # ── Stage 3: 模块规格 ──
+  - id: module
+    name: 模块规格定义
+    description: 基于 approved SDD 生成 MODULE + OpenAPI + 契约测试骨架
+    agent: contracts-agent
+    skills:
+      - gen-module
+      - validate-schema
+      - check-doc-chain
+    gate: auto                         # MODULE 从 SDD 机械推导，自动通过
+    output:
+      doc: "docs/product/contracts/MODULE-{XXX}-{简称}.md"
+      openapi: "docs/product/contracts/openapi/{api-name}-v1.yaml"
+      index: "docs/product/contracts/_index.yaml"
+    output_status: approved
+    depends_on: [sdd]
+
+  # ── Stage 4: 迭代计划与任务拆解 ──
+  - id: plan
+    name: 迭代计划与任务拆解
+    description: 生成 PLAN + 批量 TASK
+    agent: plan-agent
+    skills:
+      - gen-plan
+      - gen-task
+      - validate-schema
+    gate: await-approval               # 任务拆解需要人工确认工作量
+    output:
+      plan: "docs/delivery/plan/PLAN-{XXX}-{简称}.md"
+      tasks: "docs/delivery/task/TASK-{XXX}-{序号}.md"
+      index: "docs/delivery/plan/_index.yaml"
+    output_status: approved
+    depends_on: [module]
+
+  # ── Stage 5: 编码实现 ──
+  - id: code
+    name: 编码实现
+    description: 逐 TASK 编码，每个 TASK 独立评估
+    agent: dev-agent
+    skills:
+      - evaluate-code-quality
+    gate: await-approval               # 代码需要人工 Review
+    parallel: true                     # 无依赖的 TASK 可并行
+    output:
+      source: "apps/**"
+      tests: "src/test/**"
+    depends_on: [plan]
+
+  # ── Stage 6: 收尾与最终校验 ──
+  - id: finalize
+    name: 收尾校验
+    description: 更新台账，执行全链路完整性校验
+    skills:
+      - update-index
+      - check-doc-chain
+    gate: auto
+    depends_on: [code]

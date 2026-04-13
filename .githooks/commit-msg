@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# ═══════════════════════════════════════════
+# Harness Engineering commit-msg Hook
+# 由 `he init` 自动生成
+#
+# 规则：提交信息必须包含 TASK 编号
+# 格式：TASK-XXX-XX: 描述
+# 例如：TASK-001-02: 实现用户登录接口
+#
+# 豁免：以下前缀不需要 TASK 编号
+#   - Merge
+#   - Revert
+#   - hotfix/
+#   - chore:
+#   - ci:
+#   - docs:（仅文档变更）
+# ═══════════════════════════════════════════
+
+COMMIT_MSG_FILE="$1"
+COMMIT_MSG=$(cat "$COMMIT_MSG_FILE")
+
+# 豁免的提交前缀
+EXEMPT_PATTERNS=(
+  "^Merge "
+  "^Revert "
+  "^hotfix/"
+  "^chore:"
+  "^ci:"
+  "^docs:"
+  "^release/"
+  "^\\[skip ci\\]"
+)
+
+for pattern in "${EXEMPT_PATTERNS[@]}"; do
+  if echo "$COMMIT_MSG" | grep -qE "$pattern"; then
+    exit 0
+  fi
+done
+
+# 检查 TASK 编号格式
+if ! echo "$COMMIT_MSG" | grep -qE "TASK-[0-9]+-[0-9]+"; then
+  echo ""
+  echo "══════════════════════════════════════════════════════════"
+  echo "  ERROR: 提交信息必须包含 TASK 编号"
+  echo "══════════════════════════════════════════════════════════"
+  echo ""
+  echo "  格式:  TASK-XXX-XX: 描述"
+  echo "  示例:  TASK-001-02: 实现用户登录接口"
+  echo ""
+  echo "  豁免前缀: Merge, Revert, hotfix/, chore:, ci:, docs:"
+  echo ""
+  echo "  你的提交信息:"
+  echo "    $COMMIT_MSG"
+  echo ""
+  echo "══════════════════════════════════════════════════════════"
+  exit 1
+fi
+
+exit 0

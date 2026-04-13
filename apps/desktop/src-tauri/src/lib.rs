@@ -49,6 +49,7 @@ use commands::workspace::{
     workspace_openwork_write, workspace_set_active, workspace_set_runtime_active,
     workspace_set_selected, workspace_update_display_name, workspace_update_remote,
 };
+use commands::xingjing::{xingjing_init_product_dir, xingjing_delete_product_dir};
 use engine::manager::EngineManager;
 use opencode_router::manager::OpenCodeRouterManager;
 use openwork_server::manager::OpenworkServerManager;
@@ -69,7 +70,7 @@ fn set_dev_app_name() {
     };
 
     objc2_foundation::NSProcessInfo::processInfo()
-        .setProcessName(&objc2_foundation::NSString::from_str("OpenWork - Dev"));
+        .setProcessName(&objc2_foundation::NSString::from_str("星静 - All In One 产品研发平台"));
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -217,7 +218,9 @@ pub fn run() {
             opencode_mcp_auth,
             scheduler_list_jobs,
             scheduler_delete_job,
-            set_window_decorations
+            set_window_decorations,
+            xingjing_init_product_dir,
+            xingjing_delete_product_dir
         ])
         .build(tauri::generate_context!())
         .expect("error while building OpenWork");

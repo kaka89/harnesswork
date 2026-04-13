@@ -454,10 +454,12 @@ function addRoute(routes: Route[], method: string, path: string, auth: AuthMode,
 }
 
 function pathToRegex(path: string, keys: string[]): RegExp {
-  const pattern = path.replace(/:([A-Za-z0-9_]+)/g, (_, key) => {
-    keys.push(key);
-    return "([^/]+)";
-  });
+  const pattern = path
+    .replace(/:([A-Za-z0-9_]+)/g, (_, key) => {
+      keys.push(key);
+      return "([^/]+)";
+    })
+    .replace(/\*/g, ".*");
   return new RegExp(`^${pattern}$`);
 }
 
@@ -1105,6 +1107,83 @@ function serializeWorkspace(workspace: ServerConfig["workspaces"][number]) {
   };
 }
 
+// --- Docs endpoint helpers (TASK-002-06) ---
+
+interface DocEntry {
+  path: string;
+  title: string;
+  type: string;
+  status: string;
+}
+
+async function collectDocEntries(
+  docsRoot: string,
+  dir: string,
+  depth: number,
+  maxDepth: number,
+): Promise<DocEntry[]> {
+  if (depth > maxDepth) return [];
+  const entries: DocEntry[] = [];
+  let items: { name: string; isDirectory: () => boolean }[] = [];
+  try {
+    items = (await readdir(dir, { withFileTypes: true })) as unknown as { name: string; isDirectory: () => boolean }[];
+  } catch {
+    return [];
+  }
+  for (const item of items) {
+    const fullPath = join(dir, item.name);
+    if (item.isDirectory()) {
+      const sub = await collectDocEntries(docsRoot, fullPath, depth + 1, maxDepth);
+      entries.push(...sub);
+    } else if (item.name.endsWith(".md")) {
+      const relativePath = relative(docsRoot, fullPath).replace(/\\/g, "/");
+      const entry = await parseDocEntry(fullPath, relativePath);
+      entries.push(entry);
+    }
+  }
+  return entries;
+}
+
+async function parseDocEntry(filePath: string, relativePath: string): Promise<DocEntry> {
+  let title = basename(filePath, ".md");
+  let status = "unknown";
+  let type = inferDocType(relativePath);
+  try {
+    const content = await readFile(filePath, "utf-8");
+    const { data } = parseFrontmatter(content);
+    const meta = data.meta as Record<string, unknown> | undefined;
+    if (meta) {
+      if (typeof meta.title === "string" && meta.title) title = meta.title;
+      if (typeof meta.status === "string" && meta.status) status = meta.status;
+      if (typeof meta.type === "string" && meta.type) type = meta.type;
+    } else {
+      if (typeof data.title === "string" && data.title) title = data.title;
+      if (typeof data.status === "string" && data.status) status = data.status;
+    }
+  } catch {
+    // 解析失败使用默认值
+  }
+  return { path: relativePath, title, type, status };
+}
+
+function inferDocType(relativePath: string): string {
+  if (relativePath.startsWith("product/prd/")) return "prd";
+  if (relativePath.startsWith("product/architecture/")) return "sdd";
+  if (relativePath.startsWith("product/contracts/")) return "module";
+  if (relativePath.startsWith("delivery/plan/")) return "plan";
+  if (relativePath.startsWith("delivery/task/")) return "task";
+  if (relativePath.startsWith("features/")) return "feature";
+  return "doc";
+}
+
+async function resolveFirstWorkspace(config: ServerConfig): Promise<{ workspaceRoot: string }> {
+  const workspace = config.workspaces[0];
+  if (!workspace) {
+    throw new ApiError(404, "workspace_not_found", "No workspace configured");
+  }
+  return { workspaceRoot: workspace.path };
+}
+
 function createRoutes(
   config: ServerConfig,
   approvals: ApprovalService,
@@ -1153,6 +1232,95 @@ function createRoutes(
 
   addRoute(routes, "GET", "/health", "none", async () => {
     return jsonResponse({ ok: true, version: SERVER_VERSION, uptimeMs: Date.now() - config.startedAt });
+  });
+
+  // GET /docs — 列举工作区 docs/ 目录下所有 .md 文件（BH-01~BH-07, TASK-002-06)
+  addRoute(routes, "GET", "/docs", "client", async () => {
+    const { workspaceRoot } = await resolveFirstWorkspace(config);
+    const docsRoot = join(workspaceRoot, "docs");
+    if (!existsSync(docsRoot)) {
+      throw new ApiError(404, "not_found", "docs directory not found");
+    }
+    try {
+      const entries = await collectDocEntries(docsRoot, docsRoot, 0, 4);
+      return jsonResponse(entries);
+    } catch {
+      throw new ApiError(500, "internal_error", "Failed to read docs directory");
+    }
+  });
+
+  // GET /docs/* — 读取指定 Markdown 文件原始内容，含路径穿越防护（BH-08~BH-12, TASK-002-06）
+  addRoute(routes, "GET", "/docs/*", "client", async (ctx) => {
+    const { workspaceRoot } = await resolveFirstWorkspace(config);
+    const docsRoot = join(workspaceRoot, "docs");
+    // decodeURIComponent 必须在路径穿越防护之前执行，防止编码绕过（BH-12）
+    const rawPath = ctx.url.pathname.replace(/^\/docs\//, "");
+    const decodedPath = decodeURIComponent(rawPath);
+    const resolved = resolve(docsRoot, decodedPath);
+    // 路径穿越防护：解析后路径必须以 docsRoot + sep 开头（BH-10）
+    if (!resolved.startsWith(docsRoot + sep)) {
+      console.warn("[openwork-server] Path traversal attempt blocked:", ctx.url.pathname);
+      throw new ApiError(403, "forbidden", "Path traversal not allowed");
+    }
+    if (!existsSync(resolved)) {
+      throw new ApiError(404, "not_found", "Document not found");
+    }
+    try {
+      const content = await readFile(resolved, "utf-8");
+      return new Response(content, {
+        status: 200,
+        headers: { "Content-Type": "text/markdown; charset=utf-8" },
+      });
+    } catch {
+      throw new ApiError(500, "internal_error", "Failed to read document");
+    }
+  });
+
+  // —— Workspace filesystem endpoints (cockpit ProductTab) ——
+
+  // GET /workspace/readdir?path=<abs_path> — 列举指定目录的直接子项
+  addRoute(routes, "GET", "/workspace/readdir", "client", async (ctx) => {
+    const rawPath = ctx.url.searchParams.get("path");
+    if (!rawPath) throw new ApiError(400, "bad_request", "path query param is required");
+    const dirPath = decodeURIComponent(rawPath);
+    if (!existsSync(dirPath)) throw new ApiError(404, "not_found", "Directory not found");
+    try {
+      const items = await readdir(dirPath, { withFileTypes: true });
+      const entries = items
+        .map((item) => ({
+          name: item.name,
+          path: join(dirPath, item.name),
+          type: item.isDirectory() ? ("dir" as const) : ("file" as const),
+          ext:
+            item.isFile() && item.name.includes(".")
+              ? item.name.split(".").pop()
+              : undefined,
+        }))
+        .sort((a, b) => {
+          if (a.type !== b.type) return a.type === "dir" ? -1 : 1;
+          return a.name.localeCompare(b.name);
+        });
+      return jsonResponse(entries);
+    } catch {
+      throw new ApiError(500, "internal_error", "Failed to read directory");
+    }
+  });
+
+  // GET /workspace/file?path=<abs_path> — 读取工作区内任意文件内容（用于预览）
+  addRoute(routes, "GET", "/workspace/file", "client", async (ctx) => {
+    const rawPath = ctx.url.searchParams.get("path");
+    if (!rawPath) throw new ApiError(400, "bad_request", "path query param is required");
+    const filePath = decodeURIComponent(rawPath);
+    if (!existsSync(filePath)) throw new ApiError(404, "not_found", "File not found");
+    try {
+      const content = await readFile(filePath, "utf-8");
+      return new Response(content, {
+        status: 200,
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+      });
+    } catch {
+      throw new ApiError(500, "internal_error", "Failed to read file");
+    }
   });
 
   addRoute(routes, "GET", "/w/:id/health", "none", async () => {

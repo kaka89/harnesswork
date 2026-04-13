@@ -1,5 +1,5 @@
 import os from "node:os";
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 import tailwindcss from "@tailwindcss/vite";
 import devtools from "solid-devtools/vite";
 import solid from "vite-plugin-solid";
@@ -29,7 +29,6 @@ export default defineConfig({
     tailwindcss(),
     devtools({
       autoname: true,
-      // jsxLocation is required for in-page locator: map DOM → Solid components (hold Option/Alt while hovering).
       locator: {
         targetIDE: "vscode",
         jsxLocation: true,
@@ -38,6 +37,9 @@ export default defineConfig({
     }),
     solid(),
   ],
+  resolve: {
+    dedupe: ["react", "react-dom"],
+  },
   server: {
     port: devPort,
     strictPort: true,
@@ -45,5 +47,17 @@ export default defineConfig({
   },
   build: {
     target: "esnext",
+  },
+  test: {
+    environment: "happy-dom",
+    globals: true,
+    setupFiles: ["./src/test-setup.ts"],
+    include: ["src/**/*.test.{ts,tsx}"],
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "json", "html"],
+      include: ["src/app/components/cockpit/**/*.{ts,tsx}"],
+      exclude: ["**/*.test.{ts,tsx}"],
+    },
   },
 });

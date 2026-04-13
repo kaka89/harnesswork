@@ -172,3 +172,36 @@ export function logout(): void {
   clearAuthToken();
   setCurrentUser(null);
 }
+
+/**
+ * Update the current user's profile (name and phone).
+ * On success, updates currentUser signal.
+ */
+export async function updateProfile(name: string, phone?: string): Promise<AuthUser> {
+  const resp = await apiFetch<MeResponse>('/api/v1/auth/me', {
+    method: 'PUT',
+    body: JSON.stringify({ name, phone: phone ?? '' }),
+  });
+  setCurrentUser(resp.data);
+  return resp.data;
+}
+
+/**
+ * Change the current user's password.
+ * Requires the old password for verification.
+ */
+export async function changePassword(oldPassword: string, newPassword: string): Promise<void> {
+  await apiFetch('/api/v1/auth/me/password', {
+    method: 'PUT',
+    body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
+  });
+}
+
+/**
+ * Delete (deactivate) the current user's account.
+ * Clears local auth state after success.
+ */
+export async function deleteAccount(): Promise<void> {
+  await apiFetch('/api/v1/auth/me', { method: 'DELETE' });
+  logout();
+}

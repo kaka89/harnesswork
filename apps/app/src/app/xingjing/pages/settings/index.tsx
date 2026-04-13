@@ -1,5 +1,5 @@
 import { Component, createSignal, For, Show, createEffect, onMount } from 'solid-js';
-import { Palette, Bot, Github, Clock, ShieldCheck, Sun, Moon, Save, FlaskConical, Zap, CheckCircle, AlertCircle, MessageSquare, X, Send, Loader, Package, Trash2, ChevronDown, ChevronUp, FolderOpen } from 'lucide-solid';
+import { Palette, Bot, Github, Clock, ShieldCheck, Sun, Moon, Save, FlaskConical, Zap, CheckCircle, AlertCircle, MessageSquare, X, Send, Loader, Package, Trash2, ChevronDown, ChevronUp, FolderOpen, User, Lock, AlertTriangle, Eye, EyeOff } from 'lucide-solid';
 import { useAppStore } from '../../stores/app-store';
 import { themeColors, chartColors } from '../../utils/colors';
 import { callAgent, setProviderAuth, gitSync } from '../../services/opencode-client';
@@ -14,6 +14,7 @@ import { getAllGitTokens, setGitToken, clearGitToken, type XingjingProduct } fro
 import { deleteProductDir } from '../../../lib/tauri';
 import { isTauriRuntime } from '../../../utils';
 import AddDomainAppModal from '../../components/product/add-domain-app-modal';
+import { currentUser, updateProfile, changePassword, deleteAccount } from '../../services/auth-service';
 
 const inputStyle = () => ({
   border: `1px solid ${themeColors.border}`,
@@ -1832,10 +1833,349 @@ const ProductListTab: Component = () => {
   );
 };
 
+// ===================== Tab7: Profile =====================
+const ProfileTab: Component = () => {
+  const user = currentUser;
+
+  // ── 个人信息 ─────────────────────────────────────────────
+  const [name, setName] = createSignal(user()?.name ?? '');
+  const [phone, setPhone] = createSignal(user()?.phone ?? '');
+  const [profileSaving, setProfileSaving] = createSignal(false);
+  const [profileMsg, setProfileMsg] = createSignal<{ ok: boolean; text: string } | null>(null);
+
+  // ── 修改密码 ─────────────────────────────────────────────
+  const [oldPwd, setOldPwd] = createSignal('');
+  const [newPwd, setNewPwd] = createSignal('');
+  const [confirmPwd, setConfirmPwd] = createSignal('');
+  const [showOldPwd, setShowOldPwd] = createSignal(false);
+  const [showNewPwd, setShowNewPwd] = createSignal(false);
+  const [pwdSaving, setPwdSaving] = createSignal(false);
+  const [pwdMsg, setPwdMsg] = createSignal<{ ok: boolean; text: string } | null>(null);
+
+  // ── 注销账号 ─────────────────────────────────────────────
+  const [showDeleteDialog, setShowDeleteDialog] = createSignal(false);
+  const [deleteConfirmEmail, setDeleteConfirmEmail] = createSignal('');
+  const [deleting, setDeleting] = createSignal(false);
+  const [deleteMsg, setDeleteMsg] = createSignal('');
+
+  const handleSaveProfile = async (e: Event) => {
+    e.preventDefault();
+    if (profileSaving()) return;
+    setProfileSaving(true);
+    setProfileMsg(null);
+    try {
+      await updateProfile(name().trim(), phone().trim() || undefined);
+      setProfileMsg({ ok: true, text: '个人信息已更新' });
+    } catch (err) {
+      setProfileMsg({ ok: false, text: err instanceof Error ? err.message : '更新失败，请重试' });
+    } finally {
+      setProfileSaving(false);
+    }
+  };
+
+  const handleChangePassword = async (e: Event) => {
+    e.preventDefault();
+    if (pwdSaving()) return;
+    setPwdMsg(null);
+    if (newPwd() !== confirmPwd()) {
+      setPwdMsg({ ok: false, text: '两次输入的新密码不一致' });
+      return;
+    }
+    if (newPwd().length < 6) {
+      setPwdMsg({ ok: false, text: '新密码至少 6 位' });
+      return;
+    }
+    setPwdSaving(true);
+    try {
+      await changePassword(oldPwd(), newPwd());
+      setPwdMsg({ ok: true, text: '密码已修改，请妥善保管' });
+      setOldPwd(''); setNewPwd(''); setConfirmPwd('');
+    } catch (err) {
+      setPwdMsg({ ok: false, text: err instanceof Error ? err.message : '修改失败，请重试' });
+    } finally {
+      setPwdSaving(false);
+    }
+  };
+
+  const handleDeleteAccount = async () => {
+    if (deleting()) return;
+    if (deleteConfirmEmail().trim() !== (user()?.email ?? '')) {
+      setDeleteMsg('邮箱输入不匹配，请重新确认');
+      return;
+    }
+    setDeleting(true);
+    setDeleteMsg('');
+    try {
+      await deleteAccount();
+      // deleteAccount() 内部已调用 logout()，页面将自动跳转至登录
+    } catch (err) {
+      setDeleteMsg(err instanceof Error ? err.message : '注销失败，请重试');
+      setDeleting(false);
+    }
+  };
+
+  // ── 通用 input 样式 ────────────────────────────────────────
+  const fieldInput = 'w-full rounded-lg border border-[var(--dls-border)] bg-[var(--dls-app-bg)] px-3 py-2 text-sm outline-none transition-colors focus:border-purple-8 disabled:opacity-50 disabled:cursor-not-allowed';
+
+  return (
+    <div class="space-y-5">
+
+      {/* ── 1. 个人信息 ──────────────────────────────────────── */}
+      <div class="rounded-xl p-5" style={{ background: themeColors.surface, border: `1px solid ${themeColors.border}` }}>
+        <div class="flex items-center gap-2 mb-4">
+          <User size={16} style={{ color: chartColors.primary }} />
+          <span class="font-semibold text-sm" style={{ color: themeColors.text }}>个人信息</span>
+        </div>
+
+        <form onSubmit={handleSaveProfile} class="space-y-4">
+          {/* 邮箱（只读） */}
+          <div class="space-y-1.5">
+            <label class="block text-xs font-medium" style={{ color: themeColors.textMuted }}>邮箱（不可修改）</label>
+            <input
+              type="email"
+              value={user()?.email ?? ''}
+              disabled
+              class={fieldInput}
+              style={{ color: themeColors.textSecondary }}
+            />
+          </div>
+
+          {/* 姓名 */}
+          <div class="space-y-1.5">
+            <label class="block text-xs font-medium" style={{ color: themeColors.textMuted }}>姓名</label>
+            <input
+              type="text"
+              value={name()}
+              onInput={(e) => setName(e.currentTarget.value)}
+              placeholder="请输入姓名"
+              disabled={profileSaving()}
+              required
+              class={fieldInput}
+              style={{ color: themeColors.text }}
+            />
+          </div>
+
+          {/* 手机号 */}
+          <div class="space-y-1.5">
+            <label class="block text-xs font-medium" style={{ color: themeColors.textMuted }}>手机号（选填）</label>
+            <input
+              type="tel"
+              value={phone()}
+              onInput={(e) => setPhone(e.currentTarget.value)}
+              placeholder="138xxxxxxxx"
+              disabled={profileSaving()}
+              class={fieldInput}
+              style={{ color: themeColors.text }}
+            />
+          </div>
+
+          {/* 反馈 */}
+          <Show when={profileMsg()}>
+            {(msg) => (
+              <div
+                class="flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs"
+                style={{
+                  background: msg().ok ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)',
+                  'border-color': msg().ok ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)',
+                  color: msg().ok ? '#22c55e' : '#ef4444',
+                }}
+              >
+                {msg().ok ? <CheckCircle size={12} /> : <AlertCircle size={12} />}
+                {msg().text}
+              </div>
+            )}
+          </Show>
+
+          <button
+            type="submit"
+            disabled={profileSaving()}
+            class="flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium text-white transition-all hover:opacity-90 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{ background: chartColors.primary }}
+          >
+            <Show when={profileSaving()} fallback={<><Save size={13} />保存修改</>}>
+              <Loader size={13} class="animate-spin" />保存中...
+            </Show>
+          </button>
+        </form>
+      </div>
+
+      {/* ── 2. 修改密码 ──────────────────────────────────────── */}
+      <div class="rounded-xl p-5" style={{ background: themeColors.surface, border: `1px solid ${themeColors.border}` }}>
+        <div class="flex items-center gap-2 mb-4">
+          <Lock size={16} style={{ color: chartColors.primary }} />
+          <span class="font-semibold text-sm" style={{ color: themeColors.text }}>修改密码</span>
+        </div>
+
+        <form onSubmit={handleChangePassword} class="space-y-4">
+          {/* 旧密码 */}
+          <div class="space-y-1.5">
+            <label class="block text-xs font-medium" style={{ color: themeColors.textMuted }}>当前密码</label>
+            <div class="relative">
+              <input
+                type={showOldPwd() ? 'text' : 'password'}
+                value={oldPwd()}
+                onInput={(e) => setOldPwd(e.currentTarget.value)}
+                placeholder="••••••••"
+                disabled={pwdSaving()}
+                required
+                class={`${fieldInput} pr-10`}
+                style={{ color: themeColors.text }}
+              />
+              <button
+                type="button"
+                class="absolute right-3 top-1/2 -translate-y-1/2 opacity-50 hover:opacity-80"
+                onClick={() => setShowOldPwd(!showOldPwd())}
+              >
+                {showOldPwd() ? <EyeOff size={14} /> : <Eye size={14} />}
+              </button>
+            </div>
+          </div>
+
+          {/* 新密码 */}
+          <div class="space-y-1.5">
+            <label class="block text-xs font-medium" style={{ color: themeColors.textMuted }}>新密码（至少 6 位）</label>
+            <div class="relative">
+              <input
+                type={showNewPwd() ? 'text' : 'password'}
+                value={newPwd()}
+                onInput={(e) => setNewPwd(e.currentTarget.value)}
+                placeholder="••••••••"
+                disabled={pwdSaving()}
+                required
+                class={`${fieldInput} pr-10`}
+                style={{ color: themeColors.text }}
+              />
+              <button
+                type="button"
+                class="absolute right-3 top-1/2 -translate-y-1/2 opacity-50 hover:opacity-80"
+                onClick={() => setShowNewPwd(!showNewPwd())}
+              >
+                {showNewPwd() ? <EyeOff size={14} /> : <Eye size={14} />}
+              </button>
+            </div>
+          </div>
+
+          {/* 确认新密码 */}
+          <div class="space-y-1.5">
+            <label class="block text-xs font-medium" style={{ color: themeColors.textMuted }}>确认新密码</label>
+            <input
+              type="password"
+              value={confirmPwd()}
+              onInput={(e) => setConfirmPwd(e.currentTarget.value)}
+              placeholder="再次输入新密码"
+              disabled={pwdSaving()}
+              required
+              class={fieldInput}
+              style={{ color: themeColors.text }}
+            />
+          </div>
+
+          {/* 反馈 */}
+          <Show when={pwdMsg()}>
+            {(msg) => (
+              <div
+                class="flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs"
+                style={{
+                  background: msg().ok ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)',
+                  'border-color': msg().ok ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)',
+                  color: msg().ok ? '#22c55e' : '#ef4444',
+                }}
+              >
+                {msg().ok ? <CheckCircle size={12} /> : <AlertCircle size={12} />}
+                {msg().text}
+              </div>
+            )}
+          </Show>
+
+          <button
+            type="submit"
+            disabled={pwdSaving()}
+            class="flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium text-white transition-all hover:opacity-90 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{ background: chartColors.primary }}
+          >
+            <Show when={pwdSaving()} fallback={<><Lock size={13} />确认修改</>}>
+              <Loader size={13} class="animate-spin" />处理中...
+            </Show>
+          </button>
+        </form>
+      </div>
+
+      {/* ── 3. 注销账号（危险区）──────────────────────────── */}
+      <div
+        class="rounded-xl p-5"
+        style={{ background: 'rgba(239,68,68,0.04)', border: '1px solid rgba(239,68,68,0.25)' }}
+      >
+        <div class="flex items-center gap-2 mb-2">
+          <AlertTriangle size={16} style={{ color: '#ef4444' }} />
+          <span class="font-semibold text-sm" style={{ color: '#ef4444' }}>危险区域 — 注销账号</span>
+        </div>
+        <p class="text-xs mb-4" style={{ color: themeColors.textMuted }}>
+          注销后，您的账号将被永久停用，数据不可恢复。此操作无法撤销，请谨慎操作。
+        </p>
+
+        <Show
+          when={!showDeleteDialog()}
+          fallback={
+            <div class="space-y-3">
+              <p class="text-xs" style={{ color: themeColors.textMuted }}>
+                请输入您的邮箱 <span class="font-mono font-semibold" style={{ color: themeColors.text }}>{user()?.email}</span> 以确认注销
+              </p>
+              <input
+                type="email"
+                value={deleteConfirmEmail()}
+                onInput={(e) => setDeleteConfirmEmail(e.currentTarget.value)}
+                placeholder="输入邮箱确认"
+                disabled={deleting()}
+                class={fieldInput}
+                style={{ color: themeColors.text }}
+              />
+              <Show when={deleteMsg()}>
+                <p class="text-xs" style={{ color: '#ef4444' }}>{deleteMsg()}</p>
+              </Show>
+              <div class="flex gap-2">
+                <button
+                  type="button"
+                  onClick={handleDeleteAccount}
+                  disabled={deleting()}
+                  class="flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium text-white transition-all hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+                  style={{ background: '#ef4444' }}
+                >
+                  <Show when={deleting()} fallback={<><AlertTriangle size={13} />确认注销</>}>
+                    <Loader size={13} class="animate-spin" />注销中...
+                  </Show>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowDeleteDialog(false); setDeleteConfirmEmail(''); setDeleteMsg(''); }}
+                  disabled={deleting()}
+                  class="rounded-lg px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50"
+                  style={{ color: themeColors.textSecondary, border: `1px solid ${themeColors.border}`, background: themeColors.surface }}
+                >
+                  取消
+                </button>
+              </div>
+            </div>
+          }
+        >
+          <button
+            type="button"
+            onClick={() => setShowDeleteDialog(true)}
+            class="flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium text-white transition-all hover:opacity-90 active:scale-[0.98]"
+            style={{ background: '#ef4444' }}
+          >
+            <AlertTriangle size={13} />
+            注销我的账号
+          </button>
+        </Show>
+      </div>
+    </div>
+  );
+};
+
 // ===================== Main page =====================
 const renderTabIcon = (key: string) => {
   const map: Record<string, any> = {
-    theme: Palette, llm: Bot, git: Github, cron: Clock, gate: ShieldCheck, products: Package,
+    theme: Palette, llm: Bot, git: Github, cron: Clock, gate: ShieldCheck, products: Package, profile: User,
   };
   const I = map[key];
   return I ? <I size={14} class="inline mr-1" /> : null;
@@ -1847,6 +2187,7 @@ const TABS = [
   { key: 'cron',  label: '定时任务' },
   { key: 'gate',  label: '节点门控' },
   { key: 'products', label: '产品清单' },
+  { key: 'profile',  label: '个人信息' },
 ];
 
 const Settings: Component = () => {
@@ -1886,6 +2227,7 @@ const Settings: Component = () => {
       <Show when={activeTab() === 'cron'}><CronTab /></Show>
       <Show when={activeTab() === 'gate'}><GateTab /></Show>
       <Show when={activeTab() === 'products'}><ProductListTab /></Show>
+      <Show when={activeTab() === 'profile'}><ProfileTab /></Show>
     </div>
   );
 };

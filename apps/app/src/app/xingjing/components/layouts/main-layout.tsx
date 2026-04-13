@@ -406,17 +406,19 @@ const MainLayout: ParentComponent = (props) => {
             {/* Product Selector */}
             <ProductSwitcher />
 
-            {/* Role Selector */}
-            <select
-              class="h-7 pl-2 pr-6 text-sm border border-[var(--dls-border)] rounded-md bg-[var(--dls-surface)] text-[var(--dls-text-primary)] cursor-pointer hover:border-[var(--dls-border-light)]"
-              style={{ "min-width": "110px" }}
-              value={state.currentRole}
-              onChange={(e) => actions.setRole(e.target.value as Role)}
-            >
-              <For each={roleOptions}>
-                {(opt) => <option value={opt.value}>{opt.label}</option>}
-              </For>
-            </select>
+            {/* Role Selector — 仅团队版显示 */}
+            <Show when={!isSoloMode()}>
+              <select
+                class="h-7 pl-2 pr-6 text-sm border border-[var(--dls-border)] rounded-md bg-[var(--dls-surface)] text-[var(--dls-text-primary)] cursor-pointer hover:border-[var(--dls-border-light)]"
+                style={{ "min-width": "110px" }}
+                value={state.currentRole}
+                onChange={(e) => actions.setRole(e.target.value as Role)}
+              >
+                <For each={roleOptions}>
+                  {(opt) => <option value={opt.value}>{opt.label}</option>}
+                </For>
+              </select>
+            </Show>
 
             {/* Theme Toggle */}
             <button

@@ -140,21 +140,21 @@ const MainLayout: ParentComponent = (props) => {
   const isGroupActive = (children: { key: string }[]) =>
     children.some(child => isActive(child.key));
 
-  // Solo: green-4 背景 + green-11 文字 + green-9 左边框（3px，与 Ant Design 对齐）
-  // Team: purple-4 背景 + purple-11 文字 + purple-9 左边框
+  // Solo: green-3 背景 + green-11 文字 + green-9 左边框
+  // Team: purple-3 背景 + purple-11 文字 + purple-9 左边框
   const activeItemClass = () =>
     isSoloMode()
-      ? 'bg-green-4 text-green-11 font-medium border-l-[3px] border-green-9'
-      : 'bg-purple-4 text-purple-11 font-medium border-l-[3px] border-purple-9';
+      ? 'bg-green-3 text-green-11 font-medium border-l-2 border-green-9'
+      : 'bg-purple-3 text-purple-11 font-medium border-l-2 border-purple-9';
 
   // 分组父级标题激活态（子项选中时稍浅背景）
   const activeGroupHeaderClass = () =>
     isSoloMode()
-      ? 'bg-green-3 text-green-10 font-semibold border-l-[3px] border-green-9'
-      : 'bg-purple-3 text-purple-10 font-semibold border-l-[3px] border-purple-9';
+      ? 'bg-green-2 text-green-10 font-semibold border-l-2 border-green-9'
+      : 'bg-purple-2 text-purple-10 font-semibold border-l-2 border-purple-9';
 
-  // 未选中时的边框占位，保持布局稳定不抖动（宽度与激活态一致，避免抖动）
-  const inactiveBorder = 'border-l-[3px] border-transparent';
+  // 未选中时的边框占位，保持布局稳定不抖动
+  const inactiveBorder = 'border-l-2 border-transparent';
 
   const handleModeSwitch = (mode: 'team' | 'solo') => {
     actions.setAppMode(mode);
@@ -299,10 +299,10 @@ const MainLayout: ParentComponent = (props) => {
                   when={item.children}
                   fallback={
                     <button
-                      class={`w-full px-4 py-2.5 text-left text-sm flex items-center gap-3 transition-colors ${
+                      class={`w-full px-4 py-2.5 text-left text-sm hover:bg-[var(--dls-hover)] flex items-center gap-3 transition-colors ${
                         isActive(item.key)
                           ? activeItemClass()
-                          : `text-[var(--dls-text-secondary)] ${inactiveBorder} hover:bg-[var(--dls-hover)]`
+                          : `text-[var(--dls-text-secondary)] ${inactiveBorder}`
                       }`}
                       onClick={() => navigate(item.key)}
                     >
@@ -314,10 +314,10 @@ const MainLayout: ParentComponent = (props) => {
                   <div>
                     {/* Group header */}
                     <button
-                      class={`w-full px-4 py-2.5 text-left text-sm flex items-center gap-3 transition-colors ${
+                      class={`w-full px-4 py-2.5 text-left text-sm hover:bg-[var(--dls-hover)] flex items-center gap-3 transition-colors ${
                         isGroupActive(item.children!)
                           ? activeGroupHeaderClass()
-                          : `${isSoloMode() ? 'text-green-9' : 'text-purple-9'} font-semibold ${inactiveBorder} hover:bg-[var(--dls-hover)]`
+                          : `${isSoloMode() ? 'text-green-9' : 'text-purple-9'} font-semibold ${inactiveBorder}`
                       }`}
                       onClick={() => {
                         if ((item as any).navigateTo) navigate((item as any).navigateTo);
@@ -334,10 +334,10 @@ const MainLayout: ParentComponent = (props) => {
                         <For each={item.children}>
                           {(child) => (
                             <button
-                              class={`w-full pl-10 pr-3 py-2 text-left text-sm flex items-center gap-3 transition-colors rounded mx-1 ${
+                              class={`w-full pl-10 pr-3 py-2 text-left text-sm hover:bg-[var(--dls-hover)] flex items-center gap-3 transition-colors rounded mx-1 ${
                                 isActive(child.key)
                                   ? activeItemClass()
-                                  : `text-[var(--dls-text-secondary)] ${inactiveBorder} hover:bg-[var(--dls-hover)]`
+                                  : `text-[var(--dls-text-secondary)] ${inactiveBorder}`
                               }`}
                               style={{ width: 'calc(100% - 8px)' }}
                               onClick={() => navigate(child.key)}
@@ -397,12 +397,6 @@ const MainLayout: ParentComponent = (props) => {
             {currentSlogan()}
           </div>
           <div class="flex items-center gap-3">
-            {/* Solo mode stats */}
-            <Show when={isSoloMode()}>
-              <span class="text-xs px-2 py-1 bg-[var(--green-9)]/10 text-[var(--green-9)] rounded-full">MRR $1,240</span>
-              <span class="text-xs px-2 py-1 bg-[var(--blue-9)]/10 text-[var(--blue-9)] rounded-full">v1.2.3 生产中</span>
-            </Show>
-
             {/* Product Selector */}
             <ProductSwitcher />
 

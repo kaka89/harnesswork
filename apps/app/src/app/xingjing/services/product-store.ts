@@ -70,6 +70,8 @@ export interface XingjingProduct {
   workDir: string;
   gitUrl?: string;
   createdAt: string;
+  /** 最后更新时间：切换产品、修改内容均会更新 */
+  updatedAt?: string;
   description?: string;
   /** 产品类型：team = 多仓库模式，solo = Monorepo 模式（默认，向后兼容）*/
   productType?: 'team' | 'solo';
@@ -187,11 +189,13 @@ export function createProductStore() {
 
   // ── Actions ──
 
-  async function addProduct(product: Omit<XingjingProduct, 'id' | 'createdAt'>) {
+  async function addProduct(product: Omit<XingjingProduct, 'id' | 'createdAt' | 'updatedAt'>) {
+    const now = new Date().toISOString();
     const newProduct: XingjingProduct = {
       ...product,
       id: `prod-${Date.now()}`,
-      createdAt: new Date().toISOString(),
+      createdAt: now,
+      updatedAt: now,
     };
     const updated = [...products(), newProduct];
     setProducts(updated);
@@ -227,6 +231,16 @@ export function createProductStore() {
     const product = products().find((p) => p.id === productId);
     if (!product) return;
 
+    // 更新该产品的 updatedAt（切换也算使用）
+    const updatedProducts = products().map(p =>
+      p.id === productId
+        ? { ...p, updatedAt: new Date().toISOString() }
+        : p
+    );
+    setProducts(updatedProducts);
+    await saveProducts(updatedProducts);
+
+    // 更新偏好
     const updatedPrefs = { ...preferences(), activeProductId: productId };
     setPreferences(updatedPrefs);
     await savePreferences(updatedPrefs);
@@ -240,6 +254,33 @@ export function createProductStore() {
     const updatedPrefs = { ...preferences(), viewMode: mode };
     setPreferences(updatedPrefs);
     await savePreferences(updatedPrefs);
+
+    // 自动选中该模式下最近更新的产品
+    const modeProducts = products().filter(
+      p => (p.productType ?? 'solo') === mode
+    );
+    if (modeProducts.length > 0) {
+      const mostRecent = modeProducts.reduce((latest, p) => {
+        const pTime = new Date(p.updatedAt ?? p.createdAt).getTime();
+        const latestTime = new Date(latest.updatedAt ?? latest.createdAt).getTime();
+        return pTime > latestTime ? p : latest;
+      });
+      await switchProduct(mostRecent.id);
+    }
+  }
+
+  /** 通用产品更新函数，自动写入 updatedAt */
+  async function updateProduct(
+    productId: string,
+    patch: Partial<Omit<XingjingProduct, 'id' | 'createdAt'>>,
+  ) {
+    const updated = products().map(p =>
+      p.id === productId
+        ? { ...p, ...patch, updatedAt: new Date().toISOString() }
+        : p
+    );
+    setProducts(updated);
+    await saveProducts(updated);
   }
 
   // ── Product initialization ──
@@ -380,6 +421,7 @@ export function createProductStore() {
       if (p.id !== productId) return p;
       return {
         ...p,
+        updatedAt: new Date().toISOString(),
         teamStructure: {
           ...p.teamStructure!,
           domains: [...p.teamStructure!.domains, newDomain],
@@ -423,6 +465,7 @@ export function createProductStore() {
       if (p.id !== productId) return p;
       return {
         ...p,
+        updatedAt: new Date().toISOString(),
         teamStructure: {
           ...p.teamStructure!,
           apps: [...p.teamStructure!.apps, newApp],
@@ -460,6 +503,7 @@ export function createProductStore() {
     removeProduct,
     switchProduct,
     setViewMode,
+    updateProduct,
     initializeProductDir,
     initializeTeamProduct,
     addDomainToTeamProduct,

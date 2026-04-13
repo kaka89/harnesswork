@@ -49,7 +49,7 @@ use commands::workspace::{
     workspace_openwork_write, workspace_set_active, workspace_set_runtime_active,
     workspace_set_selected, workspace_update_display_name, workspace_update_remote,
 };
-use commands::xingjing::{xingjing_init_product_dir, xingjing_delete_product_dir, xingjing_check_git_installed, xingjing_install_git};
+use commands::xingjing::{xingjing_init_product_dir, xingjing_delete_product_dir, xingjing_check_git_installed, xingjing_install_git, xingjing_append_log};
 use engine::manager::EngineManager;
 use opencode_router::manager::OpenCodeRouterManager;
 use openwork_server::manager::OpenworkServerManager;
@@ -222,7 +222,8 @@ pub fn run() {
             xingjing_init_product_dir,
             xingjing_delete_product_dir,
             xingjing_check_git_installed,
-            xingjing_install_git
+            xingjing_install_git,
+            xingjing_append_log
         ])
         .build(tauri::generate_context!())
         .expect("error while building OpenWork");

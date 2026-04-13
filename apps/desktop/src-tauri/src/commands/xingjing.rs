@@ -2,6 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+use crate::paths::home_dir;
 use serde::Deserialize;
 
 /// 单个文件条目（路径相对于 workDir）
@@ -252,4 +253,73 @@ pub fn xingjing_install_git() -> serde_json::Value {
     {
         serde_json::json!({ "ok": false, "output": "当前平台暂不支持自动安装 git" })
     }
+}
+
+/// 将一行文本追加写入 ~/.xingjing/logs/agent-calls-YYYY-MM-DD.log
+/// 自动创建目录及文件，写入失败时返回错误信息（日志为尽力而为，调用方可静默忽略）。
+#[tauri::command]
+pub fn xingjing_append_log(line: String) -> Result<(), String> {
+    use std::io::Write;
+
+    let Some(home) = home_dir() else {
+        return Err("无法获取 HOME 目录".to_string());
+    };
+
+    let log_dir = home.join(".xingjing").join("logs");
+    fs::create_dir_all(&log_dir)
+        .map_err(|e| format!("创建日志目录失败: {e}"))?;
+
+    // 按天生成文件名（UTC）
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let days_since_epoch = now / 86400;
+    let date_str = epoch_days_to_date_str(days_since_epoch);
+
+    let log_file = log_dir.join(format!("agent-calls-{date_str}.log"));
+
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_file)
+        .map_err(|e| format!("打开日志文件失败: {e}"))?;
+
+    writeln!(file, "{line}")
+        .map_err(|e| format!("写入日志失败: {e}"))?;
+
+    Ok(())
+}
+
+/// 将从 epoch 起的天数转为 "YYYY-MM-DD" 字符串（UTC）
+fn epoch_days_to_date_str(days: u64) -> String {
+    let mut remaining = days;
+    let mut year = 1970u64;
+    loop {
+        let days_in_year = if is_leap(year) { 366 } else { 365 };
+        if remaining < days_in_year {
+            break;
+        }
+        remaining -= days_in_year;
+        year += 1;
+    }
+    let months = if is_leap(year) {
+        [31u64, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [31u64, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
+    let mut month = 1u64;
+    for days_in_month in months {
+        if remaining < days_in_month {
+            break;
+        }
+        remaining -= days_in_month;
+        month += 1;
+    }
+    let day = remaining + 1;
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+fn is_leap(year: u64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
 }

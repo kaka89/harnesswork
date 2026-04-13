@@ -14,6 +14,7 @@ interface MentionInputProps {
 const MentionInput = (props: MentionInputProps) => {
   const [showDropdown, setShowDropdown] = createSignal(false);
   const [mentionQuery, setMentionQuery] = createSignal('');
+  const [hoveredId, setHoveredId] = createSignal<string | null>(null);
   let textareaRef: HTMLTextAreaElement | undefined;
 
   const filteredAgents = () => {
@@ -51,11 +52,12 @@ const MentionInput = (props: MentionInputProps) => {
   };
 
   return (
-    <div style={{ position: 'relative', ...props.style }}>
+    <div style={{ ...props.style, position: 'relative' }}>
       <textarea
         ref={textareaRef}
         value={props.value}
         onInput={handleInput}
+        onKeyDown={(e) => { if (e.key === 'Escape') setShowDropdown(false); }}
         disabled={props.disabled}
         placeholder={props.placeholder}
         style={{
@@ -107,13 +109,10 @@ const MentionInput = (props: MentionInputProps) => {
                   gap: '10px',
                   'align-items': 'center',
                   transition: 'background 0.15s',
+                  background: hoveredId() === agent.id ? '#f5f5f5' : 'transparent',
                 }}
-                onMouseEnter={(e) => {
-                  (e.currentTarget as HTMLDivElement).style.background = '#f5f5f5';
-                }}
-                onMouseLeave={(e) => {
-                  (e.currentTarget as HTMLDivElement).style.background = 'transparent';
-                }}
+                onMouseEnter={() => setHoveredId(agent.id)}
+                onMouseLeave={() => setHoveredId(null)}
               >
                 <span style={{ 'font-size': '20px' }}>{agent.emoji}</span>
                 <div>

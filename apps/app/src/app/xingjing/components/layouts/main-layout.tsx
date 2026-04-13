@@ -132,8 +132,19 @@ const MainLayout: ParentComponent = (props) => {
   const isSoloMode = () => state.appMode === 'solo';
   const menuItems = () => isSoloMode() ? soloMenuItems : teamMenuItems;
 
+  // Router base path — must match the base prop in xingjing-native.tsx
+  const ROUTER_BASE = '/xingjing-solid';
+
+  // Strip the router base prefix so menu keys (e.g. '/autopilot') can be
+  // compared against location.pathname which includes the base prefix.
+  const normPath = () => {
+    const p = location.pathname;
+    return p.startsWith(ROUTER_BASE) ? p.slice(ROUTER_BASE.length) || '/' : p;
+  };
+
   const isActive = (path: string) => {
-    return location.pathname === path || location.pathname.startsWith(path + '/');
+    const p = normPath();
+    return p === path || p.startsWith(path + '/');
   };
 
   // 判断某个分组下是否有子菜单处于激活状态
@@ -169,7 +180,8 @@ const MainLayout: ParentComponent = (props) => {
 
   // Initialize open group based on current path
   onMount(() => {
-    if (location.pathname.startsWith('/solo')) {
+    const p = normPath();
+    if (p.startsWith('/solo')) {
       actions.setAppMode('solo');
       setOpenKeys(['/solo/autopilot-group']);
     } else {
@@ -177,7 +189,7 @@ const MainLayout: ParentComponent = (props) => {
       actions.setAppMode('team');
       setOpenKeys(['/autopilot-group']);
       // 在根路径时显式导航到驾驶舱页面
-      if (location.pathname === '/' || location.pathname === '') {
+      if (p === '/' || p === '') {
         navigate('/autopilot');
       }
     }

@@ -2,6 +2,7 @@ import { Component, createMemo, For, Show } from 'solid-js';
 import { useNavigate } from '@solidjs/router';
 import { historyVelocity } from '../../mock/sprint';
 import { useAppStore } from '../../stores/app-store';
+import { themeColors } from '../../utils/colors';
 import ECharts from '../../components/common/echarts';
 import { Bot } from 'lucide-solid';
 
@@ -25,7 +26,7 @@ const SprintPlan: Component = () => {
       {
         type: 'bar',
         data: historyVelocity.map((v) => v.points),
-        itemStyle: { color: 'themeColors.primary' },
+        itemStyle: { color: '#1264e5' },
         barWidth: 30,
       },
     ],
@@ -58,7 +59,7 @@ const SprintPlan: Component = () => {
                 {(item) => (
                   <div
                     class="border rounded-lg p-3 cursor-pointer transition-all hover:border-blue-300"
-                    style={{ opacity: item.inSprint ? 0.5 : 1, 'border-color': item.inSprint ? 'themeColors.border' : 'themeColors.border' }}
+                    style={{ opacity: item.inSprint ? 0.5 : 1, 'border-color': item.inSprint ? themeColors.border : themeColors.border }}
                     onClick={() => actions.toggleBacklogItem(item.id)}
                   >
                     <div class="flex justify-between items-center mb-1">
@@ -66,8 +67,8 @@ const SprintPlan: Component = () => {
                         <span
                           class="px-1.5 py-0.5 rounded text-xs font-medium"
                           style={{
-                            color: item.priority === 'P0' ? 'themeColors.error' : item.priority === 'P1' ? 'themeColors.warning' : 'themeColors.primary',
-                            background: item.priority === 'P0' ? 'themeColors.errorBg' : item.priority === 'P1' ? 'themeColors.warningBg' : 'themeColors.primaryBg',
+                            color: item.priority === 'P0' ? themeColors.error : item.priority === 'P1' ? themeColors.warning : themeColors.primary,
+                            background: item.priority === 'P0' ? themeColors.errorBg : item.priority === 'P1' ? themeColors.warningBg : themeColors.primaryBg,
                           }}
                         >
                           {item.priority}
@@ -112,7 +113,7 @@ const SprintPlan: Component = () => {
                     class="h-2 rounded-full transition-all"
                     style={{
                       width: `${Math.min(Math.round((planned() / sprintCapacity) * 100), 100)}%`,
-                      background: planned() > sprintCapacity ? 'themeColors.error' : 'themeColors.primary',
+                      background: planned() > sprintCapacity ? themeColors.error : themeColors.primary,
                     }}
                   />
                 </div>

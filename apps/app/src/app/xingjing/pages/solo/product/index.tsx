@@ -8,27 +8,28 @@ import {
   FeatureIdea,
   Competitor,
 } from '../../../mock/solo';
-import { readYamlDir, readMarkdownDir } from '../../../services/file-store';
+import { loadHypotheses, loadFeatureIdeas, loadCompetitors } from '../../../services/file-store';
 import { useAppStore } from '../../../stores/app-store';
+import { themeColors, chartColors } from '../../../utils/colors';
 import { Lightbulb, Microscope } from 'lucide-solid';
 
 const statusConfig: Record<HypothesisStatus, { label: string; icon: string; bg: string; border: string; cardBorder: string }> = {
-  testing:     { label: '验证中',  icon: '🧪', bg: 'themeColors.primaryBg', border: 'themeColors.primaryBorder', cardBorder: 'themeColors.border' },
-  validated:   { label: '已证实',  icon: '✅', bg: 'themeColors.successBg', border: 'themeColors.successBorder', cardBorder: 'themeColors.successBorder' },
-  invalidated: { label: '已推翻',  icon: '❌', bg: 'themeColors.surface2f0', border: 'themeColors.errorBorder', cardBorder: 'themeColors.errorBorder' },
+  testing:     { label: '验证中',  icon: '🧪', bg: themeColors.primaryBg, border: themeColors.primaryBorder, cardBorder: themeColors.border },
+  validated:   { label: '已证实',  icon: '✅', bg: themeColors.successBg, border: themeColors.successBorder, cardBorder: themeColors.successBorder },
+  invalidated: { label: '已推翻',  icon: '❌', bg: themeColors.errorBg, border: themeColors.errorBorder, cardBorder: themeColors.errorBorder },
 };
 
-const impactConfig = {
-  high:   { label: '高影响', colorClass: 'bg-red-100 text-red-700' },
-  medium: { label: '中影响', colorClass: 'bg-orange-100 text-orange-700' },
-  low:    { label: '低影响', colorClass: 'bg-gray-100 text-gray-600' },
+const impactConfig: Record<string, { label: string; bg: string; color: string }> = {
+  high:   { label: '高影响', bg: themeColors.errorBg, color: chartColors.error },
+  medium: { label: '中影响', bg: themeColors.warningBg, color: themeColors.warningDark },
+  low:    { label: '低影响', bg: themeColors.hover, color: themeColors.textSecondary },
 };
 
-const priorityColor: Record<string, string> = {
-  P0: 'bg-red-500 text-white',
-  P1: 'bg-yellow-400 text-white',
-  P2: 'bg-blue-500 text-white',
-  P3: 'bg-gray-400 text-white',
+const priorityStyle: Record<string, { bg: string }> = {
+  P0: { bg: chartColors.error },
+  P1: { bg: chartColors.warning },
+  P2: { bg: chartColors.primary },
+  P3: { bg: themeColors.textMuted },
 };
 
 const HypothesisColumn: Component<{
@@ -40,54 +41,49 @@ const HypothesisColumn: Component<{
 }> = (props) => {
   const cfg = () => statusConfig[props.status];
   return (
-    <div class="flex-1 min-w-0">
-      <div
-        class="flex items-center gap-2 mb-3 px-3 py-2 rounded-lg"
-        style={{ background: cfg().bg, border: `1px solid ${cfg().border}` }}
-      >
+    <div style={{ flex: 1, 'min-width': 0 }}>
+      <div style={{ display: 'flex', 'align-items': 'center', gap: '8px', 'margin-bottom': '12px', padding: '8px 12px', 'border-radius': '8px', background: cfg().bg, border: `1px solid ${cfg().border}` }}>
         <span>{cfg().icon}</span>
-        <span class="font-semibold text-sm text-gray-800">{props.title}</span>
-        <span class="ml-auto text-xs px-1.5 py-0.5 bg-white rounded-full text-gray-600 border border-gray-200">
+        <span style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text }}>{props.title}</span>
+        <span style={{ 'margin-left': 'auto', 'font-size': '12px', padding: '1px 6px', background: themeColors.surface, 'border-radius': '9999px', color: themeColors.textSecondary, border: `1px solid ${themeColors.border}` }}>
           {props.items.length}
         </span>
       </div>
-      <div class="flex flex-col gap-2.5">
+      <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
         <Show when={props.items.length === 0}>
-          <div class="text-center py-8 text-gray-400 text-sm">暂无</div>
+          <div style={{ 'text-align': 'center', padding: '32px 0', color: themeColors.textMuted, 'font-size': '14px' }}>暂无</div>
         </Show>
         <For each={props.items}>
-          {(h) => (
-            <div
-              class="rounded-xl border bg-white p-3.5 cursor-pointer hover:shadow-sm transition-shadow"
-              style={{ 'border-color': cfg().cardBorder }}
-              onClick={() => props.onDetail(h)}
-            >
-              <div class="mb-2">
-                <span class="font-semibold text-sm text-gray-900">「{h.belief}」</span>
-              </div>
-              <div class="text-xs text-gray-500 mb-2">
-                ❓ {h.method}
-              </div>
-              <Show when={h.result}>
-                <div
-                  class={`mb-2 px-2.5 py-1.5 rounded-lg text-xs ${
-                    props.status === 'validated' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
-                  }`}
-                >
-                  {h.result}
+          {(h) => {
+            const impact = impactConfig[h.impact] || impactConfig.low;
+            return (
+              <div
+                style={{ 'border-radius': '12px', border: `1px solid ${cfg().cardBorder}`, background: themeColors.surface, padding: '14px', cursor: 'pointer', transition: 'box-shadow 0.2s' }}
+                onClick={() => props.onDetail(h)}
+              >
+                <div style={{ 'margin-bottom': '8px' }}>
+                  <span style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text }}>「{h.belief}」</span>
                 </div>
-              </Show>
-              <div class="flex items-center gap-2">
-                <span class={`text-xs px-1.5 py-0.5 rounded ${impactConfig[h.impact].colorClass}`}>
-                  {impactConfig[h.impact].label}
-                </span>
-                <span class="text-xs text-gray-400 ml-auto">{h.createdAt}</span>
+                <div style={{ 'font-size': '12px', color: themeColors.textMuted, 'margin-bottom': '8px' }}>
+                  ❓ {h.method}
+                </div>
+                <Show when={h.result}>
+                  <div style={{ 'margin-bottom': '8px', padding: '6px 10px', 'border-radius': '8px', 'font-size': '12px', background: props.status === 'validated' ? themeColors.successBg : themeColors.errorBg, color: props.status === 'validated' ? chartColors.success : chartColors.error }}>
+                    {h.result}
+                  </div>
+                </Show>
+                <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
+                  <span style={{ 'font-size': '12px', padding: '1px 6px', 'border-radius': '4px', background: impact.bg, color: impact.color }}>
+                    {impact.label}
+                  </span>
+                  <span style={{ 'font-size': '12px', color: themeColors.textMuted, 'margin-left': 'auto' }}>{h.createdAt}</span>
+                </div>
               </div>
-            </div>
-          )}
+            );
+          }}
         </For>
         <Show when={props.status === 'testing'}>
-          <button class="w-full py-2 border-2 border-dashed border-gray-200 rounded-lg text-sm text-gray-400 hover:border-gray-300 hover:text-gray-500 transition-colors" onClick={() => props.onAddNew?.()}>
+          <button style={{ width: '100%', padding: '8px', border: `2px dashed ${themeColors.border}`, 'border-radius': '8px', 'font-size': '14px', color: themeColors.textMuted, background: 'transparent', cursor: 'pointer' }} onClick={() => props.onAddNew?.()}>
             + 新增假设
           </button>
         </Show>
@@ -117,15 +113,18 @@ const SoloProduct: Component = () => {
     const workDir = productStore.activeProduct()?.workDir;
     if (!workDir) return;
 
-    const [hypoFiles, ideaFiles, competitorFiles] = await Promise.all([
-      readMarkdownDir('.xingjing/solo/hypotheses', workDir),
-      readYamlDir<FeatureIdea>('.xingjing/solo/feature-ideas', workDir),
-      readYamlDir<Competitor>('.xingjing/solo/competitors', workDir),
-    ]);
-
-    if (hypoFiles.length > 0) setHypotheses(hypoFiles.map((f: any) => f.frontmatter as unknown as Hypothesis));
-    if (ideaFiles.length > 0) setFeatureIdeas(ideaFiles);
-    if (competitorFiles.length > 0) setCompetitors(competitorFiles);
+    try {
+      const [fileHypo, fileIdeas, fileCompetitors] = await Promise.all([
+        loadHypotheses(workDir),
+        loadFeatureIdeas(workDir),
+        loadCompetitors(workDir),
+      ]);
+      if (fileHypo.length > 0) setHypotheses(fileHypo as unknown as Hypothesis[]);
+      if (fileIdeas.length > 0) setFeatureIdeas(fileIdeas as unknown as FeatureIdea[]);
+      if (fileCompetitors.length > 0) setCompetitors(fileCompetitors as unknown as Competitor[]);
+    } catch {
+      // Mock fallback
+    }
   });
 
   const testingItems = () => hypotheses().filter((h) => h.status === 'testing');
@@ -150,54 +149,53 @@ const SoloProduct: Component = () => {
     }, 700);
   };
 
+  const tabStyle = (isActive: boolean): Record<string, string | number> => ({
+    padding: '8px 16px', 'font-size': '14px', 'font-weight': 500,
+    'border-bottom': isActive ? `2px solid ${themeColors.purple}` : '2px solid transparent',
+    color: isActive ? themeColors.purple : themeColors.textMuted,
+    background: 'none', border: 'none',
+    cursor: 'pointer', transition: 'color 0.2s',
+  });
+
   return (
-    <div>
+    <div style={{ background: themeColors.surface }}>
       {/* Header */}
-      <div class="flex justify-between items-center mb-5">
-        <h2 class="text-lg font-semibold text-gray-900 flex items-center gap-2 m-0">
-          <span class="text-purple-600">💡</span>
+      <div style={{ display: 'flex', 'justify-content': 'space-between', 'align-items': 'center', 'margin-bottom': '20px' }}>
+        <h2 style={{ margin: 0, 'font-size': '18px', 'font-weight': 600, color: themeColors.text, display: 'flex', 'align-items': 'center', gap: '8px' }}>
+          <span style={{ color: themeColors.purple }}>💡</span>
           产品洞察
         </h2>
-        <div class="flex gap-2">
-          <span class="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded-full">🧪 {testingItems().length} 个假设验证中</span>
-          <span class="text-xs px-2 py-1 bg-green-100 text-green-700 rounded-full">✅ {validatedItems().length} 个已证实</span>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <span style={{ 'font-size': '12px', padding: '4px 8px', background: themeColors.primaryBg, color: chartColors.primary, 'border-radius': '9999px' }}>🧪 {testingItems().length} 个假设验证中</span>
+          <span style={{ 'font-size': '12px', padding: '4px 8px', background: themeColors.successBg, color: chartColors.success, 'border-radius': '9999px' }}>✅ {validatedItems().length} 个已证实</span>
         </div>
       </div>
 
-      <div class="grid grid-cols-12 gap-4">
+      <div style={{ display: 'grid', 'grid-template-columns': '2fr 1fr', gap: '16px' }}>
         {/* Main Content */}
-        <div class="col-span-8">
-          <div class="bg-white rounded-xl shadow-sm border border-gray-100">
+        <div>
+          <div style={{ border: `1px solid ${themeColors.border}`, 'border-radius': '8px', background: themeColors.surface }}>
             {/* Tabs */}
-            <div class="flex border-b border-gray-100">
-              <button
-                class={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${activeTab() === 'hypotheses' ? 'border-purple-500 text-purple-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
-                onClick={() => setActiveTab('hypotheses')}
-              >
+            <div style={{ display: 'flex', 'border-bottom': `1px solid ${themeColors.borderLight}` }}>
+              <button style={tabStyle(activeTab() === 'hypotheses')} onClick={() => setActiveTab('hypotheses')}>
                 🧪 假设看板
-                <span class="ml-1.5 text-xs px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded-full">{testingItems().length} 验证中</span>
+                <span style={{ 'margin-left': '6px', 'font-size': '12px', padding: '1px 6px', background: themeColors.primaryBg, color: chartColors.primary, 'border-radius': '9999px' }}>{testingItems().length} 验证中</span>
               </button>
-              <button
-                class={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${activeTab() === 'ideas' ? 'border-purple-500 text-purple-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
-                onClick={() => setActiveTab('ideas')}
-              >
+              <button style={tabStyle(activeTab() === 'ideas')} onClick={() => setActiveTab('ideas')}>
                 💡 功能想法
               </button>
-              <button
-                class={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${activeTab() === 'competitors' ? 'border-purple-500 text-purple-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
-                onClick={() => setActiveTab('competitors')}
-              >
+              <button style={tabStyle(activeTab() === 'competitors')} onClick={() => setActiveTab('competitors')}>
                 🔭 竞品雷达
               </button>
             </div>
 
-            <div class="p-4">
+            <div style={{ padding: '16px' }}>
               {/* Hypotheses */}
               <Show when={activeTab() === 'hypotheses'}>
-                <div class="p-3 bg-yellow-50 border border-yellow-200 rounded-lg mb-4 text-xs text-yellow-800">
+                <div style={{ padding: '12px', background: themeColors.warningBg, border: `1px solid ${themeColors.warningBorder}`, 'border-radius': '8px', 'margin-bottom': '16px', 'font-size': '12px', color: themeColors.warning }}>
                   <strong>💡 对比团队版：</strong> 团队版需要完整 PRD → 评审 → 批准流程，独立版直接用假设驱动验证，快速决策。
                 </div>
-                <div class="flex gap-3">
+                <div style={{ display: 'flex', gap: '12px' }}>
                   <HypothesisColumn title="验证中" status="testing" items={testingItems()} onDetail={setDetailHypo} onAddNew={() => setNewHypothesisModal(true)} />
                   <HypothesisColumn title="已证实" status="validated" items={validatedItems()} onDetail={setDetailHypo} />
                   <HypothesisColumn title="已推翻" status="invalidated" items={invalidatedItems()} onDetail={setDetailHypo} />
@@ -206,36 +204,39 @@ const SoloProduct: Component = () => {
 
               {/* Feature Ideas */}
               <Show when={activeTab() === 'ideas'}>
-                <div class="p-3 bg-yellow-50 border border-yellow-200 rounded-lg mb-4 text-xs text-yellow-800">
+                <div style={{ padding: '12px', background: themeColors.warningBg, border: `1px solid ${themeColors.warningBorder}`, 'border-radius': '8px', 'margin-bottom': '16px', 'font-size': '12px', color: themeColors.warning }}>
                   <strong>💡 对比团队版：</strong> 无需 PRD 模板、Schema 校验、AI评分。一个想法 = 一张卡片，AI 直接评估优先级。
                 </div>
-                <div class="flex flex-col gap-3">
+                <div style={{ display: 'flex', 'flex-direction': 'column', gap: '12px' }}>
                   <For each={featureIdeas()}>
-                    {(idea) => (
-                      <div class="rounded-xl border border-gray-100 p-4">
-                        <div class="flex items-start gap-3">
-                          <div class="flex-1">
-                            <div class="flex items-center gap-2 mb-2 flex-wrap">
-                              <span class={`text-xs px-2 py-0.5 rounded font-bold ${priorityColor[idea.aiPriority]}`}>
-                                {idea.aiPriority}
-                              </span>
-                              <span class="font-semibold text-sm text-gray-900">{idea.title}</span>
-                              <span class="text-xs px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded">{idea.source}</span>
+                    {(idea) => {
+                      const pStyle = priorityStyle[idea.aiPriority] || priorityStyle.P3;
+                      return (
+                        <div style={{ 'border-radius': '12px', border: `1px solid ${themeColors.borderLight}`, padding: '16px' }}>
+                          <div style={{ display: 'flex', 'align-items': 'flex-start', gap: '12px' }}>
+                            <div style={{ flex: 1 }}>
+                              <div style={{ display: 'flex', 'align-items': 'center', gap: '8px', 'margin-bottom': '8px', 'flex-wrap': 'wrap' }}>
+                                <span style={{ 'font-size': '12px', padding: '1px 8px', 'border-radius': '4px', 'font-weight': 700, background: pStyle.bg, color: 'white' }}>
+                                  {idea.aiPriority}
+                                </span>
+                                <span style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text }}>{idea.title}</span>
+                                <span style={{ 'font-size': '12px', padding: '1px 6px', background: themeColors.hover, color: themeColors.textSecondary, 'border-radius': '4px' }}>{idea.source}</span>
+                              </div>
+                              <p style={{ 'font-size': '14px', color: themeColors.textSecondary, 'margin-bottom': '8px', margin: '0 0 8px' }}>{idea.description}</p>
+                              <div style={{ padding: '8px 12px', background: themeColors.primaryBg, 'border-radius': '8px', 'font-size': '12px', color: chartColors.primary }}>
+                                🤖 {idea.aiReason}
+                              </div>
                             </div>
-                            <p class="text-sm text-gray-600 mb-2 m-0">{idea.description}</p>
-                            <div class="px-3 py-2 bg-blue-50 rounded-lg text-xs text-blue-700">
-                              🤖 {idea.aiReason}
+                            <div style={{ 'text-align': 'center', 'flex-shrink': 0 }}>
+                              <div style={{ 'font-size': '20px', 'font-weight': 700, color: themeColors.text }}>👍 {idea.votes}</div>
+                              <div style={{ 'font-size': '12px', color: themeColors.textMuted }}>用户投票</div>
                             </div>
-                          </div>
-                          <div class="text-center flex-shrink-0">
-                            <div class="text-xl font-bold text-gray-800">👍 {idea.votes}</div>
-                            <div class="text-xs text-gray-400">用户投票</div>
                           </div>
                         </div>
-                      </div>
-                    )}
+                      );
+                    }}
                   </For>
-                  <button class="w-full py-2 border-2 border-dashed border-gray-200 rounded-lg text-sm text-gray-400 hover:border-gray-300 transition-colors">
+                  <button style={{ width: '100%', padding: '8px', border: `2px dashed ${themeColors.border}`, 'border-radius': '8px', 'font-size': '14px', color: themeColors.textMuted, background: 'transparent', cursor: 'pointer' }}>
                     + 记录新想法
                   </button>
                 </div>
@@ -243,29 +244,29 @@ const SoloProduct: Component = () => {
 
               {/* Competitors */}
               <Show when={activeTab() === 'competitors'}>
-                <div class="grid grid-cols-2 gap-4">
+                <div style={{ display: 'grid', 'grid-template-columns': 'repeat(2, 1fr)', gap: '16px' }}>
                   <For each={competitors()}>
                     {(c) => (
-                      <div class="rounded-xl border border-gray-100 p-4">
-                        <div class="flex items-center justify-between mb-3">
-                          <span class="font-semibold text-sm text-gray-900">{c.name}</span>
-                          <span class="text-xs px-2 py-0.5 bg-orange-100 text-orange-700 rounded-full">{c.pricing}</span>
+                      <div style={{ 'border-radius': '12px', border: `1px solid ${themeColors.borderLight}`, padding: '16px' }}>
+                        <div style={{ display: 'flex', 'align-items': 'center', 'justify-content': 'space-between', 'margin-bottom': '12px' }}>
+                          <span style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text }}>{c.name}</span>
+                          <span style={{ 'font-size': '12px', padding: '1px 8px', background: themeColors.warningBg, color: themeColors.warningDark, 'border-radius': '9999px' }}>{c.pricing}</span>
                         </div>
-                        <div class="grid grid-cols-2 gap-2 mb-3">
+                        <div style={{ display: 'grid', 'grid-template-columns': '1fr 1fr', gap: '8px', 'margin-bottom': '12px' }}>
                           <div>
-                            <div class="text-xs text-gray-400 mb-1">优势</div>
+                            <div style={{ 'font-size': '12px', color: themeColors.textMuted, 'margin-bottom': '4px' }}>优势</div>
                             <For each={c.strength}>
-                              {(s) => <div class="text-xs text-green-700 py-0.5">✅ {s}</div>}
+                              {(s) => <div style={{ 'font-size': '12px', color: chartColors.success, padding: '2px 0' }}>✅ {s}</div>}
                             </For>
                           </div>
                           <div>
-                            <div class="text-xs text-gray-400 mb-1">劣势</div>
+                            <div style={{ 'font-size': '12px', color: themeColors.textMuted, 'margin-bottom': '4px' }}>劣势</div>
                             <For each={c.weakness}>
-                              {(w) => <div class="text-xs text-red-600 py-0.5">⚠️ {w}</div>}
+                              {(w) => <div style={{ 'font-size': '12px', color: chartColors.error, padding: '2px 0' }}>⚠️ {w}</div>}
                             </For>
                           </div>
                         </div>
-                        <div class="px-3 py-2 bg-green-50 rounded-lg text-xs text-green-700">
+                        <div style={{ padding: '8px 12px', background: themeColors.successBg, 'border-radius': '8px', 'font-size': '12px', color: chartColors.success }}>
                           <strong>我们的差异化：</strong> {c.differentiation}
                         </div>
                       </div>
@@ -278,53 +279,41 @@ const SoloProduct: Component = () => {
         </div>
 
         {/* Right: Agent */}
-        <div class="col-span-4">
-          <div class="bg-white rounded-xl shadow-sm border border-gray-100 flex flex-col" style={{ height: 'calc(100vh - 200px)' }}>
-            <div class="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
-              <span class="text-purple-600">🤖</span>
-              <span class="font-semibold text-sm">用户代言人 Agent</span>
+        <div>
+          <div style={{ border: `1px solid ${themeColors.border}`, 'border-radius': '8px', background: themeColors.surface, display: 'flex', 'flex-direction': 'column', height: 'calc(100vh - 200px)' }}>
+            <div style={{ padding: '12px 16px', 'border-bottom': `1px solid ${themeColors.borderLight}`, display: 'flex', 'align-items': 'center', gap: '8px' }}>
+              <span style={{ color: themeColors.purple }}>🤖</span>
+              <span style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text }}>用户代言人 Agent</span>
             </div>
-            <div class="flex-1 overflow-y-auto p-3 flex flex-col gap-2.5">
+            <div style={{ flex: 1, 'overflow-y': 'auto', padding: '12px', display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
               <For each={agentMessages()}>
                 {(msg) => (
-                  <div class={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                    <div
-                      class={`max-w-[85%] px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap ${
-                        msg.role === 'user'
-                          ? 'bg-purple-600 text-white rounded-2xl rounded-br-sm'
-                          : 'bg-purple-50 text-gray-800 rounded-2xl rounded-bl-sm'
-                      }`}
-                    >
+                  <div style={{ display: 'flex', 'justify-content': msg.role === 'user' ? 'flex-end' : 'flex-start' }}>
+                    <div style={{ 'max-width': '85%', padding: '8px 12px', 'font-size': '12px', 'line-height': '1.6', 'white-space': 'pre-wrap', ...(msg.role === 'user' ? { background: themeColors.purple, color: 'white', 'border-radius': '16px 16px 4px 16px' } : { background: themeColors.purpleBg, color: themeColors.text, 'border-radius': '16px 16px 16px 4px' }) }}>
                       {msg.content}
                     </div>
                   </div>
                 )}
               </For>
             </div>
-            <div class="px-3 py-2 border-t border-gray-100 flex flex-wrap gap-1.5">
+            <div style={{ padding: '8px 12px', 'border-top': `1px solid ${themeColors.borderLight}`, display: 'flex', 'flex-wrap': 'wrap', gap: '6px' }}>
               <For each={['段落重写真的需要吗？', '团队版应该做吗？', '用户最真实的痛点']}>
                 {(q) => (
-                  <button
-                    class="text-xs px-2.5 py-1 bg-gray-100 hover:bg-gray-200 rounded-full border border-gray-200 transition-colors"
-                    onClick={() => setAgentInput(q)}
-                  >
+                  <button style={{ 'font-size': '12px', padding: '4px 10px', background: themeColors.hover, 'border-radius': '9999px', border: `1px solid ${themeColors.border}`, cursor: 'pointer', color: themeColors.textSecondary }} onClick={() => setAgentInput(q)}>
                     {q}
                   </button>
                 )}
               </For>
             </div>
-            <div class="p-3 flex gap-2">
+            <div style={{ padding: '12px', display: 'flex', gap: '8px' }}>
               <input
                 value={agentInput()}
                 onInput={(e) => setAgentInput(e.currentTarget.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') handleAgentSend(); }}
                 placeholder="质疑我的产品决策..."
-                class="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-purple-400"
+                style={{ flex: 1, border: `1px solid ${themeColors.border}`, 'border-radius': '8px', padding: '8px 12px', 'font-size': '12px', outline: 'none', background: themeColors.surface, color: themeColors.text }}
               />
-              <button
-                onClick={handleAgentSend}
-                class="bg-purple-600 hover:bg-purple-700 text-white rounded-lg px-3 py-2 text-sm transition-colors"
-              >→</button>
+              <button onClick={handleAgentSend} style={{ background: themeColors.purple, color: 'white', 'border-radius': '8px', padding: '8px 12px', 'font-size': '14px', border: 'none', cursor: 'pointer' }}>→</button>
             </div>
           </div>
         </div>
@@ -332,45 +321,41 @@ const SoloProduct: Component = () => {
 
       {/* Hypothesis Detail Modal */}
       <Show when={detailHypo()}>
-        <div class="fixed inset-0 z-50 flex items-center justify-center">
-          <div class="absolute inset-0 bg-black/30" onClick={() => setDetailHypo(null)} />
-          <div class="relative bg-white rounded-2xl shadow-xl p-6 w-[480px] max-h-[90vh] overflow-y-auto">
-            <div class="flex items-center justify-between mb-4">
-              <span class="font-semibold text-base text-gray-900">
+        <div style={{ position: 'fixed', inset: 0, 'z-index': 50, display: 'flex', 'align-items': 'center', 'justify-content': 'center' }}>
+          <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.3)' }} onClick={() => setDetailHypo(null)} />
+          <div style={{ position: 'relative', background: themeColors.surface, 'border-radius': '16px', 'box-shadow': '0 4px 24px rgba(0,0,0,0.15)', padding: '24px', width: '480px', 'max-height': '90vh', 'overflow-y': 'auto' }}>
+            <div style={{ display: 'flex', 'align-items': 'center', 'justify-content': 'space-between', 'margin-bottom': '16px' }}>
+              <span style={{ 'font-weight': 600, 'font-size': '16px', color: themeColors.text }}>
                 假设详情 · {statusConfig[detailHypo()!.status].label}
               </span>
-              <button class="text-gray-400 hover:text-gray-600 text-xl" onClick={() => setDetailHypo(null)}>✕</button>
+              <button style={{ color: themeColors.textMuted, 'font-size': '20px', background: 'none', border: 'none', cursor: 'pointer' }} onClick={() => setDetailHypo(null)}>✕</button>
             </div>
-            <div class="flex flex-col gap-3">
+            <div style={{ display: 'flex', 'flex-direction': 'column', gap: '12px' }}>
               <div>
-                <div class="text-xs text-gray-400 mb-1">我认为</div>
-                <div class="text-base font-semibold text-gray-900">「{detailHypo()!.belief}」</div>
+                <div style={{ 'font-size': '12px', color: themeColors.textMuted, 'margin-bottom': '4px' }}>我认为</div>
+                <div style={{ 'font-size': '16px', 'font-weight': 600, color: themeColors.text }}>「{detailHypo()!.belief}」</div>
               </div>
               <div>
-                <div class="text-xs text-gray-400 mb-1">因为</div>
-                <div class="text-sm text-gray-700">{detailHypo()!.why}</div>
+                <div style={{ 'font-size': '12px', color: themeColors.textMuted, 'margin-bottom': '4px' }}>因为</div>
+                <div style={{ 'font-size': '14px', color: themeColors.textSecondary }}>{detailHypo()!.why}</div>
               </div>
               <div>
-                <div class="text-xs text-gray-400 mb-1">验证方式</div>
-                <div class="text-sm text-gray-700">{detailHypo()!.method}</div>
+                <div style={{ 'font-size': '12px', color: themeColors.textMuted, 'margin-bottom': '4px' }}>验证方式</div>
+                <div style={{ 'font-size': '14px', color: themeColors.textSecondary }}>{detailHypo()!.method}</div>
               </div>
               <Show when={detailHypo()!.result}>
-                <div
-                  class={`p-3 rounded-xl text-sm ${
-                    detailHypo()!.status === 'validated' ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'
-                  }`}
-                >
-                  <div class="text-xs mb-1 opacity-70">实际结果</div>
+                <div style={{ padding: '12px', 'border-radius': '12px', 'font-size': '14px', background: detailHypo()!.status === 'validated' ? themeColors.successBg : themeColors.errorBg, color: detailHypo()!.status === 'validated' ? chartColors.success : chartColors.error }}>
+                  <div style={{ 'font-size': '12px', 'margin-bottom': '4px', opacity: 0.7 }}>实际结果</div>
                   {detailHypo()!.result}
                 </div>
               </Show>
-              <div class="flex items-center gap-2">
-                <span class={`text-xs px-2 py-0.5 rounded ${impactConfig[detailHypo()!.impact].colorClass}`}>
-                  {impactConfig[detailHypo()!.impact].label}
+              <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
+                <span style={{ 'font-size': '12px', padding: '1px 8px', 'border-radius': '4px', background: (impactConfig[detailHypo()!.impact] || impactConfig.low).bg, color: (impactConfig[detailHypo()!.impact] || impactConfig.low).color }}>
+                  {(impactConfig[detailHypo()!.impact] || impactConfig.low).label}
                 </span>
-                <span class="text-xs text-gray-400">创建于 {detailHypo()!.createdAt}</span>
+                <span style={{ 'font-size': '12px', color: themeColors.textMuted }}>创建于 {detailHypo()!.createdAt}</span>
                 <Show when={detailHypo()!.validatedAt}>
-                  <span class="text-xs text-gray-400">· 验证于 {detailHypo()!.validatedAt}</span>
+                  <span style={{ 'font-size': '12px', color: themeColors.textMuted }}>· 验证于 {detailHypo()!.validatedAt}</span>
                 </Show>
               </div>
             </div>
@@ -381,35 +366,29 @@ const SoloProduct: Component = () => {
       {/* New Hypothesis Modal */}
       <Show when={newHypothesisModal()}>
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', 'align-items': 'center', 'justify-content': 'center', 'z-index': 1000 }}>
-          <div style={{ background: 'themeColors.surface', 'border-radius': '8px', padding: '24px', width: '100%', 'max-width': '480px', 'box-shadow': '0 4px 16px rgba(0,0,0,0.15)' }}>
-            <h3 style={{ margin: '0 0 16px', 'font-size': '16px', 'font-weight': 600 }}>新增假设</h3>
+          <div style={{ background: themeColors.surface, 'border-radius': '8px', padding: '24px', width: '100%', 'max-width': '480px', 'box-shadow': '0 4px 16px rgba(0,0,0,0.15)' }}>
+            <h3 style={{ margin: '0 0 16px', 'font-size': '16px', 'font-weight': 600, color: themeColors.text }}>新增假设</h3>
             <div style={{ 'margin-bottom': '12px' }}>
-              <label style={{ display: 'block', 'font-size': '12px', 'font-weight': 500, 'margin-bottom': '6px', color: 'themeColors.textSecondary' }}>假设信念</label>
+              <label style={{ display: 'block', 'font-size': '12px', 'font-weight': 500, 'margin-bottom': '6px', color: themeColors.textSecondary }}>假设信念</label>
               <input
                 type="text"
                 placeholder="我认为..."
                 value={newHypothesisText()}
                 onInput={(e) => setNewHypothesisText(e.currentTarget.value)}
-                style={{ width: '100%', border: '1px solid themeColors.border', 'border-radius': '6px', padding: '8px 12px', 'font-size': '14px', 'font-family': 'inherit', 'box-sizing': 'border-box' }}
+                style={{ width: '100%', border: `1px solid ${themeColors.border}`, 'border-radius': '6px', padding: '8px 12px', 'font-size': '14px', 'font-family': 'inherit', 'box-sizing': 'border-box', background: themeColors.surface, color: themeColors.text }}
               />
             </div>
             <div style={{ 'margin-bottom': '16px' }}>
-              <label style={{ display: 'block', 'font-size': '12px', 'font-weight': 500, 'margin-bottom': '6px', color: 'themeColors.textSecondary' }}>验证方式</label>
+              <label style={{ display: 'block', 'font-size': '12px', 'font-weight': 500, 'margin-bottom': '6px', color: themeColors.textSecondary }}>验证方式</label>
               <textarea
                 rows={4}
                 placeholder="如何验证这个假设..."
-                style={{ width: '100%', border: '1px solid themeColors.border', 'border-radius': '6px', padding: '8px 12px', 'font-size': '14px', 'font-family': 'inherit', resize: 'vertical', 'box-sizing': 'border-box' }}
+                style={{ width: '100%', border: `1px solid ${themeColors.border}`, 'border-radius': '6px', padding: '8px 12px', 'font-size': '14px', 'font-family': 'inherit', resize: 'vertical', 'box-sizing': 'border-box', background: themeColors.surface, color: themeColors.text }}
               />
             </div>
             <div style={{ display: 'flex', 'justify-content': 'flex-end', gap: '8px' }}>
-              <button
-                style={{ background: 'themeColors.surface', border: '1px solid themeColors.border', 'border-radius': '6px', padding: '6px 16px', cursor: 'pointer', 'font-size': '14px' }}
-                onClick={() => setNewHypothesisModal(false)}
-              >取消</button>
-              <button
-                style={{ background: 'chartColors.primary', color: 'white', border: 'none', 'border-radius': '6px', padding: '6px 16px', cursor: 'pointer', 'font-size': '14px' }}
-                onClick={() => setNewHypothesisModal(false)}
-              >保存</button>
+              <button style={{ background: themeColors.surface, border: `1px solid ${themeColors.border}`, 'border-radius': '6px', padding: '6px 16px', cursor: 'pointer', 'font-size': '14px', color: themeColors.text }} onClick={() => setNewHypothesisModal(false)}>取消</button>
+              <button style={{ background: chartColors.primary, color: 'white', border: 'none', 'border-radius': '6px', padding: '6px 16px', cursor: 'pointer', 'font-size': '14px' }} onClick={() => setNewHypothesisModal(false)}>保存</button>
             </div>
           </div>
         </div>

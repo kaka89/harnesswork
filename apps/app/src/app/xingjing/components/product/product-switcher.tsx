@@ -5,6 +5,7 @@
  */
 import { Component, createSignal, Show, For } from 'solid-js';
 import { useAppStore } from '../../stores/app-store';
+import { themeColors } from '../../utils/colors';
 import NewProductModal from './new-product-modal';
 
 const ProductSwitcher: Component = () => {
@@ -25,19 +26,21 @@ const ProductSwitcher: Component = () => {
       <div class="relative">
         {/* 触发按钮：样式对齐 React 版 Select 输入框 */}
         <button
-          class="h-7 flex items-center gap-1 pl-2 pr-2 text-sm border border-gray-6 rounded-md bg-white cursor-pointer hover:border-blue-5 transition-colors"
-          style={{ "min-width": "140px" }}
+          class="h-7 flex items-center gap-1 pl-2 pr-2 text-sm rounded-md cursor-pointer transition-colors"
+          style={{
+            "min-width": "140px",
+            border: `1px solid ${themeColors.border}`,
+            background: themeColors.surface,
+          }}
           onClick={() => setDropdownOpen((v) => !v)}
         >
-          <span class={`flex-1 text-left truncate ${
-            activeProduct() ? 'text-gray-12' : 'text-gray-8'
-          }`}>
+          <span class="flex-1 text-left truncate" style={{ color: activeProduct() ? themeColors.text : themeColors.textMuted }}>
             {activeProduct()?.name ?? '选择或新建产品'}
           </span>
           <svg
-            class="text-gray-8 shrink-0"
             width="12" height="12" viewBox="0 0 12 12"
             fill="currentColor"
+            style={{ color: themeColors.textMuted }}
           >
             <path d="M2.5 4.5L6 8l3.5-3.5" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
@@ -50,7 +53,7 @@ const ProductSwitcher: Component = () => {
             onClick={() => setDropdownOpen(false)}
           />
           {/* Dropdown */}
-          <div class="absolute top-full left-0 mt-1 w-52 bg-white border border-gray-200 rounded-lg shadow-lg z-50 overflow-hidden">
+          <div class="absolute top-full left-0 mt-1 w-52 rounded-lg shadow-lg z-50 overflow-hidden" style={{ background: themeColors.surface, border: `1px solid ${themeColors.border}` }}>
             <Show
               when={products().length > 0}
               fallback={
@@ -58,7 +61,8 @@ const ProductSwitcher: Component = () => {
                   <svg
                     width="40" height="40" viewBox="0 0 64 64"
                     fill="none" xmlns="http://www.w3.org/2000/svg"
-                    class="text-gray-300 mb-2"
+                    style={{ color: themeColors.textMuted }}
+                    class="mb-2"
                   >
                     <path
                       d="M8 40h12l4 6h16l4-6h12V52a4 4 0 01-4 4H12a4 4 0 01-4-4V40z"
@@ -69,7 +73,7 @@ const ProductSwitcher: Component = () => {
                       stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
                     />
                   </svg>
-                  <span class="text-sm text-gray-400">No data</span>
+                  <span class="text-sm" style={{ color: themeColors.textMuted }}>No data</span>
                 </div>
               }
             >
@@ -77,17 +81,19 @@ const ProductSwitcher: Component = () => {
                 <For each={products()}>
                   {(product) => (
                     <button
-                      class={`w-full text-left px-3 py-2 text-sm hover:bg-gray-50 flex items-center gap-2 transition-colors ${
-                        activeProduct()?.id === product.id ? 'text-purple-700 font-medium' : 'text-gray-700'
-                      }`}
+                      class="w-full text-left px-3 py-2 text-sm flex items-center gap-2 transition-colors"
+                      style={{
+                        color: activeProduct()?.id === product.id ? themeColors.purple : themeColors.textSecondary,
+                        'font-weight': activeProduct()?.id === product.id ? 500 : 400,
+                      }}
                       onClick={() => handleSwitch(product.id)}
                     >
-                      <span class="shrink-0 w-4 h-4 rounded-full bg-purple-100 flex items-center justify-center text-[10px] text-purple-700 font-bold">
+                      <span class="shrink-0 w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold" style={{ background: themeColors.purpleBg, color: themeColors.purple }}>
                         {product.name[0]}
                       </span>
                       <span class="truncate">{product.name}</span>
                       <Show when={activeProduct()?.id === product.id}>
-                        <span class="ml-auto text-purple-500 text-xs">✓</span>
+                        <span class="ml-auto text-xs" style={{ color: themeColors.purple }}>✓</span>
                       </Show>
                     </button>
                   )}
@@ -95,9 +101,10 @@ const ProductSwitcher: Component = () => {
               </div>
             </Show>
             {/* 新建产品按钮：始终显示在底部 */}
-            <div class="border-t border-gray-100">
+            <div style={{ 'border-top': `1px solid ${themeColors.borderLight}` }}>
               <button
-                class="w-full text-left px-3 py-2 text-sm text-purple-9 hover:bg-purple-1 flex items-center gap-1.5 transition-colors"
+                class="w-full text-left px-3 py-2 text-sm flex items-center gap-1.5 transition-colors"
+                style={{ color: themeColors.purple }}
                 onClick={() => { setDropdownOpen(false); setNewProductOpen(true); }}
               >
                 <span class="text-sm font-medium">+</span>

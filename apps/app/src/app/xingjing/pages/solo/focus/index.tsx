@@ -8,13 +8,20 @@ import {
   BusinessMetric,
   FocusItem,
 } from '../../../mock/solo';
-import { readYamlDir, writeYaml } from '../../../services/file-store';
+import {
+  loadTodayFocus,
+  loadSoloMetrics,
+  loadSoloTasks,
+  saveSoloTask,
+  type SoloTaskRecord,
+} from '../../../services/file-store';
 import { useAppStore } from '../../../stores/app-store';
+import { themeColors, chartColors } from '../../../utils/colors';
 
-const priorityConfig: Record<string, { label: string; color: string; bg: string; border: string; tagClass: string }> = {
-  urgent:    { label: '紧急', color: 'chartColors.error', bg: 'themeColors.surface2f0', border: 'themeColors.errorBorder', tagClass: 'bg-red-100 text-red-700' },
-  important: { label: '重要', color: 'chartColors.warning', bg: 'themeColors.surfacebe6', border: 'themeColors.warningBorder', tagClass: 'bg-yellow-100 text-yellow-700' },
-  normal:    { label: '普通', color: 'chartColors.success', bg: 'themeColors.successBg', border: 'themeColors.successBorder', tagClass: 'bg-green-100 text-green-700' },
+const priorityConfig: Record<string, { label: string; color: string; bg: string; border: string }> = {
+  urgent:    { label: '紧急', color: chartColors.error, bg: themeColors.errorBg, border: themeColors.errorBorder },
+  important: { label: '重要', color: chartColors.warning, bg: themeColors.warningBg, border: themeColors.warningBorder },
+  normal:    { label: '普通', color: chartColors.success, bg: themeColors.successBg, border: themeColors.successBorder },
 };
 
 const modeCards = [
@@ -23,46 +30,61 @@ const modeCards = [
     icon: '💻',
     label: '开发模式',
     desc: '修 Bug · 写功能 · 深度专注',
-    color: 'themeColors.primaryBg',
-    border: 'themeColors.primaryBorder',
+    color: themeColors.primaryBg,
+    border: themeColors.primaryBorder,
   },
   {
     route: '/solo/product',
     icon: '💡',
     label: '产品模式',
     desc: '验证假设 · 规划想法 · 用户洞察',
-    color: 'themeColors.purpleBg',
-    border: 'themeColors.purpleBorder',
+    color: themeColors.purpleBg,
+    border: themeColors.purpleBorder,
   },
   {
     route: '/solo/review',
     icon: '📈',
     label: '运营模式',
     desc: '看数据 · 回复反馈 · 写内容',
-    color: 'themeColors.successBg',
-    border: 'themeColors.successBorder',
+    color: themeColors.successBg,
+    border: themeColors.successBorder,
   },
 ];
+
+const typeStyleMap: Record<string, { bg: string; color: string }> = {
+  dev: { bg: themeColors.primaryBg, color: chartColors.primary },
+  product: { bg: themeColors.purpleBg, color: themeColors.purple },
+  ops: { bg: themeColors.warningBg, color: themeColors.warningDark },
+  growth: { bg: themeColors.successBg, color: chartColors.success },
+};
+const typeLabel: Record<string, string> = {
+  dev: '开发', product: '产品', ops: '运营', growth: '增长',
+};
 
 const SoloFocus: Component = () => {
   const navigate = useNavigate();
   const { productStore } = useAppStore();
 
-  // State — initialized with mock data, updated when file data loads
   const [metrics, setMetrics] = createSignal<BusinessMetric[]>(mockBusinessMetrics);
   const [tasks, setTasks] = createSignal<SoloTask[]>(mockSoloTasks);
-  const [focusItems] = createSignal<FocusItem[]>(mockTodayFocus);
+  const [focusItems, setFocusItems] = createSignal<FocusItem[]>(mockTodayFocus);
   const [checkedTasks, setCheckedTasks] = createSignal<Set<string>>(new Set());
 
-  // Load data from file store on mount (graceful fallback to mock)
   onMount(async () => {
     const workDir = productStore.activeProduct()?.workDir;
     if (!workDir) return;
 
-    // Load tasks from directory
-    const taskFiles = await readYamlDir<SoloTask>('.xingjing/solo/tasks', workDir);
-    if (taskFiles.length > 0) {
-      setTasks(taskFiles);
+    try {
+      const [fileTasks, fileMetrics, fileFocus] = await Promise.all([
+        loadSoloTasks(workDir),
+        loadSoloMetrics(workDir),
+        loadTodayFocus(workDir),
+      ]);
+      if (fileTasks.length > 0) setTasks(fileTasks as unknown as SoloTask[]);
+      if (fileMetrics.businessMetrics.length > 0) setMetrics(fileMetrics.businessMetrics as unknown as BusinessMetric[]);
+      if (fileFocus.length > 0) setFocusItems(fileFocus as unknown as FocusItem[]);
+    } catch {
+      // Mock fallback — keep initial mock data
     }
   });
 
@@ -79,7 +101,6 @@ const SoloFocus: Component = () => {
       return next;
     });
 
-    // Persist task status change
     const workDir = productStore.activeProduct()?.workDir;
     if (!workDir) return;
     const task = tasks().find((t) => t.id === id);
@@ -87,73 +108,57 @@ const SoloFocus: Component = () => {
     const newStatus = checkedTasks().has(id) ? 'done' : 'doing';
     const updated = { ...task, status: newStatus as SoloTask['status'] };
     setTasks((prev) => prev.map((t) => (t.id === id ? updated : t)));
-    await writeYaml(`.xingjing/solo/tasks/${id}.yaml`, updated as unknown as Record<string, unknown>, workDir);
+    await saveSoloTask(workDir, updated as unknown as SoloTaskRecord);
   };
 
   const dateStr = new Date().toLocaleDateString('zh-CN', { weekday: 'long', month: 'long', day: 'numeric' });
 
-  const typeColorMap: Record<string, string> = {
-    dev: 'bg-blue-100 text-blue-700',
-    product: 'bg-purple-100 text-purple-700',
-    ops: 'bg-orange-100 text-orange-700',
-    growth: 'bg-green-100 text-green-700',
-  };
-  const typeLabel: Record<string, string> = {
-    dev: '开发', product: '产品', ops: '运营', growth: '增长',
-  };
-
   return (
-    <div>
+    <div style={{ background: themeColors.surface }}>
       {/* Page Header */}
-      <div class="flex justify-between items-center mb-5">
+      <div style={{ display: 'flex', 'justify-content': 'space-between', 'align-items': 'center', 'margin-bottom': '20px' }}>
         <div>
-          <h2 class="text-lg font-semibold text-gray-900 flex items-center gap-2 m-0">
-            <span class="text-yellow-500">⚡</span>
+          <h2 style={{ margin: 0, 'font-size': '18px', 'font-weight': 600, color: themeColors.text, display: 'flex', 'align-items': 'center', gap: '8px' }}>
+            <span style={{ color: themeColors.warning }}>⚡</span>
             今日焦点
           </h2>
-          <p class="text-sm text-gray-500 mt-0.5">{dateStr}</p>
+          <p style={{ 'font-size': '14px', color: themeColors.textMuted, 'margin-top': '2px' }}>{dateStr}</p>
         </div>
-        <span class="text-xs px-3 py-1.5 bg-orange-100 text-orange-700 rounded-full font-medium">🔥 专注模式已开启</span>
+        <span style={{ 'font-size': '12px', padding: '4px 12px', background: themeColors.warningBg, color: themeColors.warningDark, 'border-radius': '9999px', 'font-weight': 500 }}>🔥 专注模式已开启</span>
       </div>
 
       {/* AI Daily Brief */}
-      <div class="mb-5 p-4 rounded-xl border border-blue-200 bg-gradient-to-br from-blue-50 to-blue-100">
-        <div class="flex items-start gap-3">
-          <div class="w-9 h-9 rounded-full bg-blue-600 flex items-center justify-center text-white text-lg flex-shrink-0">
+      <div style={{ 'margin-bottom': '20px', padding: '16px', 'border-radius': '12px', border: `1px solid ${themeColors.primaryBorder}`, background: themeColors.primaryBg }}>
+        <div style={{ display: 'flex', 'align-items': 'flex-start', gap: '12px' }}>
+          <div style={{ width: '36px', height: '36px', 'border-radius': '50%', background: chartColors.primary, display: 'flex', 'align-items': 'center', 'justify-content': 'center', color: 'white', 'font-size': '18px', 'flex-shrink': 0 }}>
             🤖
           </div>
-          <div class="flex-1">
-            <div class="font-semibold text-sm text-gray-800 mb-2">AI 今日简报</div>
-            <p class="text-sm text-gray-600 mb-3">
+          <div style={{ flex: 1 }}>
+            <div style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text, 'margin-bottom': '8px' }}>AI 今日简报</div>
+            <p style={{ 'font-size': '14px', color: themeColors.textSecondary, 'margin-bottom': '12px' }}>
               今天有 <strong>{focusItems().length} 件最重要的事</strong>需要你关注。
             </p>
-            <div class="flex flex-col gap-2">
+            <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
               <For each={focusItems()}>
                 {(item, idx) => {
                   const cfg = priorityConfig[item.priority] ?? priorityConfig['normal'];
                   return (
-                    <div
-                      class="flex items-start gap-3 rounded-lg px-3 py-2.5 border"
-                      style={{ background: cfg.bg, 'border-color': cfg.border }}
-                    >
-                      <div
-                        class="w-5 h-5 rounded-full flex items-center justify-center text-white font-bold text-xs flex-shrink-0 mt-0.5"
-                        style={{ background: cfg.color }}
-                      >
+                    <div style={{ display: 'flex', 'align-items': 'flex-start', gap: '12px', 'border-radius': '8px', padding: '8px 12px', border: `1px solid ${cfg.border}`, background: cfg.bg }}>
+                      <div style={{ width: '20px', height: '20px', 'border-radius': '50%', display: 'flex', 'align-items': 'center', 'justify-content': 'center', color: 'white', 'font-weight': 700, 'font-size': '12px', 'flex-shrink': 0, 'margin-top': '2px', background: cfg.color }}>
                         {idx() + 1}
                       </div>
-                      <div class="flex-1">
-                        <div class="flex items-center gap-2 mb-0.5">
-                          <span class="font-semibold text-sm text-gray-900">{item.title}</span>
-                          <span class={`text-xs px-1.5 py-0.5 rounded ${cfg.tagClass}`}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: 'flex', 'align-items': 'center', gap: '8px', 'margin-bottom': '2px' }}>
+                          <span style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text }}>{item.title}</span>
+                          <span style={{ 'font-size': '12px', padding: '1px 6px', 'border-radius': '4px', background: cfg.bg, color: cfg.color, border: `1px solid ${cfg.border}` }}>
                             {cfg.label}
                           </span>
                         </div>
-                        <p class="text-xs text-gray-500 m-0">{item.reason}</p>
+                        <p style={{ 'font-size': '12px', color: themeColors.textMuted, margin: 0 }}>{item.reason}</p>
                       </div>
                       <Show when={item.linkedRoute}>
                         <button
-                          class="text-xs text-blue-600 hover:text-blue-700 flex-shrink-0 font-medium"
+                          style={{ 'font-size': '12px', color: chartColors.primary, 'flex-shrink': 0, 'font-weight': 500, background: 'none', border: 'none', cursor: 'pointer' }}
                           onClick={() => navigate(item.linkedRoute!)}
                         >
                           {item.action} →
@@ -169,61 +174,47 @@ const SoloFocus: Component = () => {
       </div>
 
       {/* Two Column Layout */}
-      <div class="grid grid-cols-12 gap-4">
+      <div style={{ display: 'grid', 'grid-template-columns': '2fr 1fr', gap: '16px' }}>
         {/* Left: Tasks + Mode Cards */}
-        <div class="col-span-8">
+        <div>
           {/* Today's Task List */}
-          <div class="bg-white rounded-xl shadow-sm border border-gray-100 mb-4">
-            <div class="flex items-center justify-between px-4 py-3 border-b border-gray-100">
-              <div class="flex items-center gap-2">
-                <span class="font-semibold text-sm text-gray-800">今日任务清单</span>
-                <span class="text-xs text-gray-500">
+          <div style={{ border: `1px solid ${themeColors.border}`, 'border-radius': '8px', background: themeColors.surface, 'margin-bottom': '16px' }}>
+            <div style={{ display: 'flex', 'align-items': 'center', 'justify-content': 'space-between', padding: '12px 16px', 'border-bottom': `1px solid ${themeColors.borderLight}` }}>
+              <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
+                <span style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text }}>今日任务清单</span>
+                <span style={{ 'font-size': '12px', color: themeColors.textMuted }}>
                   Top {todayTasks().length} · {checkedTasks().size}/{todayTasks().length} 完成
                 </span>
               </div>
-              <button
-                class="text-xs text-blue-600 hover:text-blue-700"
-                onClick={() => navigate('/solo/build')}
-              >
+              <button style={{ 'font-size': '12px', color: chartColors.primary, background: 'none', border: 'none', cursor: 'pointer' }} onClick={() => navigate('/solo/build')}>
                 全部任务 →
               </button>
             </div>
-            <div class="p-4 flex flex-col gap-2.5">
+            <div style={{ padding: '16px', display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
               <For each={todayTasks()}>
                 {(task) => {
                   const done = () => checkedTasks().has(task.id);
                   return (
                     <div
-                      class={`flex items-center gap-3 px-3 py-2.5 rounded-lg border cursor-pointer transition-all ${
-                        done()
-                          ? 'bg-gray-50 border-gray-100 opacity-60'
-                          : 'bg-gray-50 border-gray-100 hover:border-gray-200'
-                      }`}
+                      style={{ display: 'flex', 'align-items': 'center', gap: '12px', padding: '8px 12px', 'border-radius': '8px', border: `1px solid ${themeColors.borderLight}`, background: themeColors.bgSubtle, opacity: done() ? 0.6 : 1, cursor: 'pointer', transition: 'all 0.2s' }}
                       onClick={() => toggleTask(task.id)}
                     >
-                      {/* Checkbox */}
-                      <div
-                        class={`w-4 h-4 rounded border flex-shrink-0 flex items-center justify-center text-white text-xs ${
-                          done() ? 'bg-green-500 border-green-500' : 'border-gray-300'
-                        }`}
-                      >
+                      <div style={{ width: '16px', height: '16px', 'border-radius': '4px', border: done() ? `1px solid ${chartColors.success}` : `1px solid ${themeColors.border}`, 'flex-shrink': 0, display: 'flex', 'align-items': 'center', 'justify-content': 'center', color: 'white', 'font-size': '12px', background: done() ? chartColors.success : 'transparent' }}>
                         {done() && '✓'}
                       </div>
-                      <div class="flex-1">
-                        <span
-                          class={`text-sm ${done() ? 'line-through text-gray-400' : 'text-gray-800'}`}
-                        >
+                      <div style={{ flex: 1 }}>
+                        <span style={{ 'font-size': '14px', 'text-decoration': done() ? 'line-through' : 'none', color: done() ? themeColors.textMuted : themeColors.text }}>
                           <Show when={task.status === 'doing' && !done()}>
-                            <span class="inline-block w-2 h-2 rounded-full bg-blue-500 mr-1.5 animate-pulse" />
+                            <span style={{ display: 'inline-block', width: '8px', height: '8px', 'border-radius': '50%', background: chartColors.primary, 'margin-right': '6px' }} />
                           </Show>
                           {task.title}
                         </span>
                       </div>
-                      <div class="flex items-center gap-1.5 flex-shrink-0">
-                        <span class={`text-xs px-1.5 py-0.5 rounded ${typeColorMap[task.type]}`}>
+                      <div style={{ display: 'flex', 'align-items': 'center', gap: '6px', 'flex-shrink': 0 }}>
+                        <span style={{ 'font-size': '12px', padding: '1px 6px', 'border-radius': '4px', background: typeStyleMap[task.type]?.bg, color: typeStyleMap[task.type]?.color }}>
                           {typeLabel[task.type]}
                         </span>
-                        <span class="text-xs text-gray-400">{task.est}</span>
+                        <span style={{ 'font-size': '12px', color: themeColors.textMuted }}>{task.est}</span>
                       </div>
                     </div>
                   );
@@ -233,21 +224,20 @@ const SoloFocus: Component = () => {
           </div>
 
           {/* Work Mode Cards */}
-          <div class="bg-white rounded-xl shadow-sm border border-gray-100">
-            <div class="px-4 py-3 border-b border-gray-100">
-              <span class="font-semibold text-sm text-gray-800">切换工作模式</span>
+          <div style={{ border: `1px solid ${themeColors.border}`, 'border-radius': '8px', background: themeColors.surface }}>
+            <div style={{ padding: '12px 16px', 'border-bottom': `1px solid ${themeColors.borderLight}` }}>
+              <span style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text }}>切换工作模式</span>
             </div>
-            <div class="p-4 grid grid-cols-3 gap-3">
+            <div style={{ padding: '16px', display: 'grid', 'grid-template-columns': 'repeat(3, 1fr)', gap: '12px' }}>
               <For each={modeCards}>
                 {(mode) => (
                   <button
-                    class="flex flex-col items-center p-3 rounded-xl border cursor-pointer text-center hover:-translate-y-0.5 transition-transform"
-                    style={{ background: mode.color, 'border-color': mode.border }}
+                    style={{ display: 'flex', 'flex-direction': 'column', 'align-items': 'center', padding: '12px', 'border-radius': '12px', border: `1px solid ${mode.border}`, background: mode.color, cursor: 'pointer', 'text-align': 'center', transition: 'transform 0.2s' }}
                     onClick={() => navigate(mode.route)}
                   >
-                    <span class="text-2xl mb-1.5">{mode.icon}</span>
-                    <div class="font-semibold text-sm text-gray-800 mb-0.5">{mode.label}</div>
-                    <div class="text-xs text-gray-500 leading-tight">{mode.desc}</div>
+                    <span style={{ 'font-size': '24px', 'margin-bottom': '6px' }}>{mode.icon}</span>
+                    <div style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text, 'margin-bottom': '2px' }}>{mode.label}</div>
+                    <div style={{ 'font-size': '12px', color: themeColors.textMuted, 'line-height': '1.4' }}>{mode.desc}</div>
                   </button>
                 )}
               </For>
@@ -256,30 +246,27 @@ const SoloFocus: Component = () => {
         </div>
 
         {/* Right: Business Health */}
-        <div class="col-span-4">
+        <div>
           {/* Business Metrics */}
-          <div class="bg-white rounded-xl shadow-sm border border-gray-100 mb-4">
-            <div class="flex items-center justify-between px-4 py-3 border-b border-gray-100">
-              <span class="font-semibold text-sm text-gray-800">商业健康快照</span>
-              <button
-                class="text-xs text-blue-600 hover:text-blue-700"
-                onClick={() => navigate('/solo/review')}
-              >
+          <div style={{ border: `1px solid ${themeColors.border}`, 'border-radius': '8px', background: themeColors.surface, 'margin-bottom': '16px' }}>
+            <div style={{ display: 'flex', 'align-items': 'center', 'justify-content': 'space-between', padding: '12px 16px', 'border-bottom': `1px solid ${themeColors.borderLight}` }}>
+              <span style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text }}>商业健康快照</span>
+              <button style={{ 'font-size': '12px', color: chartColors.primary, background: 'none', border: 'none', cursor: 'pointer' }} onClick={() => navigate('/solo/review')}>
                 详细数据 →
               </button>
             </div>
-            <div class="p-3 grid grid-cols-2 gap-3">
+            <div style={{ padding: '12px', display: 'grid', 'grid-template-columns': 'repeat(2, 1fr)', gap: '12px' }}>
               <For each={metrics()}>
                 {(m) => (
-                  <div class="p-3 rounded-xl border" style={{ 'border-color': m.color + '33', background: m.color + '08' }}>
-                    <div class="text-xs text-gray-500 mb-1">{m.label}</div>
-                    <div class="text-xl font-bold" style={{ color: m.color }}>
+                  <div style={{ padding: '12px', 'border-radius': '12px', border: `1px solid ${m.color}33`, background: `${m.color}08` }}>
+                    <div style={{ 'font-size': '12px', color: themeColors.textMuted, 'margin-bottom': '4px' }}>{m.label}</div>
+                    <div style={{ 'font-size': '20px', 'font-weight': 700, color: m.color }}>
                       <Show when={m.trend === 'up'}>
-                        <span class="text-sm text-green-500 mr-1">↑</span>
+                        <span style={{ 'font-size': '14px', color: chartColors.success, 'margin-right': '4px' }}>↑</span>
                       </Show>
                       {m.value}
                     </div>
-                    <div class="text-xs text-gray-400 mt-0.5">{m.trendValue}</div>
+                    <div style={{ 'font-size': '12px', color: themeColors.textMuted, 'margin-top': '2px' }}>{m.trendValue}</div>
                   </div>
                 )}
               </For>
@@ -287,26 +274,23 @@ const SoloFocus: Component = () => {
           </div>
 
           {/* Streak Card */}
-          <div class="rounded-xl border border-yellow-200 bg-gradient-to-br from-yellow-50 to-yellow-100 p-4">
-            <div class="flex items-center gap-3 mb-3">
-              <span class="text-3xl">🔥</span>
+          <div style={{ 'border-radius': '12px', border: `1px solid ${themeColors.warningBorder}`, background: themeColors.warningBg, padding: '16px' }}>
+            <div style={{ display: 'flex', 'align-items': 'center', gap: '12px', 'margin-bottom': '12px' }}>
+              <span style={{ 'font-size': '30px' }}>🔥</span>
               <div>
-                <div class="font-bold text-base text-gray-800">连续构建 14 天 🔥</div>
-                <div class="text-xs text-gray-500">保持每日发布节奏，用户感知到你在快速迭代</div>
+                <div style={{ 'font-weight': 700, 'font-size': '16px', color: themeColors.text }}>连续构建 14 天 🔥</div>
+                <div style={{ 'font-size': '12px', color: themeColors.textMuted }}>保持每日发布节奏，用户感知到你在快速迭代</div>
               </div>
             </div>
-            <div class="flex gap-1 flex-wrap">
+            <div style={{ display: 'flex', gap: '4px', 'flex-wrap': 'wrap' }}>
               <For each={Array.from({ length: 14 })}>
                 {() => (
-                  <div
-                    class="w-3.5 h-3.5 rounded-sm"
-                    style={{ background: 'chartColors.warning' }}
-                  />
+                  <div style={{ width: '14px', height: '14px', 'border-radius': '2px', background: chartColors.warning }} />
                 )}
               </For>
               <For each={Array.from({ length: 7 })}>
                 {() => (
-                  <div class="w-3.5 h-3.5 rounded-sm bg-gray-200" />
+                  <div style={{ width: '14px', height: '14px', 'border-radius': '2px', background: themeColors.border }} />
                 )}
               </For>
             </div>

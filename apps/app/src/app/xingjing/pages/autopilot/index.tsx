@@ -278,8 +278,8 @@ const EnterpriseAutopilot = () => {
 
   return (
     <div style={{ 'max-width': '1400px', margin: '0 auto' }}>
-      {/* Empty State Banner */}
-      <Show when={teamProducts().length === 0}>
+      {/* Empty State Banner — 仅在从未创建过任何产品时显示，与模式无关 */}
+      <Show when={store.productStore.products().length === 0}>
         <div
           style={{
             'margin-bottom': '20px',

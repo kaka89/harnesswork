@@ -2,7 +2,9 @@ import { createSignal, Show, For, onCleanup } from 'solid-js';
 import { FileText, PlayCircle, CheckCircle, Clock, Zap } from 'lucide-solid';
 import CreateProductModal from '../../../components/product/new-product-modal';
 import { useAppStore } from '../../../stores/app-store';
+import { themeColors, chartColors } from '../../../utils/colors';
 import { soloAgents, soloWorkflowSteps, soloSampleGoals } from '../../../mock/autopilot';
+import { callAgent } from '../../../services/opencode-client';
 
 interface AgentStatus {
   [key: string]: 'idle' | 'thinking' | 'working' | 'done' | 'waiting';
@@ -24,6 +26,13 @@ const statusBadge: Record<string, { status: string; text: string }> = {
   waiting:  { status: 'warning',    text: '等待中' },
 };
 
+const agentNameToId: Record<string, string> = {
+  'AI产品搭档': 'product-brain',
+  'AI工程搭档': 'eng-brain',
+  'AI增长搭档': 'growth-brain',
+  'AI运营搭档': 'ops-brain',
+};
+
 const SoloBrainCard = (props: {
   agent: typeof soloAgents[0];
   status: 'idle' | 'thinking' | 'working' | 'done' | 'waiting';
@@ -39,8 +48,8 @@ const SoloBrainCard = (props: {
       style={{
         'border-radius': '8px',
         padding: '16px',
-        border: `1px solid ${isActive ? props.agent.borderColor : isDone ? 'themeColors.successBorder' : 'themeColors.border'}`,
-        background: isActive ? props.agent.bgColor : isDone ? 'themeColors.successBg' : 'themeColors.hover',
+        border: `1px solid ${isActive ? props.agent.borderColor : isDone ? themeColors.successBorder : themeColors.border}`,
+        background: isActive ? props.agent.bgColor : isDone ? themeColors.successBg : themeColors.hover,
         transition: 'all 0.4s ease',
         'box-shadow': isActive ? `0 0 12px ${props.agent.borderColor}88` : 'none',
         'text-align': 'center',
@@ -69,12 +78,12 @@ const SoloBrainCard = (props: {
           </div>
         </Show>
         <Show when={isDone}>
-          <div style={{ color: 'chartColors.success' }}>
+          <div style={{ color: chartColors.success }}>
             已完成
           </div>
         </Show>
         <Show when={props.status === 'idle'}>
-          <div style={{ color: 'themeColors.textMuted' }}>
+          <div style={{ color: themeColors.textMuted }}>
             {props.agent.description}
           </div>
         </Show>
@@ -88,7 +97,7 @@ const SoloBrainCard = (props: {
             padding: '2px 8px',
             'border-radius': '4px',
             'font-size': '11px',
-            border: '1px solid themeColors.border',
+            border: `1px solid ${themeColors.border}`,
             background: props.agent.color + '20',
             color: props.agent.color,
           }}>
@@ -106,7 +115,7 @@ const SoloBrainCard = (props: {
               padding: '2px 8px',
               'border-radius': '4px',
               'font-size': '10px',
-              border: '1px solid themeColors.border',
+              border: `1px solid ${themeColors.border}`,
               margin: '0',
             }}>
               {skill}
@@ -121,7 +130,7 @@ const SoloBrainCard = (props: {
 type RunState = 'idle' | 'running' | 'done';
 
 const SoloAutopilot = () => {
-  const { state } = useAppStore();
+  const { state, productStore } = useAppStore();
   const soloProducts = () => state.products.filter((p: { mode: string }) => p.mode === 'solo');
 
   const [createModalOpen, setCreateModalOpen] = createSignal(false);
@@ -156,42 +165,145 @@ const SoloAutopilot = () => {
     setProgress(0);
   };
 
+  // ─── 解析流式文本为 Timeline 步骤 ───
+  const updateFromStream = (text: string) => {
+    const parts = text.split(/^## /m);
+    const steps: typeof soloWorkflowSteps = [];
+    const seenAgents: string[] = [];
+
+    for (let i = 1; i < parts.length; i++) {
+      const part = parts[i];
+      const nlIdx = part.indexOf('\n');
+      const header = (nlIdx >= 0 ? part.slice(0, nlIdx) : part).trim();
+      const body = nlIdx >= 0 ? part.slice(nlIdx + 1).trim() : '';
+
+      let agentId = '';
+      for (const [name, id] of Object.entries(agentNameToId)) {
+        if (header.includes(name)) { agentId = id; break; }
+      }
+      if (!agentId) continue;
+      if (!seenAgents.includes(agentId)) seenAgents.push(agentId);
+
+      const agent = soloAgents.find(a => a.id === agentId);
+      const lines = body.split('\n').filter(l => l.trim());
+      const action = (lines[0] || '执行中...').replace(/^[-\d.*]+\s*/, '').slice(0, 80);
+      const outputLines = lines.slice(1);
+
+      const artIdx = outputLines.findIndex(l => /^###\s/.test(l) || l.includes('产出物'));
+      let artifact: { title: string; content: string } | undefined;
+      let output: string;
+
+      if (artIdx >= 0) {
+        output = outputLines.slice(0, artIdx).map(l => l.trim()).join('\n') || action;
+        const artTitle = outputLines[artIdx].replace(/^###\s*/, '').trim() || `${agent?.name || ''}产出`;
+        const artContent = outputLines.slice(artIdx + 1).join('\n').trim();
+        if (artContent) artifact = { title: artTitle, content: artContent.slice(0, 500) };
+      } else {
+        output = outputLines.slice(0, 3).join('\n') || '执行中...';
+      }
+
+      steps.push({
+        id: `real-${i}`, agentId, agentName: agent?.name || header,
+        action, output, durationMs: 0, artifact,
+      });
+    }
+
+    if (steps.length > 0) {
+      setVisibleSteps(steps);
+      setArtifacts(steps.filter(s => s.artifact));
+      const statuses: Record<string, string> = {};
+      const tasks: Record<string, string> = {};
+      soloAgents.forEach(a => { statuses[a.id] = 'thinking'; tasks[a.id] = ''; });
+      seenAgents.forEach((id, i) => {
+        if (i < seenAgents.length - 1) {
+          statuses[id] = 'done'; tasks[id] = '';
+        } else {
+          statuses[id] = 'working';
+          const lastStep = steps.filter(s => s.agentId === id).pop();
+          tasks[id] = lastStep?.action || '执行中...';
+        }
+      });
+      setAgentStatuses(statuses as AgentStatus);
+      setAgentTasks(tasks);
+      setProgress(Math.round((seenAgents.length / soloAgents.length) * 80));
+    } else if (text.trim()) {
+      setAgentStatuses(prev => ({ ...prev, 'product-brain': 'working' }));
+      setAgentTasks(prev => ({ ...prev, 'product-brain': '分析目标中...' }));
+      setProgress(5);
+    }
+  };
+
+  // ─── Mock 降级模拟（OpenCode 不可用时使用） ───
+  const runMockSimulation = () => {
+    const staggerOffset = 300;
+    const totalSteps = soloWorkflowSteps.length;
+    soloWorkflowSteps.forEach((step, idx) => {
+      const baseDelay = idx * staggerOffset + 500;
+      const t1 = setTimeout(() => {
+        setAgentStatuses(prev => ({ ...prev, [step.agentId]: 'thinking' }));
+        setAgentTasks(prev => ({ ...prev, [step.agentId]: step.action }));
+      }, baseDelay);
+      timersRef.push(t1);
+      const t2 = setTimeout(() => {
+        setAgentStatuses(prev => ({ ...prev, [step.agentId]: 'working' }));
+      }, baseDelay + 400);
+      timersRef.push(t2);
+      const t3 = setTimeout(() => {
+        setAgentStatuses(prev => ({ ...prev, [step.agentId]: 'done' }));
+        setAgentTasks(prev => ({ ...prev, [step.agentId]: '' }));
+        setAgentDone(prev => ({ ...prev, [step.agentId]: (prev[step.agentId] || 0) + 1 }));
+        setVisibleSteps(prev => [...prev, step]);
+        setProgress(Math.round(((idx + 1) / totalSteps) * 100));
+        if (step.artifact) setArtifacts(prev => [...prev, step]);
+        if (idx === totalSteps - 1) setRunState('done');
+      }, baseDelay + step.durationMs);
+      timersRef.push(t3);
+    });
+  };
+
+  // ─── handleStart: 真实 callAgent 调用 + mock 降级 ───
   const handleStart = () => {
     if (!goal().trim()) return;
     reset();
     setRunState('running');
+    setAgentStatuses(Object.fromEntries(soloAgents.map(a => [a.id, 'thinking'])));
 
-    const staggerOffset = 300;
-    const totalSteps = soloWorkflowSteps.length;
+    const workDir = productStore.activeProduct()?.workDir;
+    callAgent({
+      systemPrompt: `你是星静独立版 AI 虚拟团队，负责全自动完成用户的产品目标。你同时扮演 4 个角色并行工作。
+请依次以每个角色的视角输出执行计划和结果。每个角色用 "## 角色名" 开头：
+- ## AI产品搭档
+- ## AI工程搭档
+- ## AI运营搭档
+- ## AI增长搭档
 
-    soloWorkflowSteps.forEach((step, idx) => {
-      const baseDelay = idx * staggerOffset + 500;
-
-      const t1 = setTimeout(() => {
-        setAgentStatuses((prev) => ({ ...prev, [step.agentId]: 'thinking' }));
-        setAgentTasks((prev) => ({ ...prev, [step.agentId]: step.action }));
-      }, baseDelay);
-      timersRef.push(t1);
-
-      const t2 = setTimeout(() => {
-        setAgentStatuses((prev) => ({ ...prev, [step.agentId]: 'working' }));
-      }, baseDelay + 400);
-      timersRef.push(t2);
-
-      const t3 = setTimeout(() => {
-        setAgentStatuses((prev) => ({ ...prev, [step.agentId]: 'done' }));
-        setAgentTasks((prev) => ({ ...prev, [step.agentId]: '' }));
-        setAgentDone((prev) => ({ ...prev, [step.agentId]: (prev[step.agentId] || 0) + 1 }));
-        setVisibleSteps((prev) => [...prev, step]);
-        setProgress(Math.round(((idx + 1) / totalSteps) * 100));
-        if (step.artifact) {
-          setArtifacts((prev) => [...prev, step]);
-        }
-        if (idx === totalSteps - 1) {
-          setRunState('done');
-        }
-      }, baseDelay + step.durationMs);
-      timersRef.push(t3);
+每个角色输出：
+1. 第一行：执行动作（一句话概括）
+2. 后续行：执行结果（要点列表）
+3. 如有具体产出，用 "### 产出物" 子标题标记
+保持简洁，每个角色输出不超过 8 行。`,
+      userPrompt: goal(),
+      directory: workDir,
+      title: `xingjing-solo-autopilot-${Date.now()}`,
+      onText: (accumulated) => updateFromStream(accumulated),
+      onDone: (fullText) => {
+        updateFromStream(fullText);
+        setAgentStatuses(Object.fromEntries(soloAgents.map(a => [a.id, 'done'])));
+        setAgentTasks({});
+        setAgentDone(prev => {
+          const n: AgentDone = { ...prev };
+          soloAgents.forEach(a => { n[a.id] = (n[a.id] || 0) + 1; });
+          return n;
+        });
+        setProgress(100);
+        setRunState('done');
+      },
+      onError: () => {
+        // OpenCode 不可用，降级到 mock 模拟
+        reset();
+        setRunState('running');
+        runMockSimulation();
+      },
     });
   };
 
@@ -201,26 +313,27 @@ const SoloAutopilot = () => {
 
   return (
     <div style={{ 'max-width': '1200px', margin: '0 auto' }}>
-      <Show when={soloProducts().length === 0}>
+      {/* Empty State Banner — 仅在从未创建过任何产品时显示，与模式无关 */}
+      <Show when={productStore.products().length === 0}>
         <div style={{
           'margin-bottom': '20px',
-          background: 'linear-gradient(135deg, themeColors.successBg 0%, themeColors.successBg 100%)',
-          border: '1px dashed themeColors.successBorder',
+          background: `linear-gradient(135deg, ${themeColors.successBg} 0%, ${themeColors.successBg} 100%)`,
+          border: `1px dashed ${themeColors.successBorder}`,
           'text-align': 'center',
           'border-radius': '8px',
           padding: '16px',
         }}>
-          <div style={{ 'font-size': '48px', color: 'chartColors.success', 'margin-bottom': '12px', display: 'block' }}>
+          <div style={{ 'font-size': '48px', color: chartColors.success, 'margin-bottom': '12px', display: 'block' }}>
             🤖
           </div>
-          <div style={{ margin: '0 0 8px', color: 'themeColors.success', 'font-weight': '600', 'font-size': '16px' }}>开始你的独立产品之旅</div>
-          <div style={{ 'font-size': '14px', color: 'themeColors.textSecondary', 'margin-bottom': '16px' }}>
+          <div style={{ margin: '0 0 8px', color: themeColors.success, 'font-weight': '600', 'font-size': '16px' }}>开始你的独立产品之旅</div>
+          <div style={{ 'font-size': '14px', color: themeColors.textSecondary, 'margin-bottom': '16px' }}>
             还没有创建项目？先建一个，让 AI 虚拟团队为你服务
           </div>
           <button
             onClick={() => setCreateModalOpen(true)}
             style={{
-              background: 'chartColors.success',
+              background: chartColors.success,
               color: 'white',
               border: 'none',
               'border-radius': '6px',
@@ -238,23 +351,23 @@ const SoloAutopilot = () => {
         'margin-bottom': '20px',
         'border-radius': '8px',
         padding: '8px 14px',
-        background: 'themeColors.primaryBg',
-        border: '1px solid themeColors.primaryBorder',
+        background: themeColors.primaryBg,
+        border: `1px solid ${themeColors.primaryBorder}`,
         'font-size': '12px',
       }}>
-        <strong style={{ color: 'chartColors.primary' }}>独立版 · 自动驾驶</strong>
-        <span style={{ color: 'themeColors.textSecondary', 'margin-left': '8px' }}>
+        <strong style={{ color: chartColors.primary }}>独立版 · 自动驾驶</strong>
+        <span style={{ color: themeColors.textSecondary, 'margin-left': '8px' }}>
           你就是所有角色，AI 直接替你执行，4 个虚拟角色脑并行调度，无审批流程，适合快速验证和迭代
         </span>
       </div>
 
       <div style={{
-        border: '1px solid themeColors.border',
+        border: `1px solid ${themeColors.border}`,
         'border-radius': '8px',
         padding: '16px',
-        background: 'themeColors.surface',
+        background: themeColors.surface,
         'margin-bottom': '20px',
-        'border-color': runState() !== 'idle' ? 'themeColors.successBorder' : undefined,
+        'border-color': runState() !== 'idle' ? themeColors.successBorder : undefined,
       }}>
         <div style={{
           'font-weight': '600',
@@ -263,7 +376,7 @@ const SoloAutopilot = () => {
           'align-items': 'center',
           gap: '6px',
         }}>
-          <Zap size={16} style={{ color: 'chartColors.success' }} />
+          <Zap size={16} style={{ color: chartColors.success }} />
           告诉 AI 你想做什么
         </div>
         <div style={{
@@ -284,7 +397,7 @@ const SoloAutopilot = () => {
               flex: '1',
               'font-size': '14px',
               'border-radius': '6px',
-              border: '1px solid themeColors.border',
+              border: `1px solid ${themeColors.border}`,
               padding: '8px 12px',
               outline: 'none',
               opacity: runState() === 'running' ? 0.6 : 1,
@@ -294,7 +407,7 @@ const SoloAutopilot = () => {
             onClick={handleStart}
             disabled={runState() === 'running' || !goal().trim()}
             style={{
-              background: 'chartColors.success',
+              background: chartColors.success,
               color: 'white',
               border: 'none',
               'border-radius': '6px',
@@ -311,7 +424,7 @@ const SoloAutopilot = () => {
         </div>
 
         <div style={{ display: 'flex', 'align-items': 'center', gap: '6px', 'flex-wrap': 'wrap' }}>
-          <span style={{ 'font-size': '12px', color: 'themeColors.textMuted' }}>快速示例：</span>
+          <span style={{ 'font-size': '12px', color: themeColors.textMuted }}>快速示例：</span>
           <For each={soloSampleGoals}>
             {(g) => (
               <div
@@ -324,8 +437,8 @@ const SoloAutopilot = () => {
                   padding: '2px 12px',
                   'border-radius': '12px',
                   'font-size': '12px',
-                  border: '1px solid chartColors.success',
-                  background: 'chartColors.success',
+                  border: `1px solid ${chartColors.success}`,
+                  background: chartColors.success,
                   color: 'white',
                   cursor: 'pointer',
                 }}
@@ -340,8 +453,8 @@ const SoloAutopilot = () => {
               disabled={runState() === 'running'}
               style={{
                 'margin-left': 'auto',
-                background: 'themeColors.surface',
-                border: '1px solid themeColors.border',
+                background: themeColors.surface,
+                border: `1px solid ${themeColors.border}`,
                 'border-radius': '6px',
                 padding: '4px 12px',
                 'font-size': '12px',
@@ -357,20 +470,20 @@ const SoloAutopilot = () => {
         <Show when={runState() !== 'idle'}>
           <div style={{ 'margin-top': '12px' }}>
             <div style={{ display: 'flex', 'justify-content': 'space-between', 'margin-bottom': '4px' }}>
-              <span style={{ 'font-size': '12px', color: 'themeColors.textMuted' }}>
+              <span style={{ 'font-size': '12px', color: themeColors.textMuted }}>
                 {runState() === 'done'
                   ? `全部完成 · 4 个角色脑并行调度`
                   : `并行调度中... ${doneAgents()}/4 个脑已完成`}
               </span>
-              <span style={{ 'font-size': '12px', color: 'themeColors.textMuted' }}>{progress()}%</span>
+              <span style={{ 'font-size': '12px', color: themeColors.textMuted }}>{progress()}%</span>
             </div>
             <div style={{
-              background: 'themeColors.border',
+              background: themeColors.border,
               'border-radius': '4px',
               height: '6px',
             }}>
               <div style={{
-                background: runState() === 'done' ? 'chartColors.success' : 'chartColors.primary',
+                background: runState() === 'done' ? chartColors.success : chartColors.primary,
                 height: '100%',
                 'border-radius': '4px',
                 width: `${progress()}%`,
@@ -396,10 +509,10 @@ const SoloAutopilot = () => {
 
       <div style={{ display: 'grid', 'grid-template-columns': '2fr 1fr', gap: '16px' }}>
         <div style={{
-          border: '1px solid themeColors.border',
+          border: `1px solid ${themeColors.border}`,
           'border-radius': '8px',
           padding: '16px',
-          background: 'themeColors.surface',
+          background: themeColors.surface,
         }}>
           <div style={{
             'font-weight': '600',
@@ -438,7 +551,7 @@ const SoloAutopilot = () => {
                             display: 'flex',
                             'align-items': 'center',
                             'justify-content': 'center',
-                            color: 'themeColors.surface',
+                            color: themeColors.surface,
                             'flex-shrink': '0',
                             'font-size': '14px',
                           }}>
@@ -452,7 +565,7 @@ const SoloAutopilot = () => {
                                 padding: '2px 8px',
                                 'border-radius': '4px',
                                 'font-size': '11px',
-                                border: '1px solid themeColors.border',
+                                border: `1px solid ${themeColors.border}`,
                                 background: agent.color + '20',
                                 color: agent.color,
                                 margin: '0',
@@ -461,15 +574,15 @@ const SoloAutopilot = () => {
                               </div>
                               <span style={{ 'font-size': '12px', 'font-weight': '600' }}>{step.action}</span>
                             </div>
-                            <div style={{ 'font-size': '11px', color: 'themeColors.textMuted' }}>{step.output}</div>
+                            <div style={{ 'font-size': '11px', color: themeColors.textMuted }}>{step.output}</div>
                             <Show when={step.artifact}>
                               <div style={{
                                 'margin-top': '4px',
                                 'font-size': '11px',
                                 padding: '4px 8px',
-                                background: 'themeColors.successBg',
+                                background: themeColors.successBg,
                                 'border-radius': '4px',
-                                color: 'chartColors.success',
+                                color: chartColors.success,
                               }}>
                                 ✓ {step.artifact?.title}
                               </div>
@@ -486,10 +599,10 @@ const SoloAutopilot = () => {
             <div style={{
               'text-align': 'center',
               padding: '40px 0',
-              color: 'themeColors.textMuted',
+              color: themeColors.textMuted,
             }}>
               <PlayCircle size={36} style={{ 'margin-bottom': '10px', display: 'block' }} />
-              <div style={{ 'font-size': '12px', color: 'themeColors.textMuted' }}>输入目标并启动，执行过程将在此实时显示</div>
+              <div style={{ 'font-size': '12px', color: themeColors.textMuted }}>输入目标并启动，执行过程将在此实时显示</div>
             </div>
           </Show>
 
@@ -497,13 +610,13 @@ const SoloAutopilot = () => {
             <div style={{
               'margin-top': '12px',
               padding: '10px 14px',
-              background: 'themeColors.successBg',
-              border: '1px solid themeColors.successBorder',
+              background: themeColors.successBg,
+              border: `1px solid ${themeColors.successBorder}`,
               'border-radius': '8px',
             }}>
-              <CheckCircle size={16} style={{ color: 'chartColors.success', 'margin-right': '8px' }} />
-              <strong style={{ color: 'chartColors.success', 'font-size': '13px' }}>全自动完成</strong>
-              <span style={{ 'font-size': '12px', color: 'themeColors.textMuted', 'margin-left': '8px' }}>
+              <CheckCircle size={16} style={{ color: chartColors.success, 'margin-right': '8px' }} />
+              <strong style={{ color: chartColors.success, 'font-size': '13px' }}>全自动完成</strong>
+              <span style={{ 'font-size': '12px', color: themeColors.textMuted, 'margin-left': '8px' }}>
                 4 个虚拟角色并行执行，{soloWorkflowSteps.length} 步完成，节省约 6 小时
               </span>
             </div>
@@ -511,10 +624,10 @@ const SoloAutopilot = () => {
         </div>
 
         <div style={{
-          border: '1px solid themeColors.border',
+          border: `1px solid ${themeColors.border}`,
           'border-radius': '8px',
           padding: '16px',
-          background: 'themeColors.surface',
+          background: themeColors.surface,
         }}>
           <div style={{
             'font-weight': '600',
@@ -548,7 +661,7 @@ const SoloAutopilot = () => {
                             padding: '2px 8px',
                             'border-radius': '4px',
                             'font-size': '11px',
-                            border: '1px solid themeColors.border',
+                            border: `1px solid ${themeColors.border}`,
                             background: agent.color + '20',
                             color: agent.color,
                             margin: '0',
@@ -559,7 +672,7 @@ const SoloAutopilot = () => {
                         </div>
                         <div style={{
                           'font-size': '11px',
-                          color: 'themeColors.textSecondary',
+                          color: themeColors.textSecondary,
                           'white-space': 'pre-line',
                           'line-height': '1.7',
                         }}>
@@ -575,10 +688,10 @@ const SoloAutopilot = () => {
             <div style={{
               'text-align': 'center',
               padding: '40px 0',
-              color: 'themeColors.textMuted',
+              color: themeColors.textMuted,
             }}>
               <FileText size={36} style={{ 'margin-bottom': '10px', display: 'block' }} />
-              <div style={{ 'font-size': '12px', color: 'themeColors.textMuted' }}>执行完成后产出物将在此展示</div>
+              <div style={{ 'font-size': '12px', color: themeColors.textMuted }}>执行完成后产出物将在此展示</div>
             </div>
           </Show>
         </div>

@@ -7,7 +7,7 @@
 export const themeColors = {
   // Primary colors
   primary: 'var(--blue-9)',
-  primaryLight: 'var(--blue-9)/10',
+  primaryLight: 'var(--dls-info-border)',
   primaryBg: 'var(--dls-info-bg)',
   primaryBorder: 'var(--dls-info-border)',
 
@@ -19,6 +19,7 @@ export const themeColors = {
 
   // Warning colors
   warning: '#faad14',
+  warningDark: '#d48806',
   warningBg: 'var(--dls-warning-bg)',
   warningBorder: '#ffd591',
 
@@ -30,17 +31,26 @@ export const themeColors = {
   // Brand colors
   purple: 'var(--purple-9)',
   purpleLight: 'var(--purple-11)',
-  purpleBg: 'var(--purple-9)/10',
+  purpleBg: 'var(--purple-3)',
+  purpleBorder: 'var(--purple-7)',
 
   // Neutral colors
   border: 'var(--dls-border)',
   borderLight: 'var(--dls-border-light)',
+  text: 'var(--dls-text-primary)',
   textPrimary: 'var(--dls-text-primary)',
   textSecondary: 'var(--dls-text-secondary)',
   textMuted: 'var(--dls-text-muted)',
   surface: 'var(--dls-surface)',
+  surfaceOverlay: 'var(--dls-surface-overlay)',
+  bgSubtle: 'var(--dls-bg-subtle)',
+  cardBg: 'var(--dls-card-bg)',
   appBg: 'var(--dls-app-bg)',
   hover: 'var(--dls-hover)',
+  backgroundSecondary: 'var(--dls-bg-subtle)',
+
+  // Specific colors
+  cyan: '#08979c',
 
   // Gray scale
   gray1: 'var(--gray-1)',

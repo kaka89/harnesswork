@@ -67,7 +67,7 @@ const Dashboard = () => {
       {/* Header */}
       <div style={{ display: 'flex', 'justify-content': 'space-between', 'align-items': 'center', 'margin-bottom': '16px', padding: '16px' }}>
         <div style={{ display: 'flex', 'align-items': 'center', gap: '12px' }}>
-          <h2 style={{ margin: '0', 'font-size': '18px', 'font-weight': 600, color: themeColors.text }}>苍穹工程效能 2026-04 实时</h2>
+          <h2 style={{ margin: '0', 'font-size': '20px', 'font-weight': 600, color: themeColors.text }}>苍穹工程效能 2026-04 实时</h2>
           <span style={{ 'font-size': '12px', color: themeColors.success, 'padding': '2px 8px', 'border': `1px solid ${themeColors.successBorder}`, 'border-radius': '4px' }}>✓ 已连接</span>
         </div>
         <div style={{ display: 'flex', gap: '8px' }}>

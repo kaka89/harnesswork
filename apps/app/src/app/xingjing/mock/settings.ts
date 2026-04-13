@@ -1,8 +1,10 @@
 // ==================== 大模型配置 ====================
 
 export interface LLMConfig {
-  id: string;
+  id?: string;
   modelName: string;
+  modelID?: string;    // OpenCode 使用的 model ID（如 gpt-4o）
+  providerID?: string; // OpenCode 使用的 provider ID（如 openai）
   apiUrl: string;
   apiKey: string;
   temperature: number;
@@ -12,18 +14,88 @@ export interface LLMConfig {
 export const defaultLLMConfig: LLMConfig = {
   id: 'llm-1',
   modelName: 'GPT-4o',
+  modelID: 'gpt-4o',
+  providerID: 'openai',
   apiUrl: 'https://api.openai.com/v1',
-  apiKey: 'sk-****************************',
+  apiKey: '',
   temperature: 0.7,
   maxTokens: 4096,
 };
 
-export const modelOptions = [
-  { label: 'GPT-4o', value: 'GPT-4o' },
-  { label: 'Claude-4 Sonnet', value: 'Claude-4 Sonnet' },
-  { label: 'DeepSeek-V3', value: 'DeepSeek-V3' },
-  { label: 'Qwen-3', value: 'Qwen-3' },
-  { label: '自定义', value: 'custom' },
+export interface ModelOption {
+  label: string;
+  value: string;        // 内部标识符 (等于 modelID)
+  providerID: string;   // OpenCode provider ID
+  modelID: string;      // OpenCode model ID
+  defaultApiUrl: string;
+  apiUrlEditable: boolean; // 是否允许用户修改 API 地址
+}
+
+export const modelOptions: ModelOption[] = [
+  {
+    label: 'GPT-4o',
+    value: 'gpt-4o',
+    providerID: 'openai',
+    modelID: 'gpt-4o',
+    defaultApiUrl: 'https://api.openai.com/v1',
+    apiUrlEditable: false,
+  },
+  {
+    label: 'GPT-4o mini',
+    value: 'gpt-4o-mini',
+    providerID: 'openai',
+    modelID: 'gpt-4o-mini',
+    defaultApiUrl: 'https://api.openai.com/v1',
+    apiUrlEditable: false,
+  },
+  {
+    label: 'Claude Sonnet 4.5',
+    value: 'claude-sonnet-4-5',
+    providerID: 'anthropic',
+    modelID: 'claude-sonnet-4-5',
+    defaultApiUrl: 'https://api.anthropic.com',
+    apiUrlEditable: false,
+  },
+  {
+    label: 'Claude Haiku 3.5',
+    value: 'claude-haiku-3-5',
+    providerID: 'anthropic',
+    modelID: 'claude-haiku-3-5',
+    defaultApiUrl: 'https://api.anthropic.com',
+    apiUrlEditable: false,
+  },
+  {
+    label: 'DeepSeek-V3',
+    value: 'deepseek-chat',
+    providerID: 'deepseek',
+    modelID: 'deepseek-chat',
+    defaultApiUrl: 'https://api.deepseek.com/v1',
+    apiUrlEditable: false,
+  },
+  {
+    label: 'Qwen-Max',
+    value: 'qwen-max',
+    providerID: 'qwen',
+    modelID: 'qwen-max',
+    defaultApiUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    apiUrlEditable: false,
+  },
+  {
+    label: 'OpenRouter（自选）',
+    value: 'openrouter',
+    providerID: 'openrouter',
+    modelID: 'openai/gpt-4o',
+    defaultApiUrl: 'https://openrouter.ai/api/v1',
+    apiUrlEditable: true,
+  },
+  {
+    label: '自定义 (OpenAI 兼容)',
+    value: 'custom',
+    providerID: 'custom',
+    modelID: '',
+    defaultApiUrl: '',
+    apiUrlEditable: true,
+  },
 ];
 
 // ==================== Git 仓库配置 ====================

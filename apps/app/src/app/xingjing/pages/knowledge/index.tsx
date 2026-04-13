@@ -6,6 +6,7 @@ import {
 } from '../../mock/knowledge';
 import { Bot, Search, ChevronRight, ChevronDown, BookOpen, MessageCircle, Zap, Link } from 'lucide-solid';
 import { useAppStore } from '../../stores/app-store';
+import { themeColors, chartColors } from '../../utils/colors';
 
 // ===== 知识问答预设数据 =====
 interface QAMessage {
@@ -245,7 +246,7 @@ const KnowledgeCenter: Component = () => {
           <span style={{ width: '16px', display: 'flex', 'align-items': 'center', 'flex-shrink': '0' }}>
             {hasChildren && (
               <span
-                style={{ cursor: 'pointer', color: 'themeColors.textSecondary' }}
+                style={{ cursor: 'pointer', color: themeColors.textSecondary }}
                 onClick={(e) => { e.stopPropagation(); toggleNode(node.key); }}
               >
                 {isExpanded() ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
@@ -263,8 +264,8 @@ const KnowledgeCenter: Component = () => {
           }}>{node.title}</span>
           <Show when={itemCount() > 0}>
             <span style={{
-              background: (levelColorMap as Record<string, string>)[node.level] || 'themeColors.border',
-              color: 'themeColors.surface',
+              background: (levelColorMap as Record<string, string>)[node.level] || themeColors.border,
+              color: themeColors.surface,
               'font-size': '10px',
               padding: '1px 5px',
               'border-radius': '8px',
@@ -284,7 +285,7 @@ const KnowledgeCenter: Component = () => {
   const renderBrowse = () => (
     <div style={{ display: 'flex', gap: '16px' }}>
       {/* 左侧知识树 */}
-      <div style={{ width: '220px', 'flex-shrink': '0', background: 'themeColors.surface', padding: '12px', 'border-radius': '8px', border: '1px solid themeColors.border', 'align-self': 'flex-start', position: 'sticky', top: 0 }}>
+      <div style={{ width: '220px', 'flex-shrink': '0', background: themeColors.surface, padding: '12px', 'border-radius': '8px', border: `1px solid ${themeColors.border}`, 'align-self': 'flex-start', position: 'sticky', top: 0 }}>
         <div style={{ 'font-weight': '600', 'margin-bottom': '10px', 'font-size': '13px', display: 'flex', 'align-items': 'center', gap: '6px' }}>
           <BookOpen size={14} />知识层级导航
         </div>
@@ -297,12 +298,12 @@ const KnowledgeCenter: Component = () => {
       <div style={{ flex: 1, 'min-width': 0 }}>
         {/* 统计面板 */}
         <Show when={selectedNode()}>
-          <div style={{ background: 'themeColors.surface', padding: '12px 16px', 'border-radius': '8px', border: '1px solid themeColors.border', 'margin-bottom': '12px', display: 'flex', 'align-items': 'center', 'justify-content': 'space-between' }}>
+          <div style={{ background: themeColors.surface, padding: '12px 16px', 'border-radius': '8px', border: `1px solid ${themeColors.border}`, 'margin-bottom': '12px', display: 'flex', 'align-items': 'center', 'justify-content': 'space-between' }}>
             <div style={{ display: 'flex', 'align-items': 'center', gap: '10px' }}>
               <span style={{ 'font-size': '15px', 'font-weight': '700' }}>{(selectedNode() as any)?.title}</span>
               <span style={{
-                background: (levelColorMap as Record<string, string>)[(selectedNode() as any)?.level] || 'themeColors.border',
-                color: 'themeColors.surface', padding: '2px 8px', 'border-radius': '10px', 'font-size': '11px', 'font-weight': '600',
+                background: (levelColorMap as Record<string, string>)[(selectedNode() as any)?.level] || themeColors.border,
+                color: themeColors.surface, padding: '2px 8px', 'border-radius': '10px', 'font-size': '11px', 'font-weight': '600',
               }}>
                 {(levelLabelMap as Record<string, string>)[(selectedNode() as any)?.level]}
               </span>
@@ -310,39 +311,39 @@ const KnowledgeCenter: Component = () => {
             <div style={{ display: 'flex', gap: '24px' }}>
               <div style={{ 'text-align': 'center' }}>
                 <div style={{ 'font-size': '20px', 'font-weight': '700' }}>{allNodeItems().length}</div>
-                <div style={{ 'font-size': '11px', color: 'themeColors.textSecondary' }}>知识条目</div>
+                <div style={{ 'font-size': '11px', color: themeColors.textSecondary }}>知识条目</div>
               </div>
               <div style={{ 'text-align': 'center' }}>
-                <div style={{ 'font-size': '20px', 'font-weight': '700', color: 'chartColors.success' }}>
+                <div style={{ 'font-size': '20px', 'font-weight': '700', color: chartColors.success }}>
                   {allNodeItems().filter((i) => i.status === 'active').length}
                 </div>
-                <div style={{ 'font-size': '11px', color: 'themeColors.textSecondary' }}>活跃知识</div>
+                <div style={{ 'font-size': '11px', color: themeColors.textSecondary }}>活跃知识</div>
               </div>
             </div>
           </div>
         </Show>
 
         {/* 筛选条 */}
-        <div style={{ background: 'themeColors.surface', padding: '10px 14px', 'border-radius': '8px', border: '1px solid themeColors.border', 'margin-bottom': '12px' }}>
+        <div style={{ background: themeColors.surface, padding: '10px 14px', 'border-radius': '8px', border: `1px solid ${themeColors.border}`, 'margin-bottom': '12px' }}>
           {/* 搜索框 */}
           <div style={{ display: 'flex', 'align-items': 'center', gap: '8px', 'margin-bottom': '10px' }}>
-            <Search size={14} style={{ color: 'themeColors.textSecondary', 'flex-shrink': '0' }} />
+            <Search size={14} style={{ color: themeColors.textSecondary, 'flex-shrink': '0' }} />
             <input
               type="text"
               placeholder="跨层级搜索知识..."
               value={searchQuery()}
               onInput={(e) => setSearchQuery(e.currentTarget.value)}
-              style={{ flex: 1, padding: '5px 8px', border: '1px solid themeColors.border', 'border-radius': '4px', 'font-size': '13px', outline: 'none' }}
+              style={{ flex: 1, padding: '5px 8px', border: `1px solid ${themeColors.border}`, 'border-radius': '4px', 'font-size': '13px', outline: 'none' }}
             />
           </div>
           {/* 知识类型 Tag 筛选 */}
           <div style={{ 'margin-bottom': '8px', display: 'flex', 'flex-wrap': 'wrap', 'align-items': 'center', gap: '6px' }}>
-            <span style={{ 'font-size': '12px', color: 'themeColors.textSecondary' }}>知识类型：</span>
+            <span style={{ 'font-size': '12px', color: themeColors.textSecondary }}>知识类型：</span>
             <span
               style={{
                 padding: '2px 10px', 'border-radius': '10px', 'font-size': '12px', cursor: 'pointer',
-                background: selectedCategory() === '' ? 'chartColors.primary' : 'themeColors.border',
-                color: selectedCategory() === '' ? 'themeColors.surface' : 'themeColors.textSecondary',
+                background: selectedCategory() === '' ? chartColors.primary : themeColors.border,
+                color: selectedCategory() === '' ? themeColors.surface : themeColors.textSecondary,
               }}
               onClick={() => setSelectedCategory('')}
             >全部</span>
@@ -351,8 +352,8 @@ const KnowledgeCenter: Component = () => {
                 <span
                   style={{
                     padding: '2px 10px', 'border-radius': '10px', 'font-size': '12px', cursor: 'pointer',
-                    background: selectedCategory() === cat ? (categoryColorMap[cat] || 'chartColors.primary') : 'themeColors.border',
-                    color: selectedCategory() === cat ? 'themeColors.surface' : 'themeColors.textSecondary',
+                    background: selectedCategory() === cat ? (categoryColorMap[cat] || chartColors.primary) : themeColors.border,
+                    color: selectedCategory() === cat ? themeColors.surface : themeColors.textSecondary,
                   }}
                   onClick={() => setSelectedCategory(selectedCategory() === cat ? '' : cat)}
                 >
@@ -363,12 +364,12 @@ const KnowledgeCenter: Component = () => {
           </div>
           {/* 适用场景 Tag 筛选 */}
           <div style={{ display: 'flex', 'flex-wrap': 'wrap', 'align-items': 'center', gap: '6px' }}>
-            <span style={{ 'font-size': '12px', color: 'themeColors.textSecondary' }}>适用场景：</span>
+            <span style={{ 'font-size': '12px', color: themeColors.textSecondary }}>适用场景：</span>
             <span
               style={{
                 padding: '2px 10px', 'border-radius': '10px', 'font-size': '12px', cursor: 'pointer',
-                background: selectedScene() === '' ? 'chartColors.primary' : 'themeColors.border',
-                color: selectedScene() === '' ? 'themeColors.surface' : 'themeColors.textSecondary',
+                background: selectedScene() === '' ? chartColors.primary : themeColors.border,
+                color: selectedScene() === '' ? themeColors.surface : themeColors.textSecondary,
               }}
               onClick={() => setSelectedScene('')}
             >全部</span>
@@ -377,8 +378,8 @@ const KnowledgeCenter: Component = () => {
                 <span
                   style={{
                     padding: '2px 10px', 'border-radius': '10px', 'font-size': '12px', cursor: 'pointer',
-                    background: selectedScene() === scene ? 'chartColors.primary' : 'themeColors.border',
-                    color: selectedScene() === scene ? 'themeColors.surface' : 'themeColors.textSecondary',
+                    background: selectedScene() === scene ? chartColors.primary : themeColors.border,
+                    color: selectedScene() === scene ? themeColors.surface : themeColors.textSecondary,
                   }}
                   onClick={() => setSelectedScene(selectedScene() === scene ? '' : scene)}
                 >
@@ -393,21 +394,21 @@ const KnowledgeCenter: Component = () => {
         <Show
           when={filteredItems().length > 0}
           fallback={
-            <div style={{ 'text-align': 'center', padding: '60px 0', color: 'themeColors.textSecondary' }}>暂无匹配的知识条目</div>
+            <div style={{ 'text-align': 'center', padding: '60px 0', color: themeColors.textSecondary }}>暂无匹配的知识条目</div>
           }
         >
-          <div style={{ 'margin-bottom': '8px', 'font-size': '13px', color: 'themeColors.textSecondary' }}>
+          <div style={{ 'margin-bottom': '8px', 'font-size': '13px', color: themeColors.textSecondary }}>
             共 {filteredItems().length} 条知识条目
           </div>
           <div style={{ display: 'grid', 'grid-template-columns': 'repeat(2, 1fr)', gap: '12px' }}>
             <For each={filteredItems()}>
               {(item) => (
                 <div style={{
-                  background: 'themeColors.surface',
+                  background: themeColors.surface,
                   padding: '14px',
                   'border-radius': '8px',
-                  border: '1px solid themeColors.border',
-                  'border-left': `3px solid ${(levelColorMap as Record<string, string>)[item.level] || 'themeColors.border'}`,
+                  border: `1px solid ${themeColors.border}`,
+                  'border-left': `3px solid ${(levelColorMap as Record<string, string>)[item.level] || themeColors.border}`,
                   cursor: 'pointer',
                   transition: 'box-shadow 0.2s',
                 }}
@@ -416,28 +417,28 @@ const KnowledgeCenter: Component = () => {
                 >
                   <div style={{ display: 'flex', 'align-items': 'center', gap: '6px', 'margin-bottom': '6px' }}>
                     <span style={{
-                      background: (categoryColorMap as Record<string, string>)[item.category] || 'themeColors.border',
-                      color: 'themeColors.surface', padding: '1px 7px', 'border-radius': '8px', 'font-size': '11px',
+                      background: (categoryColorMap as Record<string, string>)[item.category] || themeColors.border,
+                      color: themeColors.surface, padding: '1px 7px', 'border-radius': '8px', 'font-size': '11px',
                     }}>{categoryLabelMap[item.category]}</span>
                     <span style={{
-                      background: (levelColorMap as Record<string, string>)[item.level] || 'themeColors.border',
-                      color: 'themeColors.surface', padding: '1px 6px', 'border-radius': '8px', 'font-size': '10px',
+                      background: (levelColorMap as Record<string, string>)[item.level] || themeColors.border,
+                      color: themeColors.surface, padding: '1px 6px', 'border-radius': '8px', 'font-size': '10px',
                     }}>{levelLabelMap[item.level]}</span>
                   </div>
                   <div style={{ 'font-weight': '600', 'font-size': '13px', 'margin-bottom': '5px', 'line-height': '1.4' }}>{item.title}</div>
-                  <div style={{ 'font-size': '12px', color: 'themeColors.textSecondary', 'line-height': '1.6', 'margin-bottom': '8px', display: '-webkit-box', '-webkit-line-clamp': '2', '-webkit-box-orient': 'vertical', overflow: 'hidden' }}>
+                  <div style={{ 'font-size': '12px', color: themeColors.textSecondary, 'line-height': '1.6', 'margin-bottom': '8px', display: '-webkit-box', '-webkit-line-clamp': '2', '-webkit-box-orient': 'vertical', overflow: 'hidden' }}>
                     {item.summary}
                   </div>
                   <div style={{ display: 'flex', 'flex-wrap': 'wrap', gap: '4px', 'margin-bottom': '6px' }}>
                     <For each={item.applicableScenes}>
                       {(scene: string) => (
-                        <span style={{ background: 'themeColors.primaryBg', color: 'chartColors.primary', padding: '1px 6px', 'border-radius': '8px', 'font-size': '10px' }}>
+                        <span style={{ background: themeColors.primaryBg, color: chartColors.primary, padding: '1px 6px', 'border-radius': '8px', 'font-size': '10px' }}>
                           {(sceneLabelMap as Record<string, string>)[scene]}
                         </span>
                       )}
                     </For>
                   </div>
-                  <div style={{ display: 'flex', 'justify-content': 'space-between', 'align-items': 'center', 'font-size': '11px', color: 'themeColors.border' }}>
+                  <div style={{ display: 'flex', 'justify-content': 'space-between', 'align-items': 'center', 'font-size': '11px', color: themeColors.border }}>
                     <span>{item.owner} · {item.updatedAt}</span>
                     <span style={{ 'font-family': 'monospace' }}>{item.id}</span>
                   </div>
@@ -453,10 +454,10 @@ const KnowledgeCenter: Component = () => {
             style={{
               flex: 1,
               padding: '10px 14px',
-              border: '1px dashed themeColors.border',
+              border: `1px dashed ${themeColors.border}`,
               'border-radius': '6px',
               background: 'transparent',
-              color: 'themeColors.textSecondary',
+              color: themeColors.textSecondary,
               'font-size': '13px',
               cursor: 'pointer',
               transition: 'all 0.2s',
@@ -469,10 +470,10 @@ const KnowledgeCenter: Component = () => {
             style={{
               flex: 1,
               padding: '10px 14px',
-              border: '1px dashed themeColors.border',
+              border: `1px dashed ${themeColors.border}`,
               'border-radius': '6px',
               background: 'transparent',
-              color: 'themeColors.textSecondary',
+              color: themeColors.textSecondary,
               'font-size': '13px',
               cursor: 'pointer',
               transition: 'all 0.2s',
@@ -489,17 +490,17 @@ const KnowledgeCenter: Component = () => {
   const renderQA = () => (
     <div style={{ display: 'flex', 'flex-direction': 'column', height: 'calc(100vh - 220px)', 'min-height': '500px' }}>
       {/* 预设问题 */}
-      <div style={{ background: 'themeColors.surface', padding: '12px', 'border-radius': '8px', border: '1px solid themeColors.border', 'margin-bottom': '12px', 'flex-shrink': '0' }}>
-        <div style={{ 'font-size': '12px', color: 'themeColors.textSecondary', 'margin-bottom': '8px', display: 'flex', 'align-items': 'center', gap: '4px' }}>
-          <Zap size={12} style={{ color: 'chartColors.warning' }} />快速提问
+      <div style={{ background: themeColors.surface, padding: '12px', 'border-radius': '8px', border: `1px solid ${themeColors.border}`, 'margin-bottom': '12px', 'flex-shrink': '0' }}>
+        <div style={{ 'font-size': '12px', color: themeColors.textSecondary, 'margin-bottom': '8px', display: 'flex', 'align-items': 'center', gap: '4px' }}>
+          <Zap size={12} style={{ color: chartColors.warning }} />快速提问
         </div>
         <div style={{ display: 'flex', 'flex-wrap': 'wrap', gap: '6px' }}>
           <For each={presetQuestions}>
             {(pq) => (
               <button
                 style={{
-                  background: 'transparent', border: '1px dashed themeColors.border', padding: '3px 10px',
-                  'border-radius': '4px', cursor: 'pointer', 'font-size': '12px', color: 'themeColors.textSecondary',
+                  background: 'transparent', border: `1px dashed ${themeColors.border}`, padding: '3px 10px',
+                  'border-radius': '4px', cursor: 'pointer', 'font-size': '12px', color: themeColors.textSecondary,
                   opacity: agentThinking() ? '0.6' : '1',
                 }}
                 disabled={agentThinking()}
@@ -519,30 +520,30 @@ const KnowledgeCenter: Component = () => {
             <div style={{ display: 'flex', gap: '10px', 'align-items': 'flex-start', 'flex-direction': msg.role === 'user' ? 'row-reverse' : 'row' }}>
               <div style={{
                 width: '32px', height: '32px', 'border-radius': '50%', 'flex-shrink': '0',
-                background: msg.role === 'assistant' ? 'chartColors.primary' : 'chartColors.success',
-                display: 'flex', 'align-items': 'center', 'justify-content': 'center', color: 'themeColors.surface',
+                background: msg.role === 'assistant' ? chartColors.primary : chartColors.success,
+                display: 'flex', 'align-items': 'center', 'justify-content': 'center', color: themeColors.surface,
               }}>
                 {msg.role === 'assistant' ? <Bot size={16} /> : <span style={{ 'font-size': '13px', 'font-weight': '700' }}>我</span>}
               </div>
               <div style={{ 'max-width': '75%' }}>
                 <div style={{
-                  background: msg.role === 'user' ? 'themeColors.primaryBg' : 'themeColors.hover',
-                  border: `1px solid ${msg.role === 'user' ? 'themeColors.primaryBorder' : 'themeColors.border'}`,
-                  padding: '9px 13px', 'border-radius': '8px', 'font-size': '13px', color: 'themeColors.text',
+                  background: msg.role === 'user' ? themeColors.primaryBg : themeColors.hover,
+                  border: `1px solid ${msg.role === 'user' ? themeColors.primaryBorder : themeColors.border}`,
+                  padding: '9px 13px', 'border-radius': '8px', 'font-size': '13px', color: themeColors.text,
                 }}>
                   <FormatContent text={msg.content} />
                 </div>
                 {/* 关联知识条目 */}
                 <Show when={msg.relatedItems && msg.relatedItems.length > 0}>
                   <div style={{ 'margin-top': '6px', display: 'flex', 'flex-wrap': 'wrap', 'align-items': 'center', gap: '4px' }}>
-                    <span style={{ 'font-size': '11px', color: 'themeColors.textSecondary', display: 'flex', 'align-items': 'center', gap: '3px' }}>
+                    <span style={{ 'font-size': '11px', color: themeColors.textSecondary, display: 'flex', 'align-items': 'center', gap: '3px' }}>
                       <Link size={11} />关联知识：
                     </span>
                     <For each={relatedItemsForIds(msg.relatedItems || [])}>
                       {(item) => (
                         <span style={{
-                          background: (categoryColorMap as Record<string, string>)[item.category] || 'themeColors.border',
-                          color: 'themeColors.surface', padding: '1px 8px', 'border-radius': '8px', 'font-size': '11px',
+                          background: (categoryColorMap as Record<string, string>)[item.category] || themeColors.border,
+                          color: themeColors.surface, padding: '1px 8px', 'border-radius': '8px', 'font-size': '11px',
                           cursor: 'pointer',
                         }}>
                           {item.id} · {item.title}
@@ -557,10 +558,10 @@ const KnowledgeCenter: Component = () => {
         </For>
         <Show when={agentThinking()}>
           <div style={{ display: 'flex', gap: '10px', 'align-items': 'center' }}>
-            <div style={{ width: '32px', height: '32px', 'border-radius': '50%', background: 'chartColors.primary', display: 'flex', 'align-items': 'center', 'justify-content': 'center', color: 'themeColors.surface' }}>
+            <div style={{ width: '32px', height: '32px', 'border-radius': '50%', background: chartColors.primary, display: 'flex', 'align-items': 'center', 'justify-content': 'center', color: themeColors.surface }}>
               <Bot size={16} />
             </div>
-            <div style={{ background: 'themeColors.hover', border: '1px solid themeColors.border', padding: '9px 13px', 'border-radius': '8px', 'font-size': '12px', color: 'themeColors.textSecondary' }}>
+            <div style={{ background: themeColors.hover, border: `1px solid ${themeColors.border}`, padding: '9px 13px', 'border-radius': '8px', 'font-size': '12px', color: themeColors.textSecondary }}>
               正在检索知识库...
             </div>
           </div>
@@ -568,7 +569,7 @@ const KnowledgeCenter: Component = () => {
       </div>
 
       {/* 输入区 */}
-      <div style={{ 'border-top': '1px solid themeColors.border', 'padding-top': '10px', 'margin-top': '8px', display: 'flex', gap: '8px', 'flex-shrink': '0' }}>
+      <div style={{ 'border-top': `1px solid ${themeColors.border}`, 'padding-top': '10px', 'margin-top': '8px', display: 'flex', gap: '8px', 'flex-shrink': '0' }}>
         <input
           type="text"
           placeholder="输入问题，例如：凭证批量导入的技术实现是什么？"
@@ -576,12 +577,12 @@ const KnowledgeCenter: Component = () => {
           onInput={(e) => setAgentInput(e.currentTarget.value)}
           onKeyDown={(e) => { if (e.key === 'Enter' && !agentThinking()) handleAgentSend(); }}
           disabled={agentThinking()}
-          style={{ flex: 1, padding: '8px 12px', border: '1px solid themeColors.border', 'border-radius': '4px', 'font-size': '13px', outline: 'none' }}
+          style={{ flex: 1, padding: '8px 12px', border: `1px solid ${themeColors.border}`, 'border-radius': '4px', 'font-size': '13px', outline: 'none' }}
         />
         <button
           style={{
-            background: agentInput().trim() && !agentThinking() ? 'chartColors.primary' : 'themeColors.border',
-            color: agentInput().trim() && !agentThinking() ? 'themeColors.surface' : 'themeColors.textSecondary',
+            background: agentInput().trim() && !agentThinking() ? chartColors.primary : themeColors.border,
+            color: agentInput().trim() && !agentThinking() ? themeColors.surface : themeColors.textSecondary,
             border: 'none', padding: '8px 16px', 'border-radius': '4px', cursor: agentInput().trim() && !agentThinking() ? 'pointer' : 'default', 'font-size': '13px',
             opacity: agentThinking() ? '0.6' : '1',
           }}
@@ -600,11 +601,11 @@ const KnowledgeCenter: Component = () => {
         <h2 style={{ margin: 0, 'font-size': '20px' }}>知识中心</h2>
       </div>
 
-      <div style={{ display: 'flex', gap: '8px', 'margin-bottom': '16px', 'border-bottom': '1px solid themeColors.border' }}>
+      <div style={{ display: 'flex', gap: '8px', 'margin-bottom': '16px', 'border-bottom': `1px solid ${themeColors.border}` }}>
         <button
           style={{
-            background: activeTab() === 'browse' ? 'chartColors.primary' : 'transparent',
-            color: activeTab() === 'browse' ? 'themeColors.surface' : 'themeColors.textSecondary',
+            background: activeTab() === 'browse' ? chartColors.primary : 'transparent',
+            color: activeTab() === 'browse' ? themeColors.surface : themeColors.textSecondary,
             border: 'none', padding: '8px 16px', 'border-radius': '4px 4px 0 0',
             cursor: 'pointer', 'font-size': '14px', display: 'inline-flex', 'align-items': 'center', gap: '6px',
           }}
@@ -614,8 +615,8 @@ const KnowledgeCenter: Component = () => {
         </button>
         <button
           style={{
-            background: activeTab() === 'qa' ? 'chartColors.primary' : 'transparent',
-            color: activeTab() === 'qa' ? 'themeColors.surface' : 'themeColors.textSecondary',
+            background: activeTab() === 'qa' ? chartColors.primary : 'transparent',
+            color: activeTab() === 'qa' ? themeColors.surface : themeColors.textSecondary,
             border: 'none', padding: '8px 16px', 'border-radius': '4px 4px 0 0',
             cursor: 'pointer', 'font-size': '14px', display: 'inline-flex', 'align-items': 'center', gap: '6px',
           }}
@@ -631,31 +632,31 @@ const KnowledgeCenter: Component = () => {
       {/* 添加笔记/踩坑弹窗 */}
       <Show when={addNoteModal() !== null}>
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', 'align-items': 'center', 'justify-content': 'center', 'z-index': 1000 }}>
-          <div style={{ background: 'themeColors.surface', 'border-radius': '8px', padding: '24px', width: '100%', 'max-width': '480px', 'box-shadow': '0 4px 16px rgba(0,0,0,0.15)' }}>
+          <div style={{ background: themeColors.surface, 'border-radius': '8px', padding: '24px', width: '100%', 'max-width': '480px', 'box-shadow': '0 4px 16px rgba(0,0,0,0.15)' }}>
             <h3 style={{ margin: '0 0 16px', 'font-size': '16px', 'font-weight': 600 }}>{addNoteModal()!.title}</h3>
             <div style={{ 'margin-bottom': '12px' }}>
-              <label style={{ display: 'block', 'font-size': '12px', 'font-weight': 500, 'margin-bottom': '6px', color: 'themeColors.textSecondary' }}>标题</label>
+              <label style={{ display: 'block', 'font-size': '12px', 'font-weight': 500, 'margin-bottom': '6px', color: themeColors.textSecondary }}>标题</label>
               <input
                 type="text"
                 placeholder="输入标题..."
                 value={noteTitle()}
                 onInput={(e) => setNoteTitle(e.currentTarget.value)}
-                style={{ width: '100%', border: '1px solid themeColors.border', 'border-radius': '6px', padding: '8px 12px', 'font-size': '14px', 'font-family': 'inherit', 'box-sizing': 'border-box' }}
+                style={{ width: '100%', border: `1px solid ${themeColors.border}`, 'border-radius': '6px', padding: '8px 12px', 'font-size': '14px', 'font-family': 'inherit', 'box-sizing': 'border-box' }}
               />
             </div>
             <div style={{ 'margin-bottom': '16px' }}>
-              <label style={{ display: 'block', 'font-size': '12px', 'font-weight': 500, 'margin-bottom': '6px', color: 'themeColors.textSecondary' }}>内容</label>
+              <label style={{ display: 'block', 'font-size': '12px', 'font-weight': 500, 'margin-bottom': '6px', color: themeColors.textSecondary }}>内容</label>
               <textarea
                 rows={5}
                 placeholder="输入内容..."
                 value={noteContent()}
                 onInput={(e) => setNoteContent(e.currentTarget.value)}
-                style={{ width: '100%', border: '1px solid themeColors.border', 'border-radius': '6px', padding: '8px 12px', 'font-size': '14px', 'font-family': 'inherit', resize: 'vertical', 'box-sizing': 'border-box' }}
+                style={{ width: '100%', border: `1px solid ${themeColors.border}`, 'border-radius': '6px', padding: '8px 12px', 'font-size': '14px', 'font-family': 'inherit', resize: 'vertical', 'box-sizing': 'border-box' }}
               />
             </div>
             <div style={{ display: 'flex', 'justify-content': 'flex-end', gap: '8px' }}>
               <button
-                style={{ background: 'themeColors.surface', border: '1px solid themeColors.border', 'border-radius': '6px', padding: '6px 16px', cursor: 'pointer', 'font-size': '14px' }}
+                style={{ background: themeColors.surface, border: `1px solid ${themeColors.border}`, 'border-radius': '6px', padding: '6px 16px', cursor: 'pointer', 'font-size': '14px' }}
                 onClick={() => {
                   setAddNoteModal(null);
                   setNoteTitle('');
@@ -663,7 +664,7 @@ const KnowledgeCenter: Component = () => {
                 }}
               >取消</button>
               <button
-                style={{ background: 'themeColors.primary', color: 'white', border: 'none', 'border-radius': '6px', padding: '6px 16px', cursor: 'pointer', 'font-size': '14px' }}
+                style={{ background: themeColors.primary, color: 'white', border: 'none', 'border-radius': '6px', padding: '6px 16px', cursor: 'pointer', 'font-size': '14px' }}
                 onClick={() => {
                   setAddNoteModal(null);
                   setNoteTitle('');

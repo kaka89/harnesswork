@@ -916,3 +916,56 @@ export async function opencodeRouterRestart(options: {
 export async function setWindowDecorations(decorations: boolean): Promise<void> {
   return invoke<void>("set_window_decorations", { decorations });
 }
+
+/**
+ * 调用系统 git ls-remote 检测仓库连通性（仅 Tauri 桌面端）。
+ * 对 SSH 地址会自动使用系统已配置的 SSH Key（~/.ssh/）。
+ * 对 HTTPS 地址需在 url 中嵌入 token（可选，由调用方拼接）或依赖 git credential store。
+ */
+export async function runGitLsRemote(url: string): Promise<{ reachable: boolean; error?: string }> {
+  const { Command } = await import('@tauri-apps/plugin-shell');
+  try {
+    const output = await Command.create('git', ['ls-remote', '--exit-code', '--heads', url]).execute();
+    if (output.code === 0) return { reachable: true };
+    if (output.code === 128) return { reachable: false, error: '仓库不存在或无访问权限（exit 128）' };
+    return {
+      reachable: false,
+      error: (output.stderr?.trim() || output.stdout?.trim() || `退出码 ${output.code}`).slice(0, 200),
+    };
+  } catch (e: any) {
+    return { reachable: false, error: e?.message ?? '无法调用系统 git 命令，请确认 git 已安装' };
+  }
+}
+
+/**
+ * 删除产品工作目录（递归删除所有内容）
+ * 目录不存在时静默成功，非 Tauri 环境抛出错误提示。
+ */
+export async function deleteProductDir(
+  workDir: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  try {
+    await invoke<void>('xingjing_delete_product_dir', { workDir });
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e) };
+  }
+}
+
+/**
+ * 在 workDir 下批量创建 Solo Monorepo 目录结构（Tauri 原生文件写入）
+ * 自动 mkdir -p 所有父目录，不依赖 OpenCode 是否运行。
+ */
+export async function initProductDir(
+  workDir: string,
+  files: Array<{ path: string; content: string }>,
+): Promise<{ ok: boolean; count?: number; error?: string }> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  try {
+    const count = await invoke<number>('xingjing_init_product_dir', { workDir, files });
+    return { ok: true, count };
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e) };
+  }
+}

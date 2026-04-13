@@ -19,10 +19,12 @@ export const BackNavigationContext = createContext<() => void>(() => {
 });
 import { useAppStore, type Role } from '../../stores/app-store';
 import ProductSwitcher from '../product/product-switcher';
+import { callAgent } from '../../services/opencode-client';
 import {
   Zap, TrendingUp, FileText, Palette, Code, Timer, CheckCircle, Cloud,
-  BarChart3, BookOpen, Bot, Settings, PlayCircle, Lightbulb, Rocket
+  BarChart3, BookOpen, Bot, Settings, PlayCircle, Lightbulb, Rocket, Sun, Moon
 } from 'lucide-solid';
+import { themeColors } from '../../utils/colors';
 
 const roleOptions: { value: Role; label: string }[] = [
   { value: 'pm', label: '产品经理' },
@@ -93,6 +95,7 @@ const [aiMessages, setAiMessages] = createSignal<{ role: string; content: string
 ]);
 const [aiInput, setAiInput] = createSignal('');
 const [aiDrawerOpen, setAiDrawerOpen] = createSignal(false);
+const [aiLoading, setAiLoading] = createSignal(false);
 
 const MainLayout: ParentComponent = (props) => {
   const navigate = useNavigate();
@@ -150,7 +153,13 @@ const MainLayout: ParentComponent = (props) => {
       actions.setAppMode('solo');
       setOpenKeys(['/solo/autopilot-group']);
     } else {
+      // 默认设置为团队版模式
+      actions.setAppMode('team');
       setOpenKeys(['/autopilot-group']);
+      // 在根路径时显式导航到驾驶舱页面
+      if (location.pathname === '/' || location.pathname === '') {
+        navigate('/autopilot');
+      }
     }
   });
 
@@ -159,23 +168,57 @@ const MainLayout: ParentComponent = (props) => {
   const currentProducts = () => isSoloMode() ? soloProducts() : teamProducts();
 
   const handleAiSend = () => {
-    if (!aiInput().trim()) return;
+    if (!aiInput().trim() || aiLoading()) return;
     const q = aiInput().trim();
     setAiMessages(prev => [...prev, { role: 'user', content: q }]);
     setAiInput('');
-    setTimeout(() => {
-      let reply = '';
-      if (q.includes('优先') || q.includes('今天')) {
-        reply = '根据你的任务列表和商业指标，今天最优先的 3 件事是：\n\n1. 🔴 修复 Editor 光标丢失 bug（5 位用户反馈，已拖 2 天）\n2. 🟡 回复 Product Hunt 8 条评论（趁热度在，及时转化）\n3. 🟡 开始邀请用户内测段落重写（本周最高优先级假设验证）';
-      } else if (q.includes('重写') || q.includes('假设')) {
-        reply = '段落重写功能假设（h1）当前状态：验证中\n\n验证方式：邀请 5 位活跃用户内测 Beta，观察 3 天使用频率。\n\n相关任务：st2（实现 MVP）和 st3（邀请内测）均在待办状态，建议今天优先推进 st3（只需 1h）。';
-      } else if (q.includes('用户') || q.includes('留存')) {
-        reply = '根据知识库中的用户洞察：\n\n· 78% 的用户活跃时间在 20:00-23:00（推送策略可优化）\n· Onboarding 第 3 步骤流失率 42%（选项过多）\n· 最新反馈：4 条正面 / 1 条负面（延迟问题）\n\n当前 7 日留存 68%，相对稳定但有提升空间。';
-      } else {
-        reply = '我已加载你的产品知识库、任务列表和用户反馈。请告诉我你想了解哪方面，我来帮你分析。';
-      }
-      setAiMessages(prev => [...prev, { role: 'assistant', content: reply }]);
-    }, 800);
+    setAiLoading(true);
+
+    // 添加空的 assistant 消息用于流式填充
+    const assistantIdx = aiMessages().length; // user 刚加入后的下一个位置
+    setAiMessages(prev => [...prev, { role: 'assistant', content: '正在思考中...' }]);
+
+    // 构造上下文提示词
+    const modeLabel = isSoloMode() ? '独立开发者' : '企业团队';
+    const roleLabel = roleOptions.find(r => r.value === state.currentRole)?.label || state.currentRole;
+    const product = currentProducts().length > 0 ? currentProducts()[0] : null;
+    const productName = product?.name || '未选择产品';
+    const systemPrompt = `你是「星静」智能研发平台的 AI 虚拟团队助手。\n当前模式：${modeLabel}\n当前角色：${roleLabel}\n当前产品：${productName}\n\n请根据用户的问题提供专业、简洁的回答。如果涉及任务管理、产品规划、技术建议等，请结合当前角色给出具体可执行的建议。`;
+
+    const llmCfg = state.llmConfig;
+    callAgent({
+      systemPrompt,
+      userPrompt: q,
+      title: `星静对话-${productName}`,
+      model: llmCfg.providerID && llmCfg.modelID && llmCfg.providerID !== 'custom'
+        ? { providerID: llmCfg.providerID, modelID: llmCfg.modelID }
+        : undefined,
+      onText: (text) => {
+        setAiMessages(prev => prev.map((m, i) =>
+          i === assistantIdx ? { ...m, content: text } : m
+        ));
+      },
+      onDone: () => {
+        setAiLoading(false);
+      },
+      onError: () => {
+        // 降级到 mock 回复
+        let reply = '';
+        if (q.includes('优先') || q.includes('今天')) {
+          reply = '根据你的任务列表和商业指标，今天最优先的 3 件事是：\n\n1. 🔴 修复 Editor 光标丢失 bug（5 位用户反馈，已拖 2 天）\n2. 🟡 回复 Product Hunt 8 条评论（趁热度在，及时转化）\n3. 🟡 开始邀请用户内测段落重写（本周最高优先级假设验证）';
+        } else if (q.includes('重写') || q.includes('假设')) {
+          reply = '段落重写功能假设（h1）当前状态：验证中\n\n验证方式：邀请 5 位活跃用户内测 Beta，观察 3 天使用频率。\n\n相关任务：st2（实现 MVP）和 st3（邀请内测）均在待办状态，建议今天优先推进 st3（只需 1h）。';
+        } else if (q.includes('用户') || q.includes('留存')) {
+          reply = '根据知识库中的用户洞察：\n\n· 78% 的用户活跃时间在 20:00-23:00（推送策略可优化）\n· Onboarding 第 3 步骤流失率 42%（选项过多）\n· 最新反馈：4 条正面 / 1 条负面（延迟问题）\n\n当前 7 日留存 68%，相对稳定但有提升空间。';
+        } else {
+          reply = '我已加载你的产品知识库、任务列表和用户反馈。请告诉我你想了解哪方面，我来帮你分析。';
+        }
+        setAiMessages(prev => prev.map((m, i) =>
+          i === assistantIdx ? { ...m, content: `⚠️ OpenCode 未连接，使用本地知识库回复：\n\n${reply}` } : m
+        ));
+        setAiLoading(false);
+      },
+    });
   };
 
   // 优先使用外层 Router 的 navigate（由 XingjingNativePage 通过 Context 提供）
@@ -355,6 +398,18 @@ const MainLayout: ParentComponent = (props) => {
               </For>
             </select>
 
+            {/* Theme Toggle */}
+            <button
+              class="w-8 h-8 rounded-lg flex items-center justify-center transition-colors"
+              style={{ background: themeColors.hover, color: themeColors.textSecondary }}
+              onClick={() => actions.setThemeMode(state.themeMode === 'dark' ? 'light' : 'dark')}
+              title={state.themeMode === 'dark' ? '切换到亮色模式' : '切换到暗色模式'}
+            >
+              <Show when={state.themeMode === 'dark'} fallback={<Moon size={16} />}>
+                <Sun size={16} />
+              </Show>
+            </button>
+
             {/* User Avatar */}
             <div
               class={`w-8 h-8 rounded-full flex items-center justify-center text-white text-sm cursor-pointer ${isSoloMode() ? 'bg-[var(--green-9)]' : 'bg-[var(--purple-9)]'}`}
@@ -445,15 +500,13 @@ const MainLayout: ParentComponent = (props) => {
               <input
                 value={aiInput()}
                 onInput={(e) => setAiInput(e.currentTarget.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') handleAiSend(); }}
-                placeholder="问我任何关于产品的问题..."
-                class="flex-1 border border-[var(--dls-border)] rounded-lg px-3 py-2 text-sm outline-none bg-[var(--dls-surface)] text-[var(--dls-text-primary)]"
-                style={{
-                  "focus:border-color": isSoloMode() ? 'var(--green-9)' : 'var(--purple-9)'
-                }}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !aiLoading()) handleAiSend(); }}
+                placeholder={aiLoading() ? 'AI 正在回复中...' : '问我任何关于产品的问题...'}
+                class={`flex-1 border rounded-lg px-3 py-2 text-sm outline-none bg-[var(--dls-surface)] text-[var(--dls-text-primary)] border-[var(--dls-border)] focus:border-[${isSoloMode() ? 'var(--green-9)' : 'var(--purple-9)'}]`}
               />
               <button
                 onClick={handleAiSend}
+                disabled={aiLoading()}
                 class={`rounded-lg px-3 py-2 text-sm transition-colors text-white ${
                   isSoloMode()
                     ? 'bg-[var(--green-9)] hover:bg-[var(--green-11)]'

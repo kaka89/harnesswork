@@ -10,3 +10,4 @@ pub mod skills;
 pub mod updater;
 pub mod window;
 pub mod workspace;
+pub mod xingjing;

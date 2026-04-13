@@ -192,8 +192,8 @@ const SoloAutopilot: React.FC = () => {
 
   return (
     <div style={{ maxWidth: 1200, margin: '0 auto' }}>
-      {/* Empty State Banner */}
-      {soloProducts.length === 0 && (
+      {/* Empty State Banner — 仅在从未创建过任何产品时显示，与模式无关 */}
+      {products.length === 0 && (
         <Card
           style={{
             marginBottom: 20,

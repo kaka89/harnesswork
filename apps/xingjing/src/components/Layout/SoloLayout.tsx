@@ -66,6 +66,7 @@ const SoloLayout: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { appMode, products, currentProject, setProject, setAppMode, setAiPanelOpen } = useAppStore();
+  const lastSoloProject = useAppStore((s) => s.lastSoloProject);
   const [openKeys, setOpenKeys] = useState<string[]>(['/solo/autopilot-group']);
   const [energyMode, setEnergyMode] = useState<EnergyMode>('deep');
   const [aiDrawerOpen, setAiDrawerOpen] = useState(false);
@@ -100,8 +101,19 @@ const SoloLayout: React.FC = () => {
   ]);
 
   const soloProducts = products.filter((p) => p.mode === 'solo');
-  const currentSoloProduct = soloProducts.find((p) => p.name === currentProject) || soloProducts[0];
+  // 优先使用最后工作的产品，回退到 currentProject，再回退到第一个
+  const resolvedSoloName = (lastSoloProject && soloProducts.find((p) => p.name === lastSoloProject))
+    ? lastSoloProject
+    : currentProject;
+  const currentSoloProduct = soloProducts.find((p) => p.name === resolvedSoloName) || soloProducts[0];
   const soloProductOptions = soloProducts.map((p) => ({ value: p.name, label: p.name }));
+
+  // 页面挂载时自动同步 currentProject 为最后工作的独立版产品
+  useEffect(() => {
+    if (soloProducts.length > 0 && currentSoloProduct) {
+      setProject(currentSoloProduct.name);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const displayProductName = currentSoloProduct?.name || '星静';
   const displayTagline = currentSoloProduct?.tagline || '妄作，凶';

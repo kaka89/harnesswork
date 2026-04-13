@@ -175,7 +175,7 @@ export async function sessionCreate(
 export async function sessionPrompt(
   sessionId: string,
   content: string,
-  opts?: { directory?: string },
+  opts?: { directory?: string; model?: { providerID: string; modelID: string } },
 ): Promise<boolean> {
   const client = getXingjingClient();
   try {
@@ -184,6 +184,7 @@ export async function sessionPrompt(
     await (client.session as any).promptAsync({
       sessionID: sessionId,
       directory: opts?.directory ?? (_directory || undefined),
+      ...(opts?.model ? { model: opts.model } : {}),
       parts: [{ type: 'text', text: content }],
     });
     return true;
@@ -266,6 +267,26 @@ export async function configGetModels(): Promise<XingjingModelConfig[]> {
   }
 }
 
+/**
+ * 为指定 Provider 设置 API Key（同步到 OpenCode，使 callAgent 调用时生效）
+ *
+ * 等同于 OpenWork 设置页中「连接 Provider」-> 输入 API Key 的操作
+ */
+export async function setProviderAuth(providerID: string, apiKey: string): Promise<boolean> {
+  const client = getXingjingClient();
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (client.auth as any).set({
+      providerID,
+      auth: { type: 'api', key: apiKey },
+    });
+    return true;
+  } catch (e) {
+    console.warn('[xingjing] setProviderAuth failed:', e);
+    return false;
+  }
+}
+
 // ─── SolidJS Reactive 辅助 ─────────────────────────────────────────────────
 
 /**
@@ -308,6 +329,8 @@ export interface CallAgentOptions {
   systemPrompt?: string;
   /** 用户提示词 */
   userPrompt: string;
+  /** 使用的具体模型（如不指定则使用 OpenCode 默认）*/
+  model?: { providerID: string; modelID: string };
   /** 会话标题 */
   title?: string;
   /** 工作目录 */
@@ -397,9 +420,71 @@ export async function callAgent(opts: CallAgentOptions): Promise<void> {
     ? `${opts.systemPrompt}\n\n---\n\n${opts.userPrompt}`
     : opts.userPrompt;
 
-  const ok = await sessionPrompt(sessionId, fullPrompt, { directory: opts.directory });
+  const ok = await sessionPrompt(sessionId, fullPrompt, {
+    directory: opts.directory,
+    model: opts.model,
+  });
   if (!ok) {
     cleanup();
     opts.onError?.('发送提示词失败，请检查 OpenCode 连接');
   }
+}
+
+// ─── Git 同步能力 ────────────────────────────────────────────────────────────
+// 通过 OpenCode sessionPrompt 执行 git 命令
+
+/**
+ * 通过 AI 会话执行 shell 命令并等待完成
+ * @returns 执行是否成功
+ */
+async function execViaAgent(
+  command: string,
+  directory?: string,
+): Promise<{ ok: boolean; output: string }> {
+  return new Promise((resolve) => {
+    let output = '';
+    callAgent({
+      title: `xingjing-git-${Date.now()}`,
+      directory,
+      systemPrompt: '你是一个 Git 操作助手。请直接执行用户要求的 git 命令，不要解释。只输出命令执行结果。',
+      userPrompt: `请执行以下命令：\n\`\`\`bash\n${command}\n\`\`\``,
+      onText: (text) => { output = text; },
+      onDone: (fullText) => resolve({ ok: true, output: fullText }),
+      onError: (err) => resolve({ ok: false, output: err }),
+    });
+  });
+}
+
+/**
+ * 在指定工作目录初始化 Git 仓库
+ */
+export async function gitInit(
+  workDir: string,
+): Promise<{ ok: boolean; output: string }> {
+  return execViaAgent('git init', workDir);
+}
+
+/**
+ * 同步 Git 仓库（add + commit + push）
+ * @param workDir 工作目录
+ * @param message commit 消息（默认 "xingjing sync"）
+ */
+export async function gitSync(
+  workDir: string,
+  message = 'xingjing sync',
+): Promise<{ ok: boolean; output: string }> {
+  const cmd = `git add -A && git commit -m "${message.replace(/"/g, '\\"')}" && git push`;
+  return execViaAgent(cmd, workDir);
+}
+
+/**
+ * 克隆远程 Git 仓库
+ * @param url 远程仓库 URL
+ * @param workDir 目标目录
+ */
+export async function gitClone(
+  url: string,
+  workDir: string,
+): Promise<{ ok: boolean; output: string }> {
+  return execViaAgent(`git clone ${url} .`, workDir);
 }

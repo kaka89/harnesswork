@@ -3,11 +3,12 @@ import { useNavigate } from '@solidjs/router';
 import { useAppStore } from '../../stores/app-store';
 import { Plus, Star, Zap, MessageSquare } from 'lucide-solid';
 import type { PRD } from '../../mock/prd';
+import { themeColors } from '../../utils/colors';
 
 const statusConfig = {
-  draft: { label: '草稿', borderColor: 'themeColors.border', tagColor: 'themeColors.border' },
-  reviewing: { label: '评审中', borderColor: 'themeColors.primaryBorder', tagColor: 'chartColors.primary' },
-  approved: { label: '已批准', borderColor: 'themeColors.successBorder', tagColor: 'chartColors.success' },
+  draft: { label: '草稿', borderColor: themeColors.border, tagColor: themeColors.textMuted },
+  reviewing: { label: '评审中', borderColor: themeColors.primaryBorder, tagColor: themeColors.primary },
+  approved: { label: '已批准', borderColor: themeColors.successBorder, tagColor: themeColors.success },
 };
 
 const RequirementWorkshop: Component = () => {
@@ -87,15 +88,15 @@ const RequirementWorkshop: Component = () => {
   };
 
   return (
-    <div style={{ padding: '16px' }}>
+    <div>
       {/* Header */}
       <div style={{ display: 'flex', 'justify-content': 'space-between', 'align-items': 'center', 'margin-bottom': '20px' }}>
-        <h4 style={{ margin: '0', 'font-size': '16px', 'font-weight': 600 }}>需求看板</h4>
+        <h4 style={{ margin: '0', 'font-size': '20px', 'font-weight': 600 }}>需求看板</h4>
         <button
-          style={{ background: 'chartColors.primary', color: 'white', border: 'none', 'border-radius': '6px', padding: '8px 16px', cursor: 'pointer', 'font-size': '14px', display: 'inline-flex', 'align-items': 'center', gap: '6px' }}
+          style={{ background: themeColors.primary, color: 'white', border: 'none', 'border-radius': '6px', padding: '4px 15px', height: '32px', cursor: 'pointer', 'font-size': '14px', display: 'inline-flex', 'align-items': 'center', gap: '6px' }}
           onClick={() => setNewPrdModal(true)}
         >
-          <Plus size={16} />
+          <Plus size={14} />
           新建需求
         </button>
       </div>
@@ -107,48 +108,43 @@ const RequirementWorkshop: Component = () => {
             const items = () => state.prds.filter((p) => p.status === col.status);
             return (
               <div
-                style={{ 'background': 'themeColors.hover', 'border-radius': '8px', padding: '12px', 'min-height': '600px', border: '1px solid themeColors.border' }}
+                style={{ background: themeColors.bgSubtle, 'border-radius': '8px', padding: '12px', 'min-height': '400px' }}
                 onDragOver={(e) => e.preventDefault()}
                 onDrop={() => handleDrop(col.status)}
               >
-                <div style={{ 'font-weight': 600, 'margin-bottom': '12px', display: 'flex', 'align-items': 'center', 'justify-content': 'space-between', 'font-size': '14px' }}>
-                  <span>{col.title}</span>
-                  <span style={{ 'font-size': '12px', 'font-weight': 400, color: 'themeColors.textMuted' }}>({items().length})</span>
+                <div style={{ 'font-weight': 600, 'margin-bottom': '12px', 'font-size': '14px', color: themeColors.textPrimary }}>
+                  {col.title} ({items().length})
                 </div>
                 <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
                   <For each={items()}>
                     {(prd) => (
                       <div
-                        style={{ background: 'themeColors.surface', 'border-radius': '6px', padding: '12px', 'box-shadow': '0 1px 2px rgba(0,0,0,0.05)', cursor: 'grab', border: `1px solid ${statusConfig[prd.status].borderColor}` }}
+                        style={{ background: themeColors.surface, 'border-radius': '8px', padding: '12px', cursor: 'grab', 'margin-bottom': '8px', border: `1px solid ${themeColors.borderLight}`, transition: 'box-shadow 0.2s, transform 0.2s' }}
                         draggable
                         onDragStart={() => handleDragStart(prd.id)}
                         onClick={() => navigate(`/requirements/edit/${prd.id}`)}
+                        onMouseEnter={(e) => { e.currentTarget.style.boxShadow = '0 4px 12px rgba(0,0,0,0.1)'; e.currentTarget.style.transform = 'translateY(-2px)'; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.boxShadow = 'none'; e.currentTarget.style.transform = 'none'; }}
                       >
-                        <div style={{ display: 'flex', 'justify-content': 'space-between', 'align-items': 'flex-start', 'margin-bottom': '8px' }}>
-                          <span style={{ 'font-size': '12px', 'font-weight': 600, color: 'themeColors.textSecondary' }}>{prd.id}</span>
-                          <span style={{ display: 'inline-flex', 'align-items': 'center', padding: '2px 8px', 'border-radius': '4px', 'font-size': '11px', border: `1px solid ${statusConfig[prd.status].tagColor}`, color: statusConfig[prd.status].tagColor }}>
+                        <div style={{ display: 'flex', 'justify-content': 'space-between', 'margin-bottom': '4px' }}>
+                          <span style={{ 'font-size': '13px', 'font-weight': 600 }}>{prd.id}</span>
+                          <span style={{ padding: '0 7px', 'border-radius': '4px', 'font-size': '12px', background: prd.status === 'reviewing' ? themeColors.primaryBg : prd.status === 'approved' ? themeColors.successBg : themeColors.bgSubtle, color: statusConfig[prd.status].tagColor }}>
                             {statusConfig[prd.status].label}
                           </span>
                         </div>
-                        <div style={{ 'font-size': '13px', 'font-weight': 500, 'margin-bottom': '8px', color: 'themeColors.text' }}>{prd.title}</div>
-                        <div style={{ display: 'flex', 'justify-content': 'space-between', 'align-items': 'center', 'margin-bottom': '8px' }}>
-                          <span style={{ 'font-size': '12px', color: 'themeColors.textMuted' }}>{prd.owner}</span>
+                        <div style={{ 'font-size': '14px', 'font-weight': 500 }}>{prd.title}</div>
+                        <div style={{ 'margin-top': '8px', display: 'flex', 'justify-content': 'space-between', 'align-items': 'center' }}>
+                          <span style={{ 'font-size': '12px', color: themeColors.textSecondary }}>{prd.owner}</span>
                           <Show when={prd.aiScore > 0}>
-                            <div style={{ display: 'flex', 'align-items': 'center', gap: '4px' }}>
-                              <Star size={12} style={{ color: 'chartColors.warning', fill: 'chartColors.warning' }} />
-                              <span style={{ 'font-size': '12px', color: 'chartColors.warning' }}>{prd.aiScore}</span>
+                            <div style={{ display: 'flex', 'align-items': 'center', gap: '2px' }}>
+                              <Star size={12} style={{ color: '#faad14' }} />
+                              <span style={{ 'font-size': '12px', color: '#faad14' }}>{prd.aiScore}</span>
                             </div>
                           </Show>
                         </div>
-                        <Show when={prd.reviewComments > 0}>
-                          <div style={{ display: 'flex', 'align-items': 'center', gap: '4px', 'font-size': '12px', color: 'themeColors.textMuted', 'margin-bottom': '8px' }}>
-                            <MessageSquare size={12} />
-                            评审意见 {prd.reviewComments} 条
-                          </div>
-                        </Show>
                         <Show when={prd.status === 'draft'}>
                           <button
-                            style={{ 'font-size': '12px', color: 'chartColors.primary', background: 'none', border: 'none', cursor: 'pointer', padding: '0', display: 'inline-flex', 'align-items': 'center', gap: '4px', 'margin-top': '4px' }}
+                            style={{ 'font-size': '12px', color: themeColors.primary, background: 'none', border: 'none', cursor: 'pointer', padding: '0', display: 'inline-flex', 'align-items': 'center', gap: '4px', 'margin-top': '4px' }}
                             onClick={(e) => {
                               e.stopPropagation();
                               navigate(`/requirements/edit/${prd.id}`);
@@ -158,9 +154,15 @@ const RequirementWorkshop: Component = () => {
                             AI 生成初稿
                           </button>
                         </Show>
+                        <Show when={prd.status === 'reviewing' && prd.reviewComments > 0}>
+                          <div style={{ 'font-size': '12px', color: themeColors.textSecondary, 'margin-top': '4px', display: 'block' }}>
+                            评审意见 {prd.reviewComments} 条
+                          </div>
+                        </Show>
                         <Show when={prd.status === 'approved' && prd.sddStatus}>
-                          <div style={{ 'font-size': '12px', color: 'themeColors.textMuted', 'margin-top': '4px' }}>
-                            SDD {prd.sddStatus} {prd.devProgress && `开发 ${prd.devProgress}`}
+                          <div style={{ 'font-size': '12px', 'margin-top': '4px' }}>
+                            SDD {prd.sddStatus}
+                            {prd.devProgress && <span style={{ 'margin-left': '8px' }}>开发 {prd.devProgress}</span>}
                           </div>
                         </Show>
                       </div>
@@ -176,31 +178,31 @@ const RequirementWorkshop: Component = () => {
       {/* New PRD Modal */}
       <Show when={newPrdModal()}>
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', 'align-items': 'center', 'justify-content': 'center', 'z-index': 1000 }}>
-          <div style={{ background: 'themeColors.surface', 'border-radius': '8px', padding: '24px', width: '100%', 'max-width': '600px', 'box-shadow': '0 4px 16px rgba(0,0,0,0.15)' }}>
+          <div style={{ background: themeColors.surface, 'border-radius': '8px', padding: '24px', width: '100%', 'max-width': '600px', 'box-shadow': '0 4px 16px rgba(0,0,0,0.15)' }}>
             <h3 style={{ margin: '0 0 16px', 'font-size': '16px', 'font-weight': 600 }}>新建需求</h3>
-            <div style={{ 'margin-bottom': '16px' }}>
-              <label style={{ display: 'block', 'font-size': '12px', 'font-weight': 500, 'margin-bottom': '8px', color: 'themeColors.textSecondary' }}>需求标题</label>
+            <div style={{ 'margin-bottom': '12px' }}>
+              <label style={{ display: 'block', 'font-size': '14px', 'margin-bottom': '4px' }}>需求标题</label>
               <input
                 type="text"
-                style={{ width: '100%', border: '1px solid themeColors.border', 'border-radius': '6px', padding: '8px 12px', 'font-size': '14px', 'font-family': 'inherit' }}
+                style={{ width: '100%', border: `1px solid ${themeColors.border}`, 'border-radius': '6px', padding: '4px 11px', height: '32px', 'font-size': '14px', 'font-family': 'inherit' }}
                 placeholder="输入需求标题"
                 value={newPrdTitle()}
                 onInput={(e) => setNewPrdTitle(e.target.value)}
               />
             </div>
-            <div style={{ 'margin-bottom': '16px' }}>
-              <label style={{ display: 'block', 'font-size': '12px', 'font-weight': 500, 'margin-bottom': '8px', color: 'themeColors.textSecondary' }}>需求描述</label>
+            <div style={{ 'margin-bottom': '12px' }}>
+              <label style={{ display: 'block', 'font-size': '14px', 'margin-bottom': '4px' }}>需求描述</label>
               <textarea
-                style={{ width: '100%', border: '1px solid themeColors.border', 'border-radius': '6px', padding: '8px 12px', 'font-size': '14px', 'font-family': 'inherit', 'resize': 'vertical' }}
+                style={{ width: '100%', border: `1px solid ${themeColors.border}`, 'border-radius': '6px', padding: '4px 11px', 'font-size': '14px', 'font-family': 'inherit', resize: 'vertical' }}
                 rows={4}
-                placeholder="描述需求的背景、目标和关键功能..."
+                placeholder="描述你的需求，AI 会帮你生成完整的 PRD..."
                 value={newPrdDesc()}
                 onInput={(e) => setNewPrdDesc(e.target.value)}
               />
             </div>
             <div style={{ 'margin-bottom': '16px' }}>
               <button
-                style={{ background: 'chartColors.purple', color: 'white', border: 'none', 'border-radius': '6px', padding: '8px 16px', cursor: 'pointer', 'font-size': '14px', display: 'inline-flex', 'align-items': 'center', gap: '6px', opacity: aiGenerating() ? 0.6 : 1 }}
+                style={{ background: 'transparent', color: themeColors.textPrimary, border: `1px dashed ${themeColors.border}`, 'border-radius': '6px', padding: '4px 15px', height: '32px', cursor: 'pointer', 'font-size': '14px', display: 'inline-flex', 'align-items': 'center', gap: '6px', opacity: aiGenerating() ? 0.65 : 1 }}
                 onClick={handleAiGenerate}
                 disabled={aiGenerating()}
               >
@@ -208,15 +210,15 @@ const RequirementWorkshop: Component = () => {
                 <span>{aiGenerating() ? 'AI 生成中...' : 'AI 生成初稿'}</span>
               </button>
             </div>
-            <div style={{ display: 'flex', 'justify-content': 'flex-end', gap: '8px' }}>
+            <div style={{ display: 'flex', 'justify-content': 'flex-end', gap: '8px', 'border-top': `1px solid ${themeColors.borderLight}`, 'padding-top': '12px' }}>
               <button
-                style={{ background: 'themeColors.surface', border: '1px solid themeColors.border', 'border-radius': '6px', padding: '6px 16px', cursor: 'pointer', 'font-size': '14px' }}
+                style={{ background: themeColors.surface, border: `1px solid ${themeColors.border}`, 'border-radius': '6px', padding: '4px 15px', height: '32px', cursor: 'pointer', 'font-size': '14px' }}
                 onClick={() => setNewPrdModal(false)}
               >
                 取消
               </button>
               <button
-                style={{ background: 'chartColors.primary', color: 'white', border: 'none', 'border-radius': '6px', padding: '6px 16px', cursor: 'pointer', 'font-size': '14px' }}
+                style={{ background: themeColors.primary, color: 'white', border: 'none', 'border-radius': '6px', padding: '4px 15px', height: '32px', cursor: 'pointer', 'font-size': '14px' }}
                 onClick={handleCreatePrd}
               >
                 创建

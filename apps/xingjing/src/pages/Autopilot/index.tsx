@@ -98,8 +98,23 @@ type RunState = 'idle' | 'running' | 'done';
 
 const EnterpriseAutopilot: React.FC = () => {
   const products = useAppStore((s) => s.products);
+  const lastTeamProject = useAppStore((s) => s.lastTeamProject);
+  const setProject = useAppStore((s) => s.setProject);
   const teamProducts = products.filter((p) => p.mode === 'team');
-  const currentProject = teamProducts[0]?.id;
+
+  // 优先使用最后工作的产品，回退到第一个团队产品
+  const resolvedProject = (lastTeamProject && teamProducts.find((p) => p.name === lastTeamProject))
+    ? lastTeamProject
+    : teamProducts[0]?.name || '';
+  const currentProject = teamProducts.find((p) => p.name === resolvedProject)?.id || teamProducts[0]?.id;
+
+  // 页面挂载时自动同步 currentProject
+  useEffect(() => {
+    if (teamProducts.length > 0 && resolvedProject) {
+      setProject(resolvedProject);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [goal, setGoal] = useState('');
   const [runState, setRunState] = useState<RunState>('idle');
@@ -233,8 +248,8 @@ const EnterpriseAutopilot: React.FC = () => {
 
   return (
     <div style={{ maxWidth: 1400, margin: '0 auto' }}>
-      {/* Empty State Banner */}
-      {teamProducts.length === 0 && (
+      {/* Empty State Banner — 仅在从未创建过任何产品时显示，与模式无关 */}
+      {products.length === 0 && (
         <Card
           style={{
             marginBottom: 20,

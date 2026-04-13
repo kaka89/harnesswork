@@ -10,8 +10,9 @@ import {
   FeatureUsage,
   UserFeedback,
 } from '../../../mock/solo';
-import { readYamlDir } from '../../../services/file-store';
+import { loadSoloMetrics, loadUserFeedbacks } from '../../../services/file-store';
 import { useAppStore } from '../../../stores/app-store';
+import { themeColors, chartColors } from '../../../utils/colors';
 import { LineChart, ArrowUp, TrendingUp } from 'lucide-solid';
 
 const sentimentIcon: Record<string, string> = {
@@ -20,17 +21,17 @@ const sentimentIcon: Record<string, string> = {
   neutral:  '😐',
 };
 
-const sentimentClass: Record<string, string> = {
-  positive: 'bg-green-50 border-green-200',
-  negative: 'bg-red-50 border-red-200',
-  neutral:  'bg-gray-50 border-gray-200',
+const sentimentStyle: Record<string, { bg: string; border: string }> = {
+  positive: { bg: themeColors.successBg, border: themeColors.successBorder },
+  negative: { bg: themeColors.errorBg, border: themeColors.errorBorder },
+  neutral:  { bg: themeColors.bgSubtle, border: themeColors.border },
 };
 
-const channelClass: Record<string, string> = {
-  Email: 'bg-gray-100 text-gray-600',
-  'Product Hunt': 'bg-orange-100 text-orange-700',
-  Twitter: 'bg-blue-100 text-blue-700',
-  'In-app': 'bg-purple-100 text-purple-700',
+const channelStyle: Record<string, { bg: string; color: string }> = {
+  Email: { bg: themeColors.hover, color: themeColors.textSecondary },
+  'Product Hunt': { bg: themeColors.warningBg, color: themeColors.warningDark },
+  Twitter: { bg: themeColors.primaryBg, color: chartColors.primary },
+  'In-app': { bg: themeColors.purpleBg, color: themeColors.purple },
 };
 
 const SoloReview: Component = () => {
@@ -44,17 +45,18 @@ const SoloReview: Component = () => {
     const workDir = productStore.activeProduct()?.workDir;
     if (!workDir) return;
 
-    const [metricsFiles, historyFiles, featureFiles, feedbackFiles] = await Promise.all([
-      readYamlDir<BusinessMetric>('.xingjing/solo/metrics', workDir),
-      readYamlDir<MetricHistory>('.xingjing/solo/metrics-history', workDir),
-      readYamlDir<FeatureUsage>('.xingjing/solo/feature-usage', workDir),
-      readYamlDir<UserFeedback>('.xingjing/solo/feedbacks', workDir),
-    ]);
-
-    if (metricsFiles.length > 0) setMetrics(metricsFiles);
-    if (historyFiles.length > 0) setHistory(historyFiles);
-    if (featureFiles.length > 0) setFeatureUsage(featureFiles);
-    if (feedbackFiles.length > 0) setFeedbacks(feedbackFiles);
+    try {
+      const [fileMetrics, fileFeedbacks] = await Promise.all([
+        loadSoloMetrics(workDir),
+        loadUserFeedbacks(workDir),
+      ]);
+      if (fileMetrics.businessMetrics.length > 0) setMetrics(fileMetrics.businessMetrics as unknown as BusinessMetric[]);
+      if (fileMetrics.metricsHistory.length > 0) setHistory(fileMetrics.metricsHistory as unknown as MetricHistory[]);
+      if (fileMetrics.featureUsage.length > 0) setFeatureUsage(fileMetrics.featureUsage as unknown as FeatureUsage[]);
+      if (fileFeedbacks.length > 0) setFeedbacks(fileFeedbacks as unknown as UserFeedback[]);
+    } catch {
+      // Mock fallback — keep initial mock data
+    }
   });
 
   const trendOption = () => ({
@@ -72,7 +74,7 @@ const SoloReview: Component = () => {
         type: 'line',
         data: history().map((d) => d.dau),
         smooth: true,
-        itemStyle: { color: 'chartColors.primary' },
+        itemStyle: { color: '#1264e5' },
         areaStyle: { color: 'rgba(18,100,229,0.08)' },
       },
       {
@@ -81,7 +83,7 @@ const SoloReview: Component = () => {
         yAxisIndex: 1,
         data: history().map((d) => d.mrr),
         smooth: true,
-        itemStyle: { color: 'chartColors.success' },
+        itemStyle: { color: '#52c41a' },
         areaStyle: { color: 'rgba(82,196,26,0.08)' },
       },
     ],
@@ -102,7 +104,7 @@ const SoloReview: Component = () => {
         data: featureUsage().map((f) => ({
           value: f.usage,
           itemStyle: {
-            color: f.trend === 'up' ? 'chartColors.success' : f.trend === 'down' ? 'chartColors.error' : 'chartColors.primary',
+            color: f.trend === 'up' ? '#52c41a' : f.trend === 'down' ? '#ff4d4f' : '#1264e5',
           },
         })).reverse(),
         barMaxWidth: 24,
@@ -116,124 +118,120 @@ const SoloReview: Component = () => {
 
   const aiInsights = [
     {
-      icon: '📈', title: 'MRR 增长健康', bg: 'themeColors.successBg', border: 'themeColors.successBorder',
+      icon: '📈', title: 'MRR 增长健康', bg: themeColors.successBg, border: themeColors.successBorder,
       content: '过去 6 周 MRR 从 $620 增长到 $1,240，翻了一倍。当前增速 ~$120/周，按此速度 3 个月内可达 $2,700+。',
     },
     {
-      icon: '⚠️', title: '引用检查功能需重新评估', bg: 'themeColors.surfacebe6', border: 'themeColors.warningBorder',
+      icon: '⚠️', title: '引用检查功能需重新评估', bg: themeColors.warningBg, border: themeColors.warningBorder,
       content: '功能使用率仅 12% 且呈下降趋势。建议考虑降低维护优先级，或将其合并为轻量插件。',
     },
     {
-      icon: '🎯', title: '团队版信号明确', bg: 'themeColors.primaryBg', border: 'themeColors.primaryBorder',
+      icon: '🎯', title: '团队版信号明确', bg: themeColors.primaryBg, border: themeColors.primaryBorder,
       content: '收到询问团队版，建议先用「共享链接」快速验证，不要贸然开发完整版。',
     },
     {
-      icon: '🌙', title: '优化推送时间', bg: 'themeColors.purpleBg', border: 'themeColors.purpleBorder',
+      icon: '🌙', title: '优化推送时间', bg: themeColors.purpleBg, border: themeColors.purpleBorder,
       content: '78% 用户活跃在晚间 20:00-23:00。建议将每日写作提醒时间调整为 20:30，预计可提升点击率 15%+。',
     },
   ];
 
   return (
-    <div>
+    <div style={{ background: themeColors.surface }}>
       {/* Header */}
-      <div class="flex justify-between items-center mb-5">
-        <h2 class="text-lg font-semibold text-gray-900 flex items-center gap-2 m-0">
-          <span class="text-green-600">📈</span>
+      <div style={{ display: 'flex', 'justify-content': 'space-between', 'align-items': 'center', 'margin-bottom': '20px' }}>
+        <h2 style={{ margin: 0, 'font-size': '18px', 'font-weight': 600, color: themeColors.text, display: 'flex', 'align-items': 'center', gap: '8px' }}>
+          <span style={{ color: chartColors.success }}>📈</span>
           数据复盘
         </h2>
-        <span class="text-xs px-3 py-1 bg-blue-100 text-blue-700 rounded-full">过去 6 周</span>
+        <span style={{ 'font-size': '12px', padding: '4px 12px', background: themeColors.primaryBg, color: chartColors.primary, 'border-radius': '9999px' }}>过去 6 周</span>
       </div>
 
       {/* Contrast note */}
-      <div class="p-3 bg-yellow-50 border border-yellow-200 rounded-lg mb-4 text-xs text-yellow-800">
+      <div style={{ padding: '12px', background: themeColors.warningBg, border: `1px solid ${themeColors.warningBorder}`, 'border-radius': '8px', 'margin-bottom': '16px', 'font-size': '12px', color: themeColors.warning }}>
         <strong>💡 对比团队版：</strong> 团队版核心指标是 DORA（部署频率、前置时间、失败率、MTTR）——面向工程效能。独立版核心指标是商业指标（DAU/MRR/留存/NPS）——工程是手段，商业结果才是目标。
       </div>
 
       {/* Business Metrics Row */}
-      <div class="grid grid-cols-4 gap-3 mb-4">
+      <div style={{ display: 'grid', 'grid-template-columns': 'repeat(4, 1fr)', gap: '12px', 'margin-bottom': '16px' }}>
         <For each={metrics()}>
           {(m) => (
-            <div
-              class="p-4 rounded-xl border"
-              style={{ 'border-color': m.color + '33', background: m.color + '08' }}
-            >
-              <div class="text-sm font-semibold text-gray-700 mb-1">{m.label}</div>
-              <div class="text-2xl font-bold flex items-center gap-1" style={{ color: m.color }}>
-                {m.trend === 'up' && <span class="text-base text-green-500">↑</span>}
+            <div style={{ padding: '16px', 'border-radius': '12px', border: `1px solid ${m.color}33`, background: `${m.color}08` }}>
+              <div style={{ 'font-size': '14px', 'font-weight': 600, color: themeColors.textSecondary, 'margin-bottom': '4px' }}>{m.label}</div>
+              <div style={{ 'font-size': '24px', 'font-weight': 700, display: 'flex', 'align-items': 'center', gap: '4px', color: m.color }}>
+                {m.trend === 'up' && <span style={{ 'font-size': '16px', color: chartColors.success }}>↑</span>}
                 {m.value}
               </div>
-              <div class="text-xs text-gray-400 mt-0.5">{m.trendValue}</div>
+              <div style={{ 'font-size': '12px', color: themeColors.textMuted, 'margin-top': '2px' }}>{m.trendValue}</div>
             </div>
           )}
         </For>
       </div>
 
       {/* Charts Row */}
-      <div class="grid grid-cols-12 gap-4 mb-4">
-        <div class="col-span-8 bg-white rounded-xl shadow-sm border border-gray-100 p-4">
-          <div class="font-semibold text-sm text-gray-800 mb-3">DAU + MRR 趋势（6 周）</div>
+      <div style={{ display: 'grid', 'grid-template-columns': '2fr 1fr', gap: '16px', 'margin-bottom': '16px' }}>
+        <div style={{ border: `1px solid ${themeColors.border}`, 'border-radius': '8px', padding: '16px', background: themeColors.surface }}>
+          <div style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text, 'margin-bottom': '12px' }}>DAU + MRR 趋势（6 周）</div>
           <ECharts option={trendOption()} style={{ height: '260px' }} />
         </div>
-        <div class="col-span-4 bg-white rounded-xl shadow-sm border border-gray-100 p-4">
-          <div class="font-semibold text-sm text-gray-800 mb-3">功能使用率（本周活跃用户）</div>
+        <div style={{ border: `1px solid ${themeColors.border}`, 'border-radius': '8px', padding: '16px', background: themeColors.surface }}>
+          <div style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text, 'margin-bottom': '12px' }}>功能使用率（本周活跃用户）</div>
           <ECharts option={featureUsageOption()} style={{ height: '220px' }} />
-          <div class="mt-2 flex gap-3 text-xs">
-            <span class="text-green-600">▲ 上升</span>
-            <span class="text-blue-600">— 稳定</span>
-            <span class="text-red-500">▼ 下降</span>
+          <div style={{ 'margin-top': '8px', display: 'flex', gap: '12px', 'font-size': '12px' }}>
+            <span style={{ color: chartColors.success }}>▲ 上升</span>
+            <span style={{ color: chartColors.primary }}>— 稳定</span>
+            <span style={{ color: chartColors.error }}>▼ 下降</span>
           </div>
         </div>
       </div>
 
       {/* Feedback + AI Insights */}
-      <div class="grid grid-cols-12 gap-4">
-        <div class="col-span-8 bg-white rounded-xl shadow-sm border border-gray-100">
-          <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-100">
-            <span class="font-semibold text-sm text-gray-800">用户反馈摘要</span>
-            <span class="text-xs px-2 py-0.5 bg-green-100 text-green-700 rounded-full">😊 {positiveCount()} 正面</span>
-            <span class="text-xs px-2 py-0.5 bg-red-100 text-red-700 rounded-full">😞 {negativeCount()} 负面</span>
+      <div style={{ display: 'grid', 'grid-template-columns': '2fr 1fr', gap: '16px' }}>
+        <div style={{ border: `1px solid ${themeColors.border}`, 'border-radius': '8px', background: themeColors.surface }}>
+          <div style={{ display: 'flex', 'align-items': 'center', gap: '12px', padding: '12px 16px', 'border-bottom': `1px solid ${themeColors.borderLight}` }}>
+            <span style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text }}>用户反馈摘要</span>
+            <span style={{ 'font-size': '12px', padding: '1px 8px', background: themeColors.successBg, color: chartColors.success, 'border-radius': '9999px' }}>😊 {positiveCount()} 正面</span>
+            <span style={{ 'font-size': '12px', padding: '1px 8px', background: themeColors.errorBg, color: chartColors.error, 'border-radius': '9999px' }}>😞 {negativeCount()} 负面</span>
           </div>
-          <div class="p-4 flex flex-col divide-y divide-gray-50">
+          <div style={{ padding: '16px', display: 'flex', 'flex-direction': 'column' }}>
             <For each={feedbacks()}>
-              {(item) => (
-                <div class="py-3 flex gap-3 items-start">
-                  <div
-                    class={`w-8 h-8 rounded-full flex items-center justify-center text-lg flex-shrink-0 border ${sentimentClass[item.sentiment]}`}
-                  >
-                    {sentimentIcon[item.sentiment]}
-                  </div>
-                  <div class="flex-1 min-w-0">
-                    <div class="flex items-center gap-2 mb-1 flex-wrap">
-                      <span class="text-sm font-medium text-gray-800">{item.user}</span>
-                      <span class={`text-xs px-1.5 py-0.5 rounded ${channelClass[item.channel] || 'bg-gray-100 text-gray-600'}`}>
-                        {item.channel}
-                      </span>
-                      <span class="text-xs text-gray-400">{item.date}</span>
+              {(item) => {
+                const sStyle = sentimentStyle[item.sentiment] || sentimentStyle.neutral;
+                const cStyle = channelStyle[item.channel] || { bg: themeColors.hover, color: themeColors.textSecondary };
+                return (
+                  <div style={{ padding: '12px 0', display: 'flex', gap: '12px', 'align-items': 'flex-start', 'border-bottom': `1px solid ${themeColors.borderLight}` }}>
+                    <div style={{ width: '32px', height: '32px', 'border-radius': '50%', display: 'flex', 'align-items': 'center', 'justify-content': 'center', 'font-size': '18px', 'flex-shrink': 0, border: `1px solid ${sStyle.border}`, background: sStyle.bg }}>
+                      {sentimentIcon[item.sentiment]}
                     </div>
-                    <p class="text-sm text-gray-600 m-0">{item.content}</p>
+                    <div style={{ flex: 1, 'min-width': 0 }}>
+                      <div style={{ display: 'flex', 'align-items': 'center', gap: '8px', 'margin-bottom': '4px', 'flex-wrap': 'wrap' }}>
+                        <span style={{ 'font-size': '14px', 'font-weight': 500, color: themeColors.text }}>{item.user}</span>
+                        <span style={{ 'font-size': '12px', padding: '1px 6px', 'border-radius': '4px', background: cStyle.bg, color: cStyle.color }}>
+                          {item.channel}
+                        </span>
+                        <span style={{ 'font-size': '12px', color: themeColors.textMuted }}>{item.date}</span>
+                      </div>
+                      <p style={{ 'font-size': '14px', color: themeColors.textSecondary, margin: 0 }}>{item.content}</p>
+                    </div>
                   </div>
-                </div>
-              )}
+                );
+              }}
             </For>
           </div>
         </div>
 
-        <div class="col-span-4 bg-white rounded-xl shadow-sm border border-gray-100">
-          <div class="flex items-center gap-2 px-4 py-3 border-b border-gray-100">
-            <span class="text-green-600">🤖</span>
-            <span class="font-semibold text-sm text-gray-800">AI 洞察</span>
+        <div style={{ border: `1px solid ${themeColors.border}`, 'border-radius': '8px', background: themeColors.surface }}>
+          <div style={{ display: 'flex', 'align-items': 'center', gap: '8px', padding: '12px 16px', 'border-bottom': `1px solid ${themeColors.borderLight}` }}>
+            <span style={{ color: chartColors.success }}>🤖</span>
+            <span style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text }}>AI 洞察</span>
           </div>
-          <div class="p-4 flex flex-col gap-3">
+          <div style={{ padding: '16px', display: 'flex', 'flex-direction': 'column', gap: '12px' }}>
             <For each={aiInsights}>
               {(insight) => (
-                <div
-                  class="p-3 rounded-lg border"
-                  style={{ background: insight.bg, 'border-color': insight.border }}
-                >
-                  <div class="font-semibold text-sm text-gray-800 mb-1">
+                <div style={{ padding: '12px', 'border-radius': '8px', border: `1px solid ${insight.border}`, background: insight.bg }}>
+                  <div style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text, 'margin-bottom': '4px' }}>
                     {insight.icon} {insight.title}
                   </div>
-                  <p class="text-xs text-gray-500 m-0 leading-relaxed">{insight.content}</p>
+                  <p style={{ 'font-size': '12px', color: themeColors.textMuted, margin: 0, 'line-height': '1.6' }}>{insight.content}</p>
                 </div>
               )}
             </For>

@@ -9,7 +9,25 @@
 
 import { createSignal, createEffect } from 'solid-js';
 import { readYaml, writeYaml } from './file-store';
+import { buildProductFileList } from './product-dir-structure';
+import { initProductDir, engineInfo } from '../../lib/tauri';
 import { initXingjingClient } from './opencode-client';
+import { isTauriRuntime } from '../../utils';
+
+// 动态获取 OpenCode 真实 baseUrl：Tauri 运行时从 engine_info 读取，浏览器内降级到默认端口
+async function resolveOpenCodeBaseUrl(): Promise<string> {
+  if (isTauriRuntime()) {
+    try {
+      const info = await engineInfo();
+      if (info.running && info.baseUrl) {
+        return info.baseUrl.replace(/\/$/, '');
+      }
+    } catch {
+      // Tauri invoke 失败，降级
+    }
+  }
+  return 'http://127.0.0.1:4096';
+}
 
 // ─── 类型定义 ────────────────────────────────────────────────────────────────
 
@@ -35,24 +53,7 @@ export interface XingjingProductsFile {
 
 const PRODUCTS_FILE = '~/.xingjing/products.yaml';
 const PREFERENCES_FILE = '~/.xingjing/preferences.yaml';
-const XINGJING_DIR_STRUCTURE = [
-  '.xingjing/config.yaml',
-  '.xingjing/prds/',
-  '.xingjing/sdds/',
-  '.xingjing/contracts/',
-  '.xingjing/tasks/',
-  '.xingjing/sprints/',
-  '.xingjing/planning/',
-  '.xingjing/knowledge/',
-  '.xingjing/quality/',
-  '.xingjing/releases/',
-  '.xingjing/metrics/',
-  '.xingjing/solo/hypotheses/',
-  '.xingjing/solo/feature-ideas/',
-  '.xingjing/solo/adrs/',
-  '.xingjing/solo/knowledge/',
-  '.xingjing/solo/feedbacks/',
-];
+const XINGJING_DIR_STRUCTURE: string[] = []; // 动态生成，保留接口兼容
 
 // ─── localStorage 兜底 ───────────────────────────────────────────────────────
 
@@ -78,10 +79,10 @@ function lsSetProducts(products: XingjingProduct[]) {
 function lsGetPrefs(): XingjingPreferences {
   try {
     const raw = localStorage.getItem(LS_PREFS_KEY);
-    if (!raw) return { activeProductId: null, viewMode: 'solo' };
+    if (!raw) return { activeProductId: null, viewMode: 'team' };
     return JSON.parse(raw) as XingjingPreferences;
   } catch {
-    return { activeProductId: null, viewMode: 'solo' };
+    return { activeProductId: null, viewMode: 'team' };
   }
 }
 
@@ -117,7 +118,7 @@ export function createProductStore() {
       );
       const prefsData = await readYaml<XingjingPreferences>(
         PREFERENCES_FILE,
-        { activeProductId: null, viewMode: 'solo' },
+        { activeProductId: null, viewMode: 'team' },
       );
 
       const loadedProducts = productsData.products ?? [];
@@ -194,7 +195,8 @@ export function createProductStore() {
     await savePreferences(updatedPrefs);
 
     // Re-initialize OpenCode client with the new product's workDir
-    initXingjingClient('http://127.0.0.1:4096', product.workDir);
+    const baseUrl = await resolveOpenCodeBaseUrl();
+    initXingjingClient(baseUrl, product.workDir);
   }
 
   async function setViewMode(mode: 'team' | 'solo') {
@@ -206,17 +208,17 @@ export function createProductStore() {
   // ── Product initialization ──
 
   /**
-   * 在指定 workDir 下创建 .xingjing/ 骨架目录结构
+   * 在指定 workDir 下初始化完整的 Solo Monorepo 目录结构
+   * 使用 Tauri 原生文件写入（不依赖 OpenCode），自动 mkdir -p 所有父目录
+   * 严格对照 KNOWLEDGE-LIFECYCLE.md §7.1-7.4 + §8.3
    */
-  async function initializeProductDir(workDir: string, productName: string) {
-    const config = {
-      name: productName,
-      version: '1.0.0',
-      createdAt: new Date().toISOString(),
-    };
-    await writeYaml(`${workDir}/.xingjing/config.yaml`, config as unknown as Record<string, unknown>);
-    // Other directories are created implicitly when files are written
-    console.info(`[xingjing] Initialized .xingjing/ in ${workDir}`);
+  async function initializeProductDir(workDir: string, productName: string, appName: string) {
+    const fileList = buildProductFileList(productName, appName);
+    const result = await initProductDir(workDir, fileList);
+    if (!result.ok) {
+      throw new Error(result.error ?? '目录初始化失败');
+    }
+    console.info(`[xingjing] Initialized Solo Monorepo in ${workDir} (${result.count} files)`);
   }
 
   // ── Side effects ──
@@ -224,7 +226,9 @@ export function createProductStore() {
   createEffect(() => {
     const product = activeProduct();
     if (product) {
-      initXingjingClient('http://127.0.0.1:4096', product.workDir);
+      resolveOpenCodeBaseUrl().then(baseUrl => {
+        initXingjingClient(baseUrl, product.workDir);
+      });
     }
   });
 
@@ -248,3 +252,36 @@ export function createProductStore() {
 }
 
 export type ProductStore = ReturnType<typeof createProductStore>;
+
+// ─── Git 平台 Token 存储 ───────────────────────────────────────────────────────────────────────────────
+// 格式: { 'github.com': 'ghp_xxx', 'gitlab.com': 'glpat_xxx', ... }
+const LS_GIT_TOKENS_KEY = 'xingjing:git-tokens';
+
+export function getGitToken(host: string): string | null {
+  try {
+    const map = JSON.parse(localStorage.getItem(LS_GIT_TOKENS_KEY) ?? '{}') as Record<string, string>;
+    return map[host] ?? null;
+  } catch { return null; }
+}
+
+export function setGitToken(host: string, token: string): void {
+  try {
+    const map = JSON.parse(localStorage.getItem(LS_GIT_TOKENS_KEY) ?? '{}') as Record<string, string>;
+    map[host] = token;
+    localStorage.setItem(LS_GIT_TOKENS_KEY, JSON.stringify(map));
+  } catch { /* ignore */ }
+}
+
+export function clearGitToken(host: string): void {
+  try {
+    const map = JSON.parse(localStorage.getItem(LS_GIT_TOKENS_KEY) ?? '{}') as Record<string, string>;
+    delete map[host];
+    localStorage.setItem(LS_GIT_TOKENS_KEY, JSON.stringify(map));
+  } catch { /* ignore */ }
+}
+
+export function getAllGitTokens(): Record<string, string> {
+  try {
+    return JSON.parse(localStorage.getItem(LS_GIT_TOKENS_KEY) ?? '{}') as Record<string, string>;
+  } catch { return {}; }
+}

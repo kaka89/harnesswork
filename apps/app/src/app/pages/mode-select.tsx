@@ -28,7 +28,13 @@ export default function ModeSelectPage() {
 
   const handleSelectXingjingSolid = () => {
     savePreference("xingjing-solid");
-    // 内部路由导航，在 openwork 窗口内嵌入星静 SolidJS 版，而非打开独立页面
+    // 每次进入融合版，强制重置为团队版模式，确保默认打开团队版驾驶舱
+    try {
+      const raw = localStorage.getItem('xingjing:preferences');
+      const prefs = raw ? JSON.parse(raw) : { activeProductId: null };
+      prefs.viewMode = 'team';
+      localStorage.setItem('xingjing:preferences', JSON.stringify(prefs));
+    } catch { /* ignore */ }
     navigate("/xingjing-solid");
   };
 

@@ -16,7 +16,10 @@ export type Role = 'pm' | 'architect' | 'developer' | 'qa' | 'sre' | 'manager';
 export type AppMode = 'team' | 'solo';
 
 export interface LLMConfig {
+  id?: string;
   modelName: string;
+  modelID?: string;    // OpenCode 使用的 model ID
+  providerID?: string; // OpenCode 使用的 provider ID
   apiUrl: string;
   apiKey: string;
   temperature: number;
@@ -49,7 +52,9 @@ interface AppState {
 }
 
 const DEFAULT_LLM_CONFIG: LLMConfig = {
-  modelName: 'gpt-4o',
+  modelName: 'GPT-4o',
+  modelID: 'gpt-4o',
+  providerID: 'openai',
   apiUrl: 'https://api.openai.com/v1',
   apiKey: '',
   temperature: 0.7,
@@ -144,11 +149,9 @@ export const AppStoreProvider: ParentComponent = (props) => {
     }
   });
 
-  // Sync appMode from ProductStore preferences on load
-  createEffect(() => {
-    const mode = productStore.viewMode();
-    setState('appMode', mode as AppMode);
-  });
+  // NOTE: 不再双向同步 productStore.viewMode() → appMode。
+  // 初始值已从 productStore.viewMode() 读取，setAppMode 已双向回写。
+  // 异步 loadFromFile 完成后不应覆盖 MainLayout.onMount 设置的默认团队模式。
 
   // Attempt to load products from file on mount
   onMount(() => {

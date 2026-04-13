@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Modal, Form, Input, Select, message } from 'antd';
 import { useAppStore, Product } from '../../store';
+import { buildProductFileList, buildDirTree, type DirTreeNode } from '../../services/product-dir-structure';
 
 interface Props {
   open: boolean;
@@ -27,6 +28,7 @@ const soloTypeOptions = [
 const CreateProductModal: React.FC<Props> = ({ open, onClose, mode }) => {
   const [form] = Form.useForm();
   const addProduct = useAppStore((s) => s.addProduct);
+  const [dirTree, setDirTree] = useState<DirTreeNode[] | null>(null);
 
   const isTeam = mode === 'team';
   const title = isTeam ? '新建团队产品' : '新建独立产品';
@@ -34,27 +36,48 @@ const CreateProductModal: React.FC<Props> = ({ open, onClose, mode }) => {
   const handleOk = async () => {
     try {
       const values = await form.validateFields();
+      const appSlug = (values.appSlug || '').trim();
+
+      // 生成目录结构
+      let initialized = false;
+      if (appSlug) {
+        try {
+          const files = buildProductFileList(values.name, appSlug);
+          const tree = buildDirTree(files);
+          setDirTree(tree);
+          initialized = true;
+          console.info(`[xingjing] 产品目录结构已初始化，共 ${files.length} 个文件`);
+        } catch (err) {
+          console.warn('[xingjing] 目录结构生成失败，仅创建产品:', err);
+        }
+      }
+
       const product: Product = {
         id: `prod-${Date.now()}`,
         name: values.name,
+        appSlug: appSlug || undefined,
         description: values.description || '',
         type: values.type,
         mode,
         tagline: values.tagline,
         techStack: values.techStack,
         createdAt: new Date().toISOString().slice(0, 10),
+        dirInitialized: initialized,
       };
       addProduct(product);
-      message.success(`产品「${product.name}」已创建`);
+      message.success(`产品「${product.name}」已创建${initialized ? '，目录结构已初始化' : ''}`);
       form.resetFields();
+      setDirTree(null);
       onClose();
-    } catch {
-      // validation failed
+    } catch (err) {
+      // form validation failed — fields with errors will be highlighted inline
+      console.warn('[CreateProductModal] 表单验证失败:', err);
     }
   };
 
   const handleCancel = () => {
     form.resetFields();
+    setDirTree(null);
     onClose();
   };
 
@@ -81,8 +104,8 @@ const CreateProductModal: React.FC<Props> = ({ open, onClose, mode }) => {
           borderRadius: 8,
         },
       }}
-      modalProps={{
-        style: {
+      styles={{
+        body: {
           borderRadius: 12,
         },
       }}
@@ -128,6 +151,21 @@ const CreateProductModal: React.FC<Props> = ({ open, onClose, mode }) => {
             placeholder={isTeam ? '简要描述产品定位和目标用户…' : '一句话描述你的产品想法…'}
             maxLength={200}
             showCount
+            style={{
+              borderRadius: 8,
+              borderColor: 'var(--dls-border)',
+            }}
+          />
+        </Form.Item>
+
+        <Form.Item
+          name="appSlug"
+          label="英文简称（可选）"
+          extra="用于目录结构命名，仅支持英文字母、数字、连字符；不填也可创建产品"
+        >
+          <Input
+            placeholder={isTeam ? '例如：cq-supply-chain' : '例如：writeflow'}
+            maxLength={40}
             style={{
               borderRadius: 8,
               borderColor: 'var(--dls-border)',

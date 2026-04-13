@@ -288,23 +288,27 @@ export async function runDirectAgent(
   },
 ): Promise<void> {
   opts.onStatus?.('thinking');
-  callAgent({
-    title: `xingjing-direct-${agent.id}-${Date.now()}`,
-    directory: opts.workDir,
-    systemPrompt: agent.systemPrompt,
-    userPrompt: prompt,
-    model: opts.model,
-    onText: (accumulated) => {
-      opts.onStatus?.('working');
-      opts.onStream?.(accumulated);
-    },
-    onDone: (fullText) => {
-      opts.onStatus?.('done');
-      opts.onDone?.(fullText);
-    },
-    onError: (err) => {
-      opts.onStatus?.('error');
-      opts.onError?.(err);
-    },
+  await new Promise<void>((resolve) => {
+    callAgent({
+      title: `xingjing-direct-${agent.id}-${Date.now()}`,
+      directory: opts.workDir,
+      systemPrompt: agent.systemPrompt,
+      userPrompt: prompt,
+      model: opts.model,
+      onText: (accumulated) => {
+        opts.onStatus?.('working');
+        opts.onStream?.(accumulated);
+      },
+      onDone: (fullText) => {
+        opts.onStatus?.('done');
+        opts.onDone?.(fullText);
+        resolve();
+      },
+      onError: (err) => {
+        opts.onStatus?.('error');
+        opts.onError?.(err);
+        resolve();
+      },
+    });
   });
 }

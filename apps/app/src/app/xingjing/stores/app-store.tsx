@@ -10,7 +10,8 @@ import {
   loadBacklog, saveBacklog,
   loadProjectSettings, saveProjectSettings,
 } from '../services/file-store';
-import { callAgent, callAgentWithClient, type CallAgentOptions } from '../services/opencode-client';
+import { callAgent as _callAgent, callAgentWithClient, callAgentDirect, type CallAgentOptions } from '../services/opencode-client';
+import { appendAgentLog } from '../services/agent-logger';
 import { currentUser } from '../services/auth-service';
 import type { createClient } from '../../lib/opencode';
 import type { OpenworkSkillItem, OpenworkSkillContent } from '../../lib/openwork-server';
@@ -314,14 +315,124 @@ export const AppStoreProvider: ParentComponent<{
 
     callAgent: (opts: CallAgentOptions) => {
       const workDir = getWorkDir();
-      // 优先使用 OpenWork 的 client（已初始化、复用）
       const owClient = props.openworkCtx?.opencodeClient?.() ?? null;
       const dir = opts.directory ?? workDir;
       const model = opts.model ?? props.openworkCtx?.selectedModel?.() ?? undefined;
-      if (owClient) {
-        return callAgentWithClient(owClient, { ...opts, directory: dir, model });
-      }
-      return callAgent({ ...opts, directory: dir, model });
+      const llmCfg = state.llmConfig;
+      // 当前产品名（用于日志 product 字段）
+      const currentProductName = productStore.activeProduct()?.name ?? '';
+
+      const start = Date.now();
+      const promptLen = (opts.systemPrompt?.length ?? 0) + opts.userPrompt.length;
+      const logBase = {
+        ts: new Date().toISOString(),
+        title: opts.title,
+        product: currentProductName,
+        provider: model?.providerID ?? llmCfg.providerID,
+        model: model?.modelID ?? llmCfg.modelID,
+        promptLen,
+      };
+
+      // 标记是否遇到“session 无法创建”类错误
+      let sessionCreateFailed = false;
+
+      const wrappedOpts: CallAgentOptions = {
+        ...opts,
+        directory: dir,
+        model,
+        onDone: (text: string) => {
+          void appendAgentLog({
+            ...logBase,
+            path: 'opencode',
+            success: true,
+            durationMs: Date.now() - start,
+            responseLen: text.length,
+          });
+          opts.onDone?.(text);
+        },
+        onError: (errMsg: string) => {
+          // 判断是否为 session 创建失败（OpenCode 不可用）
+          if (errMsg.includes('无法创建 AI 会话')) {
+            sessionCreateFailed = true;
+            // 不立即回调，等待降级处理
+            return;
+          }
+          // 其他 OpenCode 错误：记录日志后透传
+          void appendAgentLog({
+            ...logBase,
+            path: 'opencode',
+            success: false,
+            durationMs: Date.now() - start,
+            error: errMsg,
+          });
+          opts.onError?.(errMsg);
+        },
+      };
+
+      const runOpenCode = (): Promise<void> => {
+        if (owClient) {
+          return callAgentWithClient(owClient, wrappedOpts);
+        }
+        return _callAgent({ ...wrappedOpts });
+      };
+
+      return runOpenCode().then(async () => {
+        if (!sessionCreateFailed) return;
+
+        // ── 降级：直连 LLM API ──
+        const fallbackReason = '无法创建 AI 会话';
+        if (!llmCfg.apiKey) {
+          const noKeyErr = 'OpenCode 不可用，且未配置 API Key，无法降级到直连模式';
+          void appendAgentLog({
+            ...logBase,
+            path: 'direct-api',
+            success: false,
+            durationMs: Date.now() - start,
+            fallbackReason,
+            error: noKeyErr,
+          });
+          opts.onError?.(noKeyErr);
+          return;
+        }
+
+        const fallbackStart = Date.now();
+        const fallbackLogBase = { ...logBase, ts: new Date().toISOString(), path: 'direct-api' as const, fallbackReason };
+
+        await callAgentDirect(
+          {
+            ...opts,
+            directory: dir,
+            model,
+            onDone: (text: string) => {
+              void appendAgentLog({
+                ...fallbackLogBase,
+                success: true,
+                durationMs: Date.now() - fallbackStart,
+                responseLen: text.length,
+              });
+              opts.onDone?.(text);
+            },
+            onError: (errMsg: string) => {
+              void appendAgentLog({
+                ...fallbackLogBase,
+                success: false,
+                durationMs: Date.now() - fallbackStart,
+                error: errMsg,
+              });
+              opts.onError?.(errMsg);
+            },
+            onText: opts.onText,
+          },
+          {
+            apiUrl: llmCfg.apiUrl,
+            apiKey: llmCfg.apiKey,
+            modelID: model?.modelID ?? llmCfg.modelID,
+            providerID: model?.providerID ?? llmCfg.providerID,
+            maxTokens: llmCfg.maxTokens,
+            temperature: llmCfg.temperature,
+          },
+        );
+      });
     },
 
     // ── OpenWork Skill/Config API ──

@@ -315,6 +315,144 @@ export function createFileResource<T>(
   return value as () => T;
 }
 
+// ─── 多平台 Skill 发现 ──────────────────────────────────────────────────────
+
+/**
+ * Skill 来源平台标识
+ */
+export type SkillPlatform = 'openwork' | 'opencode' | 'agents' | 'claude' | 'kiro';
+
+/**
+ * 统一 Skill 条目（聚合自多个平台目录）
+ */
+export interface XingjingSkillItem {
+  id: string;           // 唯一标识，格式：<platform>:<name>
+  name: string;         // 显示名称
+  description: string;
+  content?: string;     // 完整内容（懒加载）
+  platform: SkillPlatform;
+  path: string;         // 工作区中的相对路径
+  editable: boolean;    // 仅 openwork 来源可写
+}
+
+/**
+ * 统一 Agent 条目
+ */
+export interface XingjingAgentItem {
+  id: string;
+  name: string;
+  description: string;
+  skills: string[];     // skill id 列表
+  platform: SkillPlatform;
+  editable: boolean;
+}
+
+/** 简单解析 Markdown YAML frontmatter */
+function parseFrontmatter(content: string): Record<string, unknown> {
+  const match = content.match(/^---\s*\n([\s\S]*?)\n---/);
+  if (!match) return {};
+  const result: Record<string, unknown> = {};
+  for (const line of match[1].split('\n')) {
+    const idx = line.indexOf(':');
+    if (idx < 0) continue;
+    const key = line.slice(0, idx).trim();
+    const raw = line.slice(idx + 1).trim();
+    // 简单 YAML 数组：- item
+    if (raw === '') {
+      // multiline — skip for simplicity
+      continue;
+    }
+    result[key] = raw.replace(/^["']|["']$/g, '');
+  }
+  // 处理 skills 数组（取紧跟在 skills: 后面的 - 行）
+  const skillsMatch = content.match(/^skills:\s*\n((?:\s*-\s*.+\n?)*)/m);
+  if (skillsMatch) {
+    result['skills'] = skillsMatch[1]
+      .split('\n')
+      .map(l => l.replace(/^\s*-\s*/, '').trim())
+      .filter(Boolean);
+  }
+  return result;
+}
+
+// 各平台 Skill 目录配置
+const SKILL_DIRS: { path: string; platform: SkillPlatform; isSubdirBased: boolean }[] = [
+  { path: '.opencode/skills', platform: 'opencode', isSubdirBased: true },
+  { path: '.agents/skills',   platform: 'agents',   isSubdirBased: true },
+  { path: '.claude/skills',   platform: 'claude',   isSubdirBased: false },
+  { path: '.kiro/skills',     platform: 'kiro',     isSubdirBased: false },
+];
+
+const AGENT_DIRS: { path: string; platform: SkillPlatform }[] = [
+  { path: '.opencode/agent', platform: 'opencode' },
+];
+
+/**
+ * 扫描工作区所有平台的 Skill / Agent 目录，返回聚合结果。
+ * 每个条目 editable=false（仅 openwork 来源通过 API 可写）。
+ */
+export async function discoverAllSkills(workDir: string): Promise<{
+  skills: XingjingSkillItem[];
+  agents: XingjingAgentItem[];
+}> {
+  const skills: XingjingSkillItem[] = [];
+  const agents: XingjingAgentItem[] = [];
+
+  for (const dir of SKILL_DIRS) {
+    const entries = await fileList(dir.path, workDir);
+    for (const entry of entries) {
+      if (dir.isSubdirBased && entry.type === 'directory') {
+        // 子目录结构：读取目录内的 SKILL.md
+        const content = await fileRead(`${dir.path}/${entry.name}/SKILL.md`, workDir);
+        if (content) {
+          const meta = parseFrontmatter(content);
+          skills.push({
+            id: `${dir.platform}:${entry.name}`,
+            name: (meta['name'] as string) ?? entry.name,
+            description: (meta['description'] as string) ?? '',
+            content,
+            platform: dir.platform,
+            path: `${dir.path}/${entry.name}/SKILL.md`,
+            editable: false,
+          });
+        }
+      } else if (!dir.isSubdirBased && entry.type === 'file' && entry.name.endsWith('.md')) {
+        const content = await fileRead(`${dir.path}/${entry.name}`, workDir);
+        const meta = parseFrontmatter(content ?? '');
+        skills.push({
+          id: `${dir.platform}:${entry.name.replace('.md', '')}`,
+          name: (meta['name'] as string) ?? entry.name.replace('.md', ''),
+          description: (meta['description'] as string) ?? '',
+          content: content ?? '',
+          platform: dir.platform,
+          path: `${dir.path}/${entry.name}`,
+          editable: false,
+        });
+      }
+    }
+  }
+
+  for (const dir of AGENT_DIRS) {
+    const entries = await fileList(dir.path, workDir);
+    for (const entry of entries) {
+      if (entry.type === 'file' && entry.name.endsWith('.md')) {
+        const content = await fileRead(`${dir.path}/${entry.name}`, workDir);
+        const meta = parseFrontmatter(content ?? '');
+        agents.push({
+          id: `${dir.platform}:${entry.name.replace('.md', '')}`,
+          name: (meta['name'] as string) ?? entry.name.replace('.md', ''),
+          description: (meta['description'] as string) ?? '',
+          skills: (meta['skills'] as string[]) ?? [],
+          platform: dir.platform,
+          editable: false,
+        });
+      }
+    }
+  }
+
+  return { skills, agents };
+}
+
 // ─── 高阶 Agent 调用 ──────────────────────────────────────────────────────────
 
 /**
@@ -341,6 +479,94 @@ export interface CallAgentOptions {
   onDone?: (fullText: string) => void;
   /** 错误回调 */
   onError?: (errMsg: string) => void;
+}
+
+/**
+ * 使用外部注入的 client（来自 OpenWork）调用 AI Agent。
+ * 与 callAgent 逻辑相同，但使用传入的 client 而非内部单例。
+ */
+export async function callAgentWithClient(
+  client: ReturnType<typeof createClient>,
+  opts: CallAgentOptions,
+): Promise<void> {
+  const baseUrl = _baseUrl; // SSE 仍使用当前已知地址
+  let sessionId: string | null = null;
+  try {
+    const result = await client.session.create({
+      body: { ...(opts.title ? { title: opts.title } : {}) },
+      ...(opts.directory ? { directory: opts.directory } : {}),
+    } as Parameters<typeof client.session.create>[0]);
+    sessionId = (result.data as { id: string } | undefined)?.id ?? null;
+  } catch { /* fall through */ }
+
+  if (!sessionId) {
+    opts.onError?.('无法创建 AI 会话（外部 client）');
+    return;
+  }
+
+  let accumulated = '';
+  let done = false;
+  let eventSource: EventSource | null = null;
+  try {
+    eventSource = new EventSource(`${baseUrl}/event`);
+  } catch {
+    opts.onError?.('无法连接 SSE 事件流（外部 client）');
+    return;
+  }
+
+  const cleanup = () => {
+    if (!done) {
+      done = true;
+      try { eventSource?.close(); } catch { /* ignore */ }
+    }
+  };
+
+  eventSource.onmessage = (e: MessageEvent) => {
+    if (done) return;
+    try {
+      const data = JSON.parse(e.data as string) as Record<string, unknown>;
+      if (String(data.sessionID ?? '') !== sessionId) return;
+      if (data.type === 'message.part') {
+        const part = data.part as Record<string, unknown> | undefined;
+        if (part?.type === 'text') {
+          const text = String(part.text ?? part.content ?? '');
+          accumulated += text;
+          opts.onText?.(accumulated);
+        }
+      } else if (data.type === 'session.completed') {
+        cleanup();
+        opts.onDone?.(accumulated);
+      } else if (data.type === 'session.error') {
+        cleanup();
+        opts.onError?.(String(data.message ?? '未知错误'));
+      }
+    } catch { /* ignore */ }
+  };
+
+  eventSource.onerror = () => {
+    if (!done) {
+      cleanup();
+      if (accumulated) opts.onDone?.(accumulated);
+      else opts.onError?.('SSE 连接中断（外部 client）');
+    }
+  };
+
+  const fullPrompt = opts.systemPrompt
+    ? `${opts.systemPrompt}\n\n---\n\n${opts.userPrompt}`
+    : opts.userPrompt;
+
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (client.session as any).promptAsync({
+      sessionID: sessionId,
+      directory: opts.directory ?? (_directory || undefined),
+      ...(opts.model ? { model: opts.model } : {}),
+      parts: [{ type: 'text', text: fullPrompt }],
+    });
+  } catch {
+    cleanup();
+    opts.onError?.('发送提示词失败（外部 client）');
+  }
 }
 
 /**

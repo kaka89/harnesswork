@@ -86,6 +86,36 @@ const LLMTab: Component = () => {
   const [testing, setTesting] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [testResult, setTestResult] = createSignal('');
+  // OpenWork 同步状态：null=未检查, true=已同步, false=本地保存
+  const [owSyncStatus, setOwSyncStatus] = createSignal<null | boolean>(null);
+
+  // onMount：优先从 OpenWork 读取当前模型配置
+  onMount(async () => {
+    try {
+      const owConfig = await actions.readOpencodeConfig();
+      if (owConfig && typeof owConfig === 'object') {
+        const c = owConfig as Record<string, unknown>;
+        const model = c['model'] as Record<string, string> | undefined;
+        if (model?.provider || model?.id) {
+          // 找到匹配的 modelOptions
+          const matched = modelOptions.find(
+            o => o.providerID === model?.provider && (o.modelID === model?.id || !model?.id)
+          );
+          if (matched) {
+            setConfig(prev => ({
+              ...prev,
+              providerID: matched.providerID,
+              modelID: matched.modelID,
+              modelName: matched.label,
+              apiUrl: matched.defaultApiUrl || prev.apiUrl,
+            }));
+          }
+        }
+      }
+    } catch {
+      // 降级：保持本地 settings.yaml 的配置（已在 state.llmConfig）
+    }
+  });
 
   // 当前选中模型的完整配置项
   const currentModelOpt = (): ModelOption | undefined =>
@@ -377,6 +407,7 @@ const LLMTab: Component = () => {
   const handleSave = async () => {
     setSaving(true);
     setTestResult('');
+    setOwSyncStatus(null);
     try {
       const cfg = config();
 
@@ -389,17 +420,30 @@ const LLMTab: Component = () => {
         openCodeSynced = await setProviderAuth(cfg.providerID, cfg.apiKey);
       }
 
-      // 3. 持久化到 .xingjing/settings.yaml
+      // 3. 写入 OpenWork 工作区配置文件（.qoder/opencode.json 等）
+      const owConfigContent = JSON.stringify({
+        model: {
+          provider: cfg.providerID,
+          id: cfg.modelID,
+        },
+        ...(cfg.apiKey && cfg.providerID ? { providers: { [cfg.providerID as string]: { apiKey: cfg.apiKey } } } : {}),
+      }, null, 2);
+      const owWritten = await actions.writeOpencodeConfig(owConfigContent);
+      setOwSyncStatus(owWritten);
+
+      // 4. 持久化到 .xingjing/settings.yaml（兜底）
       const workDir = productStore.activeProduct()?.workDir;
       let persisted = false;
       if (workDir) {
         persisted = await saveProjectSettings(workDir, { llm: cfg });
       }
 
-      if (openCodeSynced) {
-        setTestResult(`✅ 配置已保存，${cfg.modelName} API Key 已同步到 OpenCode${persisted ? ' 并持久化' : ''}`);
+      if (owWritten) {
+        setTestResult(`✅ 配置已同步至 OpenWork 工作区${openCodeSynced ? '，API Key 已注入 OpenCode' : ''}${persisted ? '，并本地持久化' : ''}`);
+      } else if (openCodeSynced) {
+        setTestResult(`✓ 配置已保存，${cfg.modelName} API Key 已同步到 OpenCode${persisted ? ' 并持久化' : ''}（OpenWork 未连接）`);
       } else if (cfg.providerID !== 'custom') {
-        setTestResult(`✓ 配置已保存${persisted ? '并持久化' : ''}（OpenCode 未连接，使用直连模式）`);
+        setTestResult(`✓ 配置已保存${persisted ? '并持久化' : ''}（OpenCode / OpenWork 均未连接，使用直连模式）`);
       } else {
         setTestResult(`✓ 自定义配置已保存${persisted ? '并持久化' : ''}`);
       }
@@ -542,6 +586,19 @@ const LLMTab: Component = () => {
           >
             {saving() ? '保存中...' : <><Save size={13} class="inline mr-1" />保存配置</>}
           </button>
+          {/* OpenWork 同步状态徽章 */}
+          <Show when={owSyncStatus() !== null}>
+            <span
+              class="text-xs px-2 py-1 rounded-full"
+              style={{
+                background: owSyncStatus() ? themeColors.successBg : themeColors.bgSubtle,
+                color: owSyncStatus() ? chartColors.success : themeColors.textMuted,
+                border: `1px solid ${owSyncStatus() ? themeColors.successBorder ?? themeColors.border : themeColors.border}`,
+              }}
+            >
+              {owSyncStatus() ? '✓ 已同步至 OpenWork 工作区' : '⚠ OpenWork 未连接，仅本地保存'}
+            </span>
+          </Show>
         </div>
         <Show when={testResult()}>
           <div

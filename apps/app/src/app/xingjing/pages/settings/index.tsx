@@ -13,6 +13,7 @@ import {
 import { getAllGitTokens, setGitToken, clearGitToken, type XingjingProduct } from '../../services/product-store';
 import { deleteProductDir } from '../../../lib/tauri';
 import { isTauriRuntime } from '../../../utils';
+import AddDomainAppModal from '../../components/product/add-domain-app-modal';
 
 const inputStyle = () => ({
   border: `1px solid ${themeColors.border}`,
@@ -1435,6 +1436,16 @@ const ProductListTab: Component = () => {
   // 删除中状态
   const [deleteLoading, setDeleteLoading] = createSignal(false);
   const [deleteError, setDeleteError] = createSignal('');
+  // 新增 Domain/App 弹窗
+  const [addModalOpen, setAddModalOpen] = createSignal(false);
+  const [addModalTarget, setAddModalTarget] = createSignal<XingjingProduct | null>(null);
+  const [addModalMode, setAddModalMode] = createSignal<'domain' | 'app'>('domain');
+
+  const openAddModal = (product: XingjingProduct, mode: 'domain' | 'app') => {
+    setAddModalTarget(product);
+    setAddModalMode(mode);
+    setAddModalOpen(true);
+  };
 
   const toggleExpand = (id: string) => {
     setExpandedId(prev => (prev === id ? null : id));
@@ -1526,7 +1537,18 @@ const ProductListTab: Component = () => {
                   <Package size={14} style={{ color: chartColors.primary }} />
                 </div>
                 <div class="flex-1 min-w-0">
-                  <div class="font-semibold text-sm truncate" style={{ color: themeColors.text }}>{product.name}</div>
+                  <div class="flex items-center gap-2">
+                    <div class="font-semibold text-sm truncate" style={{ color: themeColors.text }}>{product.name}</div>
+                    <span
+                      class="text-xs px-1.5 py-0.5 rounded font-medium flex-shrink-0"
+                      style={{
+                        background: product.productType === 'team' ? '#7c3aed22' : '#0284c722',
+                        color: product.productType === 'team' ? '#7c3aed' : '#0284c7',
+                      }}
+                    >
+                      {product.productType === 'team' ? '团队版' : '独立版'}
+                    </span>
+                  </div>
                   <div class="text-xs truncate mt-0.5" style={{ color: themeColors.textMuted }}>
                     <FolderOpen size={10} class="inline mr-1" />{product.workDir}
                   </div>
@@ -1576,13 +1598,17 @@ const ProductListTab: Component = () => {
                       </div>
                     </div>
                     <div>
-                      <div class="text-xs font-medium mb-1" style={{ color: themeColors.textMuted }}>工作目录</div>
+                      <div class="text-xs font-medium mb-1" style={{ color: themeColors.textMuted }}>
+                        {product.productType === 'team' ? '父工作目录' : '工作目录'}
+                      </div>
                       <div
                         class="text-xs font-mono px-2 py-1.5 rounded"
                         style={{ background: themeColors.bgSubtle, color: themeColors.text, 'word-break': 'break-all' }}
                       >{product.workDir}</div>
                     </div>
-                    <Show when={product.gitUrl}>
+
+                    {/* 独立版：展示 Git 地址 */}
+                    <Show when={product.productType !== 'team' && product.gitUrl}>
                       <div>
                         <div class="text-xs font-medium mb-1" style={{ color: themeColors.textMuted }}>Git 仓库</div>
                         <div
@@ -1591,6 +1617,96 @@ const ProductListTab: Component = () => {
                         >{product.gitUrl}</div>
                       </div>
                     </Show>
+
+                    {/* 团队版：展示多仓库结构 */}
+                    <Show when={product.productType === 'team' && product.teamStructure}>
+                      {/* 产品线 */}
+                      <div>
+                        <div class="text-xs font-medium mb-1" style={{ color: themeColors.textMuted }}>产品线仓库</div>
+                        <div
+                          class="text-xs font-mono px-2 py-1.5 rounded"
+                          style={{ background: themeColors.bgSubtle, color: themeColors.text, 'word-break': 'break-all' }}
+                        >{product.teamStructure!.plDir}</div>
+                        <Show when={product.teamStructure!.plGitUrl}>
+                          <div class="text-xs font-mono mt-1 px-2 py-1 rounded" style={{ background: themeColors.bgSubtle, color: themeColors.textMuted }}>
+                            → {product.teamStructure!.plGitUrl}
+                          </div>
+                        </Show>
+                      </div>
+
+                      {/* Domain 列表 */}
+                      <div>
+                        <div class="flex items-center justify-between mb-1">
+                          <div class="text-xs font-medium" style={{ color: themeColors.textMuted }}>
+                            Domains（{product.teamStructure!.domains.length}）
+                          </div>
+                          <button
+                            type="button"
+                            class="text-xs px-2 py-0.5 rounded transition-colors"
+                            style={{
+                              background: '#7c3aed22', color: '#7c3aed',
+                              border: '1px solid #7c3aed44',
+                            }}
+                            onClick={() => openAddModal(product, 'domain')}
+                          >
+                            + 新增 Domain
+                          </button>
+                        </div>
+                        <div class="space-y-1">
+                          <For each={product.teamStructure!.domains}>
+                            {(d) => (
+                              <div
+                                class="text-xs rounded px-2 py-1.5"
+                                style={{ background: themeColors.bgSubtle, border: `1px solid ${themeColors.border}` }}
+                              >
+                                <div class="font-medium" style={{ color: themeColors.text }}>{d.name}</div>
+                                <div class="font-mono mt-0.5" style={{ color: themeColors.textMuted }}>{d.dir}</div>
+                                <Show when={d.gitUrl}>
+                                  <div class="mt-0.5" style={{ color: themeColors.textMuted }}>→ {d.gitUrl}</div>
+                                </Show>
+                              </div>
+                            )}
+                          </For>
+                        </div>
+                      </div>
+
+                      {/* App 列表 */}
+                      <div>
+                        <div class="flex items-center justify-between mb-1">
+                          <div class="text-xs font-medium" style={{ color: themeColors.textMuted }}>
+                            Apps（{product.teamStructure!.apps.length}）
+                          </div>
+                          <button
+                            type="button"
+                            class="text-xs px-2 py-0.5 rounded transition-colors"
+                            style={{
+                              background: '#0284c722', color: '#0284c7',
+                              border: '1px solid #0284c744',
+                            }}
+                            onClick={() => openAddModal(product, 'app')}
+                          >
+                            + 新增 App
+                          </button>
+                        </div>
+                        <div class="space-y-1">
+                          <For each={product.teamStructure!.apps}>
+                            {(a) => (
+                              <div
+                                class="text-xs rounded px-2 py-1.5"
+                                style={{ background: themeColors.bgSubtle, border: `1px solid ${themeColors.border}` }}
+                              >
+                                <div class="font-medium" style={{ color: themeColors.text }}>{a.name}</div>
+                                <div class="font-mono mt-0.5" style={{ color: themeColors.textMuted }}>{a.dir}</div>
+                                <Show when={a.gitUrl}>
+                                  <div class="mt-0.5" style={{ color: themeColors.textMuted }}>→ {a.gitUrl}</div>
+                                </Show>
+                              </div>
+                            )}
+                          </For>
+                        </div>
+                      </div>
+                    </Show>
+
                     <Show when={product.description}>
                       <div>
                         <div class="text-xs font-medium mb-1" style={{ color: themeColors.textMuted }}>描述</div>
@@ -1701,6 +1817,16 @@ const ProductListTab: Component = () => {
             </div>
           </div>
         </div>
+      </Show>
+
+      {/* 新增 Domain/App 弹窗 */}
+      <Show when={addModalOpen() && addModalTarget() !== null}>
+        <AddDomainAppModal
+          open={addModalOpen()}
+          onClose={() => { setAddModalOpen(false); setAddModalTarget(null); }}
+          product={addModalTarget()!}
+          mode={addModalMode()}
+        />
       </Show>
     </div>
   );

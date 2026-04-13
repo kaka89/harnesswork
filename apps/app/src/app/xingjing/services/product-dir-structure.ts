@@ -271,6 +271,177 @@ function buildMonorepoRoot(productName: string): ProductFileEntry[] {
   ];
 }
 
+// ─── 团队版入口（各子仓库独立路径） ───────────────────────────────────────
+
+/**
+ * 团队版产品线仓库根文件列表（路径相对于 {workDir}/{plSlug}/）
+ * 内容与 Solo Monorepo 中的产品线层一致，但相对路径从仓库根开始
+ */
+export function buildTeamProductLineFiles(productName: string): ProductFileEntry[] {
+  return [
+    // docs/
+    { path: 'docs/overview.md', content: overviewMd(`${productName} 产品线`, '产品线概述：背景、愿景、管辖领域、核心目标。') },
+    { path: 'docs/VIEWS.yaml', content: emptyYaml() },
+    { path: 'docs/features/.gitkeep', content: EMPTY },
+    { path: 'docs/journeys/.gitkeep', content: EMPTY },
+    { path: 'docs/help-center/guides/.gitkeep', content: EMPTY },
+    { path: 'docs/help-center/faq/.gitkeep', content: EMPTY },
+    { path: 'docs/help-center/troubleshooting/.gitkeep', content: EMPTY },
+    { path: 'docs/help-center/release-notes/.gitkeep', content: EMPTY },
+    { path: 'docs/help-center/_index.yaml', content: INDEX_YAML },
+    { path: 'docs/delivery/roadmap.md', content: roadmapMd(`${productName} 产品线交付`) },
+    { path: 'docs/delivery/breakdown/strategy-status.yaml', content: INDEX_YAML },
+    // knowledge/
+    { path: 'knowledge/GLOSSARY.md', content: knowledgeMd('跨域统一语言词汇表') },
+    { path: 'knowledge/context-map.md', content: knowledgeMd('领域间边界地图') },
+    { path: 'knowledge/data-model.md', content: knowledgeMd('跨域共享数据模型') },
+    { path: 'knowledge/integration-patterns.md', content: knowledgeMd('跨域集成规范') },
+    { path: 'knowledge/shared-events.yaml', content: emptyYaml() },
+    { path: 'knowledge/scenarios/.gitkeep', content: EMPTY },
+    { path: 'knowledge/adr/.gitkeep', content: EMPTY },
+    // strategy/
+    { path: 'strategy/roadmap.md', content: roadmapMd(`${productName} 战略`) },
+    { path: 'strategy/prd/_index.yaml', content: INDEX_YAML },
+    { path: 'strategy/gap-analysis/.gitkeep', content: EMPTY },
+    { path: 'strategy/research/_index.yaml', content: INDEX_YAML },
+    { path: 'strategy/research/archive/.gitkeep', content: EMPTY },
+    // registry/
+    { path: 'registry/domains.yaml', content: emptyYaml() },
+    { path: 'registry/domain-status.yaml', content: emptyYaml() },
+    { path: 'registry/strategy-status.yaml', content: emptyYaml() },
+    // environments/
+    { path: 'environments/dev/.gitkeep', content: EMPTY },
+    { path: 'environments/staging/.gitkeep', content: EMPTY },
+    { path: 'environments/prod/.gitkeep', content: EMPTY },
+    // governance/
+    { path: 'governance/approval-rules.yaml', content: emptyYaml() },
+    { path: 'governance/rbac.yaml', content: emptyYaml() },
+    { path: 'governance/resource-allocation.yaml', content: emptyYaml() },
+    // .github/workflows/
+    { path: '.github/workflows/ci.yaml', content: emptyYaml() },
+    { path: '.github/workflows/cross-domain-test.yaml', content: emptyYaml() },
+    { path: '.github/workflows/product-release.yaml', content: emptyYaml() },
+    { path: '.github/workflows/product-rollback.yaml', content: emptyYaml() },
+    // root files
+    { path: 'OWNERS', content: ownersFile(`${productName} Product Line`) },
+    { path: 'README.md', content: readmeFile(`${productName} 产品线`, '产品线入门指南。') },
+  ];
+}
+
+/**
+ * 团队版 Domain 仓库根文件列表（路径相对于 {workDir}/{domainSlug}/）
+ */
+export function buildTeamDomainFiles(domainName: string, productName: string): ProductFileEntry[] {
+  return [
+    // docs/
+    { path: 'docs/overview.md', content: overviewMd(`${productName} ${domainName}`, '领域概述：边界定义、管辖应用清单、上下游集成关系。') },
+    { path: 'docs/VIEWS.yaml', content: emptyYaml() },
+    { path: 'docs/features/.gitkeep', content: EMPTY },
+    { path: 'docs/delivery/breakdown/app-status.yaml', content: INDEX_YAML },
+    { path: 'docs/journeys/.gitkeep', content: EMPTY },
+    { path: 'docs/strategy/roadmap.md', content: roadmapMd(`${productName} ${domainName}`) },
+    { path: 'docs/strategy/okr.md', content: knowledgeMd('领域 OKR') },
+    { path: 'docs/qa/test-cases/_index.yaml', content: INDEX_YAML },
+    { path: 'docs/qa/test-plans/.gitkeep', content: EMPTY },
+    { path: 'docs/qa/reports/_index.yaml', content: INDEX_YAML },
+    // knowledge/
+    { path: 'knowledge/GLOSSARY.md', content: knowledgeMd('域内统一语言词汇表') },
+    { path: 'knowledge/context-map.md', content: knowledgeMd('域内上下文地图') },
+    { path: 'knowledge/domain-data-model.md', content: knowledgeMd('域内共享数据模型') },
+    { path: 'knowledge/integration-patterns.md', content: knowledgeMd('域内集成规范') },
+    { path: 'knowledge/shared-events.yaml', content: emptyYaml() },
+    { path: 'knowledge/scenarios/.gitkeep', content: EMPTY },
+    // registry/
+    { path: 'registry/apps.yaml', content: emptyYaml() },
+    { path: 'registry/sdd-status.yaml', content: emptyYaml() },
+    { path: 'registry/delivery-status.yaml', content: emptyYaml() },
+    // environments/
+    { path: 'environments/dev/env.yaml', content: emptyYaml() },
+    { path: 'environments/dev/overrides.yaml', content: emptyYaml() },
+    { path: 'environments/staging/.gitkeep', content: EMPTY },
+    { path: 'environments/prod/.gitkeep', content: EMPTY },
+    // .github/workflows/
+    { path: '.github/workflows/ci.yaml', content: emptyYaml() },
+    { path: '.github/workflows/domain-release.yaml', content: emptyYaml() },
+    { path: '.github/workflows/domain-rollback.yaml', content: emptyYaml() },
+    { path: '.github/workflows/integration-test.yaml', content: emptyYaml() },
+    // root files
+    { path: 'OWNERS', content: ownersFile(`${productName} ${domainName} Domain`) },
+    { path: 'README.md', content: readmeFile(`${productName} ${domainName}`, '领域入门指南。') },
+  ];
+}
+
+/**
+ * 团队版 App 仓库根文件列表（路径相对于 {workDir}/apps/{appSlug}/）
+ */
+export function buildTeamAppFiles(appName: string, productName: string): ProductFileEntry[] {
+  return [
+    // docs/
+    { path: 'docs/overview.md', content: overviewMd(appName, '应用概述：功能边界、架构简图、外部依赖。') },
+    { path: 'docs/VIEWS.yaml', content: emptyYaml() },
+    { path: 'docs/journeys/.gitkeep', content: EMPTY },
+    { path: 'docs/product/prd/_index.yaml', content: INDEX_YAML },
+    { path: 'docs/product/architecture/_index.yaml', content: INDEX_YAML },
+    { path: 'docs/product/contracts/openapi/.gitkeep', content: EMPTY },
+    { path: 'docs/product/contracts/_index.yaml', content: INDEX_YAML },
+    { path: 'docs/delivery/roadmap.md', content: roadmapMd(`${appName} 应用`) },
+    { path: 'docs/delivery/risk-register.md', content: knowledgeMd('风险登记簿') },
+    { path: 'docs/delivery/plan/_index.yaml', content: INDEX_YAML },
+    { path: 'docs/delivery/task/_index.yaml', content: INDEX_YAML },
+    { path: 'docs/delivery/releases/_index.yaml', content: INDEX_YAML },
+    { path: 'docs/delivery/archive/.gitkeep', content: EMPTY },
+    { path: 'docs/features/.gitkeep', content: EMPTY },
+    { path: 'docs/ops/runbook/deployment.md', content: knowledgeMd('部署运维手册') },
+    { path: 'docs/ops/runbook/incident-response.md', content: knowledgeMd('故障响应手册') },
+    { path: 'docs/ops/runbook/monitoring.md', content: knowledgeMd('监控手册') },
+    // helm/
+    { path: 'helm/Chart.yaml', content: `apiVersion: v2\nname: ${appName}\nversion: 0.1.0\nappVersion: "0.1.0"\n` },
+    { path: 'helm/values/dev.yaml', content: emptyYaml() },
+    { path: 'helm/values/staging.yaml', content: emptyYaml() },
+    { path: 'helm/values/prod.yaml', content: emptyYaml() },
+    // .github/workflows/
+    { path: '.github/workflows/ci.yaml', content: emptyYaml() },
+    { path: '.github/workflows/cd.yaml', content: emptyYaml() },
+    // root files
+    { path: 'orchestrator.yaml', content: `# ${appName} Pipeline Orchestrator\nmode: supervised\n` },
+    { path: '.githooks/commit-msg', content: '#!/bin/sh\n# Enforce TASK reference in commit message\n' },
+    { path: '.pre-commit-config.yaml', content: emptyYaml() },
+    { path: 'docker-compose.yaml', content: `# ${appName} local dev environment\nversion: "3.8"\nservices: {}\n` },
+    { path: '.env.example', content: `# ${appName} environment variables\n` },
+    { path: 'Makefile', content: `# ${appName} Makefile\n.PHONY: build test deploy\n\nbuild:\n\t@echo "build"\n\ntest:\n\t@echo "test"\n\ndeploy:\n\t@echo "deploy"\n` },
+    { path: 'README.md', content: readmeFile(appName, `${productName} ${appName} 应用`) },
+  ];
+}
+
+/**
+ * 团队版父工作目录中的 .xingjing/config.yaml
+ * 记录产品结构信息，作为多仓库的元数据入口
+ */
+export function buildTeamRootConfig(
+  productName: string,
+  plSlug: string,
+  domainSlugs: string[],
+  appSlugs: string[],
+): ProductFileEntry[] {
+  return [
+    {
+      path: '.xingjing/config.yaml',
+      content: [
+        `name: ${productName}`,
+        `version: "1.0.0"`,
+        `mode: team`,
+        `created-at: ${new Date().toISOString()}`,
+        `product-line: ${plSlug}`,
+        `domains:`,
+        ...domainSlugs.map(d => `  - ${d}`),
+        `apps:`,
+        ...appSlugs.map(a => `  - ${a}`),
+        '',
+      ].join('\n'),
+    },
+  ];
+}
+
 // ─── 主入口 ───────────────────────────────────────────────────────────────
 
 /**

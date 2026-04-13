@@ -1,6 +1,8 @@
 /**
  * 新建产品弹窗
- * 用户选择本地工作目录、填写产品名称，可选填 Git 地址（支持私有仓库 Token 认证与检测）
+ * 支持两种产品类型：
+ *   - 团队版（team）：产品线 / Domain / App 各自独立 git 仓库，位于父工作目录下
+ *   - 独立版（solo）：Solo Monorepo，单一工作目录
  */
 import { Component, createSignal, Show } from 'solid-js';
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
@@ -18,11 +20,11 @@ interface Props {
 /** Git 地址有效性状态 */
 type GitCheckStatus = 'idle' | 'checking' | 'valid' | 'invalid' | 'warn';
 
-/**
- * 简单校验 git 地址格式
- * SSH:   git@host:user/repo.git
- * HTTPS: https://host/user/repo.git
- */
+/** 产品类型 */
+type ProductType = 'team' | 'solo';
+
+// ─── Git 检测工具函数（复用） ───────────────────────────────────────────────
+
 function isGitFormatValid(url: string): boolean {
   if (!url.trim()) return false;
   const sshRe = /^git@[\w.-]+:[\w./-]+(\.git)?$/;
@@ -30,9 +32,6 @@ function isGitFormatValid(url: string): boolean {
   return sshRe.test(url.trim()) || httpsRe.test(url.trim());
 }
 
-/**
- * 解析 HTTPS git URL 的域名，返回 null 表示是 SSH/非 HTTP 地址
- */
 function parseGitHost(url: string): string | null {
   const t = url.trim();
   if (t.startsWith('git@') || t.startsWith('ssh://')) return null;
@@ -40,10 +39,6 @@ function parseGitHost(url: string): string | null {
   catch { return null; }
 }
 
-/**
- * 通过 GitHub REST API 检测仓库是否存在（有 CORS 头，浏览器可用）
- * 带 token 时可识别公开 + 私有仓库；无 token 时私有仓库返回 404
- */
 async function checkViaGitHubApi(
   pathname: string,
   token?: string,
@@ -69,7 +64,7 @@ async function checkViaGitHubApi(
         : { valid: false, reason: '远端仓库不存在（私有仓库请填写 Token）' };
     }
     if (res.status === 401) return { valid: false, reason: 'Token 无效或权限不足，请检查 Personal Access Token' };
-    if (res.status === 403) return { valid: true, warn: true }; // rate limited
+    if (res.status === 403) return { valid: true, warn: true };
     return { valid: false, reason: `GitHub API 返回状态码 ${res.status}` };
   } catch (err: any) {
     if (err?.name === 'AbortError') return { valid: false, reason: '检测超时，请确认网络连接' };
@@ -77,7 +72,6 @@ async function checkViaGitHubApi(
   }
 }
 
-/** Git HTTP Smart Protocol 检测（Tauri 原生 HTTP，绕过 CORS） */
 async function checkViaSmartHttp(
   url: string,
   fetchImpl: typeof fetch,
@@ -101,11 +95,6 @@ async function checkViaSmartHttp(
   }
 }
 
-/**
- * 入口：按地址类型与平台选择最优检测策略
- * @param url   Git 地址
- * @param token 可选 HTTPS 平台 Access Token
- */
 async function checkGitUrl(
   url: string,
   token?: string,
@@ -114,56 +103,230 @@ async function checkGitUrl(
   if (!isGitFormatValid(trimmed)) {
     return { valid: false, reason: 'Git 地址格式不正确' };
   }
-
-  // SSH 地址： Tauri 环境用系统 git ls-remote（依赖本地 SSH Key）
   if (trimmed.startsWith('git@') || trimmed.startsWith('ssh://')) {
     if (isTauriRuntime()) {
       const { reachable, error } = await runGitLsRemote(trimmed);
       return reachable ? { valid: true } : { valid: false, reason: error };
     }
-    // 浏览器侧仅格式校验
     return { valid: true, warn: true, reason: 'SSH 格式正确（浏览器侧无法验证连通性，请在桌面端检测）' };
   }
-
-  // HTTPS 地址——解析平台
   let urlObj: URL;
   try { urlObj = new URL(trimmed); }
   catch { return { valid: false, reason: 'URL 解析失败，请检查地址格式' }; }
   const host = urlObj.hostname.toLowerCase();
-
-  // GitHub：始终用 REST API（不受 CORS/Smart-HTTP-401 干扰）
   if (host === 'github.com') {
     return checkViaGitHubApi(urlObj.pathname, token);
   }
-
-  // 其他平台：Tauri 用原生 HTTP + Smart Protocol
   if (isTauriRuntime()) {
     return checkViaSmartHttp(trimmed, tauriFetch as unknown as typeof fetch);
   }
-  // 浏览器无法可靠跨域检测
   return { valid: true, warn: true, reason: '⚠ 浏览器侧只能校验 GitHub 仓库，其他平台请在桌面端验证' };
 }
+
+// ─── 复用的 Git 输入行子组件 ────────────────────────────────────────────────
+
+interface GitInputRowProps {
+  label: string;
+  placeholder?: string;
+  value: string;
+  onInput: (v: string) => void;
+  onBlur?: () => void;
+  onCheck: () => void;
+  status: GitCheckStatus;
+  statusMsg: string;
+  platform: string | null;
+  token: string;
+  onTokenInput: (v: string) => void;
+  saveToken: boolean;
+  onSaveTokenChange: (v: boolean) => void;
+}
+
+const GitInputRow: Component<GitInputRowProps> = (props) => {
+  const statusColor = () => {
+    const s = props.status;
+    if (s === 'valid') return chartColors.success ?? '#22c55e';
+    if (s === 'warn') return chartColors.warning ?? '#f59e0b';
+    if (s === 'invalid') return chartColors.error;
+    return themeColors.textMuted;
+  };
+  const statusIcon = () => {
+    const s = props.status;
+    if (s === 'checking') return '⟳';
+    if (s === 'valid') return '✓';
+    if (s === 'warn') return '⚠';
+    if (s === 'invalid') return '✗';
+    return '';
+  };
+
+  const inputStyle = () => ({
+    border: `1px solid ${themeColors.border}`,
+    background: themeColors.surface,
+    color: themeColors.text,
+  });
+
+  return (
+    <div>
+      <label class="block text-sm font-medium mb-1" style={{ color: themeColors.textSecondary }}>
+        {props.label} <span class="font-normal" style={{ color: themeColors.textMuted }}>（可选）</span>
+      </label>
+      <div class="flex gap-2">
+        <div class="relative flex-1">
+          <input
+            type="text"
+            class="w-full rounded-lg px-3 py-2 text-sm font-mono outline-none"
+            style={{
+              ...inputStyle(),
+              'padding-right': props.status !== 'idle' ? '1.8rem' : undefined,
+            }}
+            placeholder={props.placeholder ?? 'git@github.com:org/repo.git'}
+            value={props.value}
+            onInput={(e) => props.onInput(e.currentTarget.value)}
+            onBlur={props.onBlur}
+          />
+          <Show when={props.status !== 'idle'}>
+            <span
+              class="absolute right-2 top-1/2 -translate-y-1/2 text-sm select-none"
+              style={{ color: statusColor() }}
+            >{statusIcon()}</span>
+          </Show>
+        </div>
+        <button
+          type="button"
+          disabled={!props.value.trim() || props.status === 'checking'}
+          class="rounded-lg px-3 py-2 text-sm whitespace-nowrap transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          style={{
+            border: `1px solid ${themeColors.border}`,
+            color: themeColors.textSecondary,
+            background: themeColors.hover,
+          }}
+          onClick={props.onCheck}
+        >
+          {props.status === 'checking' ? '检测中…' : '检测'}
+        </button>
+      </div>
+      <Show when={props.platform !== null}>
+        <div class="flex items-center gap-2 mt-2">
+          <input
+            type="password"
+            class="flex-1 rounded-lg px-3 py-2 text-sm outline-none"
+            style={inputStyle()}
+            placeholder={`${props.platform} Access Token（私有仓库必填）`}
+            value={props.token}
+            onInput={(e) => props.onTokenInput(e.currentTarget.value)}
+          />
+          <label
+            class="flex items-center gap-1.5 text-xs whitespace-nowrap cursor-pointer select-none"
+            style={{ color: themeColors.textMuted }}
+          >
+            <input
+              type="checkbox"
+              checked={props.saveToken}
+              onChange={(e) => props.onSaveTokenChange(e.currentTarget.checked)}
+            />
+            记住
+          </label>
+        </div>
+      </Show>
+      <Show when={props.statusMsg}>
+        <p class="text-xs mt-1" style={{ color: statusColor() }}>
+          {statusIcon()} {props.statusMsg}
+        </p>
+      </Show>
+    </div>
+  );
+};
+
+// ─── 辅助 Hook：管理单个 Git 输入行状态 ────────────────────────────────────
+
+function useGitInput() {
+  const [gitUrl, setGitUrl] = createSignal('');
+  const [gitStatus, setGitStatus] = createSignal<GitCheckStatus>('idle');
+  const [gitStatusMsg, setGitStatusMsg] = createSignal('');
+  const [gitPlatform, setGitPlatform] = createSignal<string | null>(null);
+  const [platformToken, setPlatformToken] = createSignal('');
+  const [saveToken, setSaveToken] = createSignal(false);
+
+  const handleInput = (val: string) => {
+    setGitUrl(val);
+    setGitStatus('idle');
+    setGitStatusMsg('');
+    const host = parseGitHost(val);
+    setGitPlatform(host);
+    if (host) {
+      const saved = getGitToken(host);
+      if (saved) { setPlatformToken(saved); setSaveToken(true); }
+      else { setPlatformToken(''); setSaveToken(false); }
+    } else {
+      setPlatformToken('');
+      setSaveToken(false);
+    }
+  };
+
+  const runCheck = async () => {
+    const url = gitUrl().trim();
+    if (!url) { setGitStatus('idle'); setGitStatusMsg(''); return; }
+    setGitStatus('checking');
+    setGitStatusMsg('');
+    const token = platformToken().trim() || undefined;
+    const { valid, warn, reason } = await checkGitUrl(url, token);
+    if (valid && !warn) {
+      setGitStatus('valid');
+      setGitStatusMsg(reason ?? '仓库可访问');
+    } else if (valid && warn) {
+      setGitStatus('warn');
+      setGitStatusMsg(reason ?? '格式正确（无法确认连通性）');
+    } else {
+      setGitStatus('invalid');
+      setGitStatusMsg(reason ?? '地址无效');
+    }
+  };
+
+  const commitToken = () => {
+    if (saveToken() && gitPlatform() && platformToken().trim()) {
+      setGitToken(gitPlatform()!, platformToken().trim());
+    }
+  };
+
+  const reset = () => {
+    setGitUrl('');
+    setGitStatus('idle');
+    setGitStatusMsg('');
+    setGitPlatform(null);
+    setPlatformToken('');
+    setSaveToken(false);
+  };
+
+  return {
+    gitUrl, handleInput, runCheck, commitToken, reset,
+    gitStatus, gitStatusMsg, gitPlatform, platformToken, setPlatformToken,
+    saveToken, setSaveToken,
+  };
+}
+
+// ─── 主组件 ────────────────────────────────────────────────────────────────
 
 const NewProductModal: Component<Props> = (props) => {
   const { productStore } = useAppStore();
 
+  // ── 通用字段 ──
+  const [productType, setProductType] = createSignal<ProductType>('team');
   const [name, setName] = createSignal('');
-  const [appName, setAppName] = createSignal('');
   const [workDir, setWorkDir] = createSignal('');
-  const [gitUrl, setGitUrl] = createSignal('');
   const [creating, setCreating] = createSignal(false);
   const [error, setError] = createSignal('');
 
-  // Git 检测状态
-  const [gitStatus, setGitStatus] = createSignal<GitCheckStatus>('idle');
-  const [gitStatusMsg, setGitStatusMsg] = createSignal('');
+  // ── 独立版（Solo）专用 ──
+  const [appName, setAppName] = createSignal('');
+  const soloGit = useGitInput();
 
-  // 平台 Token
-  const [gitPlatform, setGitPlatform] = createSignal<string | null>(null); // 'github.com' 等
-  const [platformToken, setPlatformToken] = createSignal('');
-  const [saveToken, setSaveToken] = createSignal(false);
+  // ── 团队版（Team）专用 ──
+  const [domainName, setDomainName] = createSignal('');
+  const [firstAppName, setFirstAppName] = createSignal('');
+  const plGit = useGitInput();
+  const domainGit = useGitInput();
+  const appGit = useGitInput();
 
-  // ───── 工作目录选择 ─────
+  // ── 工作目录选择 ──
   const handlePickDir = async () => {
     if (isTauriRuntime()) {
       const result = await pickDirectory({ title: '选择工作目录' });
@@ -183,79 +346,56 @@ const NewProductModal: Component<Props> = (props) => {
     }
   };
 
-  // ───── Git 地址输入联动——平台检测 + 自动预填已存储 Token ─────
-  const handleGitUrlInput = (val: string) => {
-    setGitUrl(val);
-    setGitStatus('idle');
-    setGitStatusMsg('');
-    const host = parseGitHost(val);
-    setGitPlatform(host);
-    if (host) {
-      const saved = getGitToken(host);
-      if (saved) { setPlatformToken(saved); setSaveToken(true); }
-      else { setPlatformToken(''); setSaveToken(false); }
-    } else {
-      // SSH 地址：无平台 Token
-      setPlatformToken('');
-      setSaveToken(false);
-    }
-  };
-
-  // ───── Git 仓库检测 ─────
-  const runGitCheck = async () => {
-    const url = gitUrl().trim();
-    if (!url) { setGitStatus('idle'); setGitStatusMsg(''); return; }
-    setGitStatus('checking');
-    setGitStatusMsg('');
-    const token = platformToken().trim() || undefined;
-    const { valid, warn, reason } = await checkGitUrl(url, token);
-    if (valid && !warn) {
-      setGitStatus('valid');
-      setGitStatusMsg(reason ?? '仓库可访问');
-    } else if (valid && warn) {
-      setGitStatus('warn');
-      setGitStatusMsg(reason ?? '格式正确（无法确认连通性）');
-    } else {
-      setGitStatus('invalid');
-      setGitStatusMsg(reason ?? '地址无效');
-    }
-  };
-
-  const handleGitBlur = () => {
-    if (gitUrl().trim()) runGitCheck();
-  };
-
-  // ───── 提交 ─────
+  // ── 提交 ──
   const handleSubmit = async (e: Event) => {
     e.preventDefault();
     if (!name().trim()) { setError('请填写产品名称'); return; }
-    if (!appName().trim()) { setError('请填写首个应用名'); return; }
     if (!workDir().trim()) { setError('请选择工作目录'); return; }
+
+    if (productType() === 'solo') {
+      if (!appName().trim()) { setError('请填写首个应用名'); return; }
+    } else {
+      if (!domainName().trim()) { setError('请填写首个 Domain 名称'); return; }
+      if (!firstAppName().trim()) { setError('请填写首个 App 名称'); return; }
+    }
 
     setError('');
     setCreating(true);
     try {
-      // 保存 Token
-      if (saveToken() && gitPlatform() && platformToken().trim()) {
-        setGitToken(gitPlatform()!, platformToken().trim());
+      if (productType() === 'solo') {
+        soloGit.commitToken();
+        await productStore.initializeProductDir(workDir().trim(), name().trim(), appName().trim());
+        await productStore.addProduct({
+          name: name().trim(),
+          workDir: workDir().trim(),
+          gitUrl: soloGit.gitUrl().trim() || undefined,
+          description: '',
+          productType: 'solo',
+        });
+      } else {
+        plGit.commitToken();
+        domainGit.commitToken();
+        appGit.commitToken();
+        const teamStructure = await productStore.initializeTeamProduct(
+          workDir().trim(),
+          name().trim(),
+          domainName().trim(),
+          firstAppName().trim(),
+          {
+            pl: plGit.gitUrl().trim() || undefined,
+            domain: domainGit.gitUrl().trim() || undefined,
+            app: appGit.gitUrl().trim() || undefined,
+          },
+        );
+        await productStore.addProduct({
+          name: name().trim(),
+          workDir: workDir().trim(),
+          description: '',
+          productType: 'team',
+          teamStructure,
+        });
       }
-      await productStore.initializeProductDir(workDir().trim(), name().trim(), appName().trim());
-      await productStore.addProduct({
-        name: name().trim(),
-        workDir: workDir().trim(),
-        gitUrl: gitUrl().trim() || undefined,
-        description: '',
-      });
-      // 重置表单
-      setName('');
-      setAppName('');
-      setWorkDir('');
-      setGitUrl('');
-      setGitStatus('idle');
-      setGitStatusMsg('');
-      setGitPlatform(null);
-      setPlatformToken('');
-      setSaveToken(false);
+      resetForm();
       props.onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : '创建失败，请重试');
@@ -264,39 +404,41 @@ const NewProductModal: Component<Props> = (props) => {
     }
   };
 
+  const resetForm = () => {
+    setName('');
+    setWorkDir('');
+    setAppName('');
+    setDomainName('');
+    setFirstAppName('');
+    soloGit.reset();
+    plGit.reset();
+    domainGit.reset();
+    appGit.reset();
+  };
+
   const inputStyle = () => ({
     border: `1px solid ${themeColors.border}`,
     background: themeColors.surface,
     color: themeColors.text,
   });
 
-  // Git 状态颜色
-  const gitStatusColor = () => {
-    const s = gitStatus();
-    if (s === 'valid') return chartColors.success ?? '#22c55e';
-    if (s === 'warn') return chartColors.warning ?? '#f59e0b';
-    if (s === 'invalid') return chartColors.error;
-    return themeColors.textMuted;
-  };
-
-  // Git 状态图标
-  const gitStatusIcon = () => {
-    const s = gitStatus();
-    if (s === 'checking') return '⟳';
-    if (s === 'valid') return '✓';
-    if (s === 'warn') return '⚠';
-    if (s === 'invalid') return '✗';
-    return '';
-  };
+  const typeBtnStyle = (type: ProductType) => ({
+    background: productType() === type ? themeColors.purple : themeColors.bgSubtle,
+    color: productType() === type ? 'white' : themeColors.textSecondary,
+    border: `1px solid ${productType() === type ? themeColors.purple : themeColors.border}`,
+  });
 
   return (
     <Show when={props.open}>
-      {/* 背景遮罩 */}
       <div
         class="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
         onClick={(e) => { if (e.target === e.currentTarget) props.onClose(); }}
       >
-        <div class="rounded-2xl shadow-2xl w-full max-w-md mx-4 p-6" style={{ background: themeColors.surface }}>
+        <div
+          class="rounded-2xl shadow-2xl w-full max-w-lg mx-4 p-6 overflow-y-auto"
+          style={{ background: themeColors.surface, 'max-height': '90vh' }}
+        >
+          {/* 标题 */}
           <div class="flex items-center justify-between mb-5">
             <h2 class="text-lg font-semibold" style={{ color: themeColors.text }}>新建产品</h2>
             <button
@@ -307,7 +449,34 @@ const NewProductModal: Component<Props> = (props) => {
           </div>
 
           <form onSubmit={handleSubmit} class="flex flex-col gap-4">
-            {/* 产品名称 */}
+            {/* 产品类型切换 */}
+            <div>
+              <label class="block text-sm font-medium mb-2" style={{ color: themeColors.textSecondary }}>
+                产品类型
+              </label>
+              <div class="flex gap-2">
+                <button
+                  type="button"
+                  class="flex-1 rounded-lg py-2 text-sm font-medium transition-colors"
+                  style={typeBtnStyle('team')}
+                  onClick={() => setProductType('team')}
+                >
+                  团队版
+                  <span class="block text-xs font-normal mt-0.5 opacity-75">多仓库 · 产品线/Domain/App 各自独立</span>
+                </button>
+                <button
+                  type="button"
+                  class="flex-1 rounded-lg py-2 text-sm font-medium transition-colors"
+                  style={typeBtnStyle('solo')}
+                  onClick={() => setProductType('solo')}
+                >
+                  独立版
+                  <span class="block text-xs font-normal mt-0.5 opacity-75">单仓库 · Solo Monorepo</span>
+                </button>
+              </div>
+            </div>
+
+            {/* 产品名称（通用） */}
             <div>
               <label class="block text-sm font-medium mb-1" style={{ color: themeColors.textSecondary }}>
                 产品名称 <span style={{ color: chartColors.error }}>*</span>
@@ -322,28 +491,11 @@ const NewProductModal: Component<Props> = (props) => {
               />
             </div>
 
-            {/* 首个应用名 */}
+            {/* 工作目录（通用，团队版为父目录） */}
             <div>
               <label class="block text-sm font-medium mb-1" style={{ color: themeColors.textSecondary }}>
-                首个应用名 <span style={{ color: chartColors.error }}>*</span>
-              </label>
-              <input
-                type="text"
-                class="w-full rounded-lg px-3 py-2 text-sm outline-none"
-                style={inputStyle()}
-                placeholder="例：api-server"
-                value={appName()}
-                onInput={(e) => setAppName(e.currentTarget.value)}
-              />
-              <p class="text-xs mt-1" style={{ color: themeColors.textMuted }}>
-                Solo Monorepo 的首个应用名，将用于 apps/ 目录结构
-              </p>
-            </div>
-
-            {/* 工作目录 —— 选择器 */}
-            <div>
-              <label class="block text-sm font-medium mb-1" style={{ color: themeColors.textSecondary }}>
-                工作目录 <span style={{ color: chartColors.error }}>*</span>
+                {productType() === 'team' ? '父工作目录' : '工作目录'}
+                {' '}<span style={{ color: chartColors.error }}>*</span>
               </label>
               <div class="flex gap-2">
                 <div
@@ -379,96 +531,149 @@ const NewProductModal: Component<Props> = (props) => {
                 onChange={handleWebDirPick}
               />
               <p class="text-xs mt-1" style={{ color: themeColors.textMuted }}>
-                星静会在此目录下初始化完整的 Solo Monorepo 目录结构
+                {productType() === 'team'
+                  ? '星静将在此目录下创建产品线、Domain、App 三个独立子仓库'
+                  : '星静会在此目录下初始化完整的 Solo Monorepo 目录结构'}
               </p>
             </div>
 
-            {/* Git 地址（可选） */}
-            <div>
-              <label class="block text-sm font-medium mb-1" style={{ color: themeColors.textSecondary }}>
-                Git 地址 <span class="font-normal" style={{ color: themeColors.textMuted }}>（可选）</span>
-              </label>
-              {/* Git URL 输入行 */}
-              <div class="flex gap-2">
-                <div class="relative flex-1">
-                  <input
-                    type="text"
-                    class="w-full rounded-lg px-3 py-2 text-sm font-mono outline-none"
-                    style={{
-                      ...inputStyle(),
-                      'padding-right': gitStatus() !== 'idle' ? '1.8rem' : undefined,
-                    }}
-                    placeholder="git@github.com:me/my-product.git"
-                    value={gitUrl()}
-                    onInput={(e) => handleGitUrlInput(e.currentTarget.value)}
-                    onBlur={handleGitBlur}
-                  />
-                  <Show when={gitStatus() !== 'idle'}>
-                    <span
-                      class="absolute right-2 top-1/2 -translate-y-1/2 text-sm select-none"
-                      style={{ color: gitStatusColor() }}
-                    >
-                      {gitStatusIcon()}
-                    </span>
-                  </Show>
-                </div>
-                {/* 手动检测按钮 */}
-                <button
-                  type="button"
-                  disabled={!gitUrl().trim() || gitStatus() === 'checking'}
-                  class="rounded-lg px-3 py-2 text-sm whitespace-nowrap transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                  style={{
-                    border: `1px solid ${themeColors.border}`,
-                    color: themeColors.textSecondary,
-                    background: themeColors.hover,
-                  }}
-                  onClick={runGitCheck}
-                >
-                  {gitStatus() === 'checking' ? '检测中…' : '检测'}
-                </button>
+            {/* ── 独立版（Solo）专用字段 ── */}
+            <Show when={productType() === 'solo'}>
+              <div>
+                <label class="block text-sm font-medium mb-1" style={{ color: themeColors.textSecondary }}>
+                  首个应用名 <span style={{ color: chartColors.error }}>*</span>
+                </label>
+                <input
+                  type="text"
+                  class="w-full rounded-lg px-3 py-2 text-sm outline-none"
+                  style={inputStyle()}
+                  placeholder="例：api-server"
+                  value={appName()}
+                  onInput={(e) => setAppName(e.currentTarget.value)}
+                />
+                <p class="text-xs mt-1" style={{ color: themeColors.textMuted }}>
+                  将用于 apps/ 目录结构
+                </p>
               </div>
 
-              {/* HTTPS 平台 Token 输入行（SSH 地址时隐藏） */}
-              <Show when={gitPlatform() !== null}>
-                <div class="flex items-center gap-2 mt-2">
-                  <input
-                    type="password"
-                    class="flex-1 rounded-lg px-3 py-2 text-sm outline-none"
-                    style={inputStyle()}
-                    placeholder={`${gitPlatform()} Access Token（私有仓库必填）`}
-                    value={platformToken()}
-                    onInput={(e) => setPlatformToken(e.currentTarget.value)}
-                  />
-                  <label
-                    class="flex items-center gap-1.5 text-xs whitespace-nowrap cursor-pointer select-none"
-                    style={{ color: themeColors.textMuted }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={saveToken()}
-                      onChange={(e) => setSaveToken(e.currentTarget.checked)}
-                    />
-                    记住
-                  </label>
-                </div>
-              </Show>
+              <GitInputRow
+                label="Git 地址"
+                placeholder="git@github.com:me/my-product.git"
+                value={soloGit.gitUrl()}
+                onInput={soloGit.handleInput}
+                onBlur={() => { if (soloGit.gitUrl().trim()) soloGit.runCheck(); }}
+                onCheck={soloGit.runCheck}
+                status={soloGit.gitStatus()}
+                statusMsg={soloGit.gitStatusMsg()}
+                platform={soloGit.gitPlatform()}
+                token={soloGit.platformToken()}
+                onTokenInput={soloGit.setPlatformToken}
+                saveToken={soloGit.saveToken()}
+                onSaveTokenChange={soloGit.setSaveToken}
+              />
+            </Show>
 
-              {/* 检测状态提示 */}
-              <Show when={gitStatusMsg()}>
-                <p class="text-xs mt-1" style={{ color: gitStatusColor() }}>
-                  {gitStatusIcon()} {gitStatusMsg()}
-                </p>
-              </Show>
-              <Show when={!gitStatusMsg()}>
-                <p class="text-xs mt-1" style={{ color: themeColors.textMuted }}>
-                  支持 SSH（自动使用系统 Key）和 HTTPS（私有仓库需填 Token）
-                </p>
-              </Show>
-            </div>
+            {/* ── 团队版（Team）专用字段 ── */}
+            <Show when={productType() === 'team'}>
+              {/* 产品线 Git */}
+              <div>
+                <div class="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: themeColors.textMuted }}>
+                  产品线仓库
+                </div>
+                <GitInputRow
+                  label="产品线 Git 地址"
+                  placeholder="git@github.com:org/my-product-pl.git"
+                  value={plGit.gitUrl()}
+                  onInput={plGit.handleInput}
+                  onBlur={() => { if (plGit.gitUrl().trim()) plGit.runCheck(); }}
+                  onCheck={plGit.runCheck}
+                  status={plGit.gitStatus()}
+                  statusMsg={plGit.gitStatusMsg()}
+                  platform={plGit.gitPlatform()}
+                  token={plGit.platformToken()}
+                  onTokenInput={plGit.setPlatformToken}
+                  saveToken={plGit.saveToken()}
+                  onSaveTokenChange={plGit.setSaveToken}
+                />
+              </div>
+
+              {/* 首个 Domain */}
+              <div>
+                <div class="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: themeColors.textMuted }}>
+                  首个 Domain
+                </div>
+                <div class="mb-3">
+                  <label class="block text-sm font-medium mb-1" style={{ color: themeColors.textSecondary }}>
+                    Domain 名称 <span style={{ color: chartColors.error }}>*</span>
+                  </label>
+                  <input
+                    type="text"
+                    class="w-full rounded-lg px-3 py-2 text-sm outline-none"
+                    style={inputStyle()}
+                    placeholder="例：用户域 / user-domain"
+                    value={domainName()}
+                    onInput={(e) => setDomainName(e.currentTarget.value)}
+                  />
+                </div>
+                <GitInputRow
+                  label="Domain Git 地址"
+                  placeholder="git@github.com:org/user-domain.git"
+                  value={domainGit.gitUrl()}
+                  onInput={domainGit.handleInput}
+                  onBlur={() => { if (domainGit.gitUrl().trim()) domainGit.runCheck(); }}
+                  onCheck={domainGit.runCheck}
+                  status={domainGit.gitStatus()}
+                  statusMsg={domainGit.gitStatusMsg()}
+                  platform={domainGit.gitPlatform()}
+                  token={domainGit.platformToken()}
+                  onTokenInput={domainGit.setPlatformToken}
+                  saveToken={domainGit.saveToken()}
+                  onSaveTokenChange={domainGit.setSaveToken}
+                />
+              </div>
+
+              {/* 首个 App */}
+              <div>
+                <div class="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: themeColors.textMuted }}>
+                  首个 App
+                </div>
+                <div class="mb-3">
+                  <label class="block text-sm font-medium mb-1" style={{ color: themeColors.textSecondary }}>
+                    App 名称 <span style={{ color: chartColors.error }}>*</span>
+                  </label>
+                  <input
+                    type="text"
+                    class="w-full rounded-lg px-3 py-2 text-sm outline-none"
+                    style={inputStyle()}
+                    placeholder="例：api-server"
+                    value={firstAppName()}
+                    onInput={(e) => setFirstAppName(e.currentTarget.value)}
+                  />
+                </div>
+                <GitInputRow
+                  label="App Git 地址"
+                  placeholder="git@github.com:org/api-server.git"
+                  value={appGit.gitUrl()}
+                  onInput={appGit.handleInput}
+                  onBlur={() => { if (appGit.gitUrl().trim()) appGit.runCheck(); }}
+                  onCheck={appGit.runCheck}
+                  status={appGit.gitStatus()}
+                  statusMsg={appGit.gitStatusMsg()}
+                  platform={appGit.gitPlatform()}
+                  token={appGit.platformToken()}
+                  onTokenInput={appGit.setPlatformToken}
+                  saveToken={appGit.saveToken()}
+                  onSaveTokenChange={appGit.setSaveToken}
+                />
+              </div>
+            </Show>
 
             {/* 错误提示 */}
             <Show when={error()}>
-              <p class="text-sm rounded-lg px-3 py-2" style={{ color: chartColors.error, background: themeColors.errorBg }}>{error()}</p>
+              <p
+                class="text-sm rounded-lg px-3 py-2"
+                style={{ color: chartColors.error, background: themeColors.errorBg }}
+              >{error()}</p>
             </Show>
 
             {/* 提交按钮 */}
@@ -487,7 +692,9 @@ const NewProductModal: Component<Props> = (props) => {
                 class="flex-1 rounded-lg py-2 text-sm font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                 style={{ background: themeColors.purple, color: 'white' }}
               >
-                {creating() ? '创建中…' : '创建产品'}
+                {creating()
+                  ? '创建中…'
+                  : productType() === 'team' ? '创建团队版产品' : '创建产品'}
               </button>
             </div>
           </form>

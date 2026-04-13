@@ -938,6 +938,24 @@ export async function runGitLsRemote(url: string): Promise<{ reachable: boolean;
 }
 
 /**
+ * 在指定目录执行 git init（仅 Tauri 桌面端）
+ * 目录不存在时 git 会自动创建。
+ */
+export async function runGitInit(dirPath: string): Promise<{ ok: boolean; error?: string }> {
+  const { Command } = await import('@tauri-apps/plugin-shell');
+  try {
+    const output = await Command.create('git', ['init', dirPath]).execute();
+    if (output.code === 0) return { ok: true };
+    return {
+      ok: false,
+      error: (output.stderr?.trim() || output.stdout?.trim() || `git init 退出码 ${output.code}`).slice(0, 200),
+    };
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? '无法调用系统 git 命令，请确认 git 已安装' };
+  }
+}
+
+/**
  * 删除产品工作目录（递归删除所有内容）
  * 目录不存在时静默成功，非 Tauri 环境抛出错误提示。
  */

@@ -9,8 +9,8 @@
 
 import { createSignal, createEffect } from 'solid-js';
 import { readYaml, writeYaml } from './file-store';
-import { buildProductFileList } from './product-dir-structure';
-import { initProductDir, engineInfo } from '../../lib/tauri';
+import { buildProductFileList, buildTeamProductLineFiles, buildTeamDomainFiles, buildTeamAppFiles, buildTeamRootConfig } from './product-dir-structure';
+import { initProductDir, runGitInit, engineInfo } from '../../lib/tauri';
 import { initXingjingClient } from './opencode-client';
 import { isTauriRuntime } from '../../utils';
 
@@ -31,6 +31,33 @@ async function resolveOpenCodeBaseUrl(): Promise<string> {
 
 // ─── 类型定义 ────────────────────────────────────────────────────────────────
 
+/** 团队版产品中的独立 Domain 仓库描述 */
+export interface TeamDomain {
+  id: string;
+  name: string;
+  slug: string;
+  dir: string;        // 绝对路径 {workDir}/{slug}
+  gitUrl?: string;
+}
+
+/** 团队版产品中的独立 App 仓库描述 */
+export interface TeamApp {
+  id: string;
+  name: string;
+  slug: string;
+  dir: string;        // 绝对路径 {workDir}/apps/{slug}
+  gitUrl?: string;
+}
+
+/** 团队版产品的多仓库结构描述 */
+export interface TeamStructure {
+  plSlug: string;
+  plDir: string;      // 绝对路径 {workDir}/{plSlug}
+  plGitUrl?: string;
+  domains: TeamDomain[];
+  apps: TeamApp[];
+}
+
 export interface XingjingProduct {
   id: string;
   name: string;
@@ -38,6 +65,10 @@ export interface XingjingProduct {
   gitUrl?: string;
   createdAt: string;
   description?: string;
+  /** 产品类型：team = 多仓库模式，solo = Monorepo 模式（默认，向后兼容）*/
+  productType?: 'team' | 'solo';
+  /** 仅 team 类型产品有此字段 */
+  teamStructure?: TeamStructure;
 }
 
 export interface XingjingPreferences {
@@ -221,6 +252,180 @@ export function createProductStore() {
     console.info(`[xingjing] Initialized Solo Monorepo in ${workDir} (${result.count} files)`);
   }
 
+  /**
+   * 初始化团队版产品：在 workDir 下创建产品线、Domain、App 三个独立子目录，
+   * 各自 git init，可选绑定远端 Git 地址，并写入父目录 .xingjing/config.yaml
+   * @returns 完整的 TeamStructure，供调用方存入产品记录
+   */
+  async function initializeTeamProduct(
+    workDir: string,
+    productName: string,
+    domainName: string,
+    appName: string,
+    gitUrls?: {
+      pl?: string;
+      domain?: string;
+      app?: string;
+    },
+  ): Promise<TeamStructure> {
+    // --- 生成 slug ---
+    const toKebab = (s: string) =>
+      s.trim().replace(/[\s_]+/g, '-').replace(/([a-z])([A-Z])/g, '$1-$2')
+        .replace(/[^a-zA-Z0-9\u4e00-\u9fff-]/g, '-').replace(/-+/g, '-')
+        .replace(/^-|-$/g, '').toLowerCase();
+
+    const kebab = toKebab(productName);
+    const plSlug = `${kebab}-pl`;
+    const domainSlug = toKebab(domainName);
+    const appSlug = toKebab(appName);
+
+    const plDir = `${workDir}/${plSlug}`;
+    const domainDir = `${workDir}/${domainSlug}`;
+    const appDir = `${workDir}/apps/${appSlug}`;
+
+    // --- 1. 写入父目录 .xingjing/config.yaml ---
+    const rootFiles = buildTeamRootConfig(productName, plSlug, [domainSlug], [appSlug]);
+    const rootResult = await initProductDir(workDir, rootFiles);
+    if (!rootResult.ok) throw new Error(`父目录初始化失败: ${rootResult.error}`);
+
+    // --- 2. 产品线仓库 ---
+    const plFiles = buildTeamProductLineFiles(productName);
+    const plResult = await initProductDir(plDir, plFiles);
+    if (!plResult.ok) throw new Error(`产品线目录初始化失败: ${plResult.error}`);
+    const plGitInit = await runGitInit(plDir);
+    if (!plGitInit.ok) throw new Error(`产品线 git init 失败: ${plGitInit.error}`);
+
+    // --- 3. Domain 仓库 ---
+    const domainFiles = buildTeamDomainFiles(domainName, productName);
+    const domainResult = await initProductDir(domainDir, domainFiles);
+    if (!domainResult.ok) throw new Error(`Domain 目录初始化失败: ${domainResult.error}`);
+    const domainGitInit = await runGitInit(domainDir);
+    if (!domainGitInit.ok) throw new Error(`Domain git init 失败: ${domainGitInit.error}`);
+
+    // --- 4. App 仓库 ---
+    const appFiles = buildTeamAppFiles(appName, productName);
+    const appResult = await initProductDir(appDir, appFiles);
+    if (!appResult.ok) throw new Error(`App 目录初始化失败: ${appResult.error}`);
+    const appGitInit = await runGitInit(appDir);
+    if (!appGitInit.ok) throw new Error(`App git init 失败: ${appGitInit.error}`);
+
+    console.info(`[xingjing] Initialized Team product in ${workDir}: pl=${plSlug}, domain=${domainSlug}, app=${appSlug}`);
+
+    return {
+      plSlug,
+      plDir,
+      plGitUrl: gitUrls?.pl || undefined,
+      domains: [{
+        id: `domain-${Date.now()}`,
+        name: domainName,
+        slug: domainSlug,
+        dir: domainDir,
+        gitUrl: gitUrls?.domain || undefined,
+      }],
+      apps: [{
+        id: `app-${Date.now() + 1}`,
+        name: appName,
+        slug: appSlug,
+        dir: appDir,
+        gitUrl: gitUrls?.app || undefined,
+      }],
+    };
+  }
+
+  /** 向已有团队版产品新增 Domain（创建目录 + git init + 更新注册表） */
+  async function addDomainToTeamProduct(
+    productId: string,
+    domainInfo: { name: string; gitUrl?: string },
+  ) {
+    const product = products().find(p => p.id === productId);
+    if (!product || product.productType !== 'team' || !product.teamStructure) {
+      throw new Error('目标产品不是团队版产品');
+    }
+
+    const toKebab = (s: string) =>
+      s.trim().replace(/[\s_]+/g, '-').replace(/([a-z])([A-Z])/g, '$1-$2')
+        .replace(/[^a-zA-Z0-9\u4e00-\u9fff-]/g, '-').replace(/-+/g, '-')
+        .replace(/^-|-$/g, '').toLowerCase();
+
+    const domainSlug = toKebab(domainInfo.name);
+    const domainDir = `${product.workDir}/${domainSlug}`;
+
+    const domainFiles = buildTeamDomainFiles(domainInfo.name, product.name);
+    const result = await initProductDir(domainDir, domainFiles);
+    if (!result.ok) throw new Error(`Domain 目录初始化失败: ${result.error}`);
+    const gitResult = await runGitInit(domainDir);
+    if (!gitResult.ok) throw new Error(`Domain git init 失败: ${gitResult.error}`);
+
+    const newDomain: TeamDomain = {
+      id: `domain-${Date.now()}`,
+      name: domainInfo.name,
+      slug: domainSlug,
+      dir: domainDir,
+      gitUrl: domainInfo.gitUrl || undefined,
+    };
+
+    const updated = products().map(p => {
+      if (p.id !== productId) return p;
+      return {
+        ...p,
+        teamStructure: {
+          ...p.teamStructure!,
+          domains: [...p.teamStructure!.domains, newDomain],
+        },
+      };
+    });
+    setProducts(updated);
+    await saveProducts(updated);
+    return newDomain;
+  }
+
+  /** 向已有团队版产品新增 App（创建目录 + git init + 更新注册表） */
+  async function addAppToTeamProduct(
+    productId: string,
+    appInfo: { name: string; gitUrl?: string },
+  ) {
+    const product = products().find(p => p.id === productId);
+    if (!product || product.productType !== 'team' || !product.teamStructure) {
+      throw new Error('目标产品不是团队版产品');
+    }
+
+    const toKebab = (s: string) =>
+      s.trim().replace(/[\s_]+/g, '-').replace(/([a-z])([A-Z])/g, '$1-$2')
+        .replace(/[^a-zA-Z0-9\u4e00-\u9fff-]/g, '-').replace(/-+/g, '-')
+        .replace(/^-|-$/g, '').toLowerCase();
+
+    const appSlug = toKebab(appInfo.name);
+    const appDir = `${product.workDir}/apps/${appSlug}`;
+
+    const appFiles = buildTeamAppFiles(appInfo.name, product.name);
+    const result = await initProductDir(appDir, appFiles);
+    if (!result.ok) throw new Error(`App 目录初始化失败: ${result.error}`);
+    const gitResult = await runGitInit(appDir);
+    if (!gitResult.ok) throw new Error(`App git init 失败: ${gitResult.error}`);
+
+    const newApp: TeamApp = {
+      id: `app-${Date.now()}`,
+      name: appInfo.name,
+      slug: appSlug,
+      dir: appDir,
+      gitUrl: appInfo.gitUrl || undefined,
+    };
+
+    const updated = products().map(p => {
+      if (p.id !== productId) return p;
+      return {
+        ...p,
+        teamStructure: {
+          ...p.teamStructure!,
+          apps: [...p.teamStructure!.apps, newApp],
+        },
+      };
+    });
+    setProducts(updated);
+    await saveProducts(updated);
+    return newApp;
+  }
+
   // ── Side effects ──
   // When active product changes, update the OpenCode client
   createEffect(() => {
@@ -248,6 +453,9 @@ export function createProductStore() {
     switchProduct,
     setViewMode,
     initializeProductDir,
+    initializeTeamProduct,
+    addDomainToTeamProduct,
+    addAppToTeamProduct,
   };
 }
 

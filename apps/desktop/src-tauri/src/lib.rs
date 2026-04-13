@@ -70,7 +70,7 @@ fn set_dev_app_name() {
     };
 
     objc2_foundation::NSProcessInfo::processInfo()
-        .setProcessName(&objc2_foundation::NSString::from_str("OpenWork - Dev"));
+        .setProcessName(&objc2_foundation::NSString::from_str("星静 - All In One 产品研发平台"));
 }
 
 #[cfg(not(target_os = "macos"))]

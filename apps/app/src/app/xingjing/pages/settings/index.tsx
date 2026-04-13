@@ -81,7 +81,7 @@ const ThemeTab: Component = () => {
 
 // ===================== Tab2: LLM Config =====================
 const LLMTab: Component = () => {
-  const { state, actions } = useAppStore();
+  const { state, actions, productStore } = useAppStore();
   const [config, setConfig] = createSignal<LLMConfig>({ ...state.llmConfig });
   const [testing, setTesting] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
@@ -377,33 +377,38 @@ const LLMTab: Component = () => {
   const handleSave = async () => {
     setSaving(true);
     setTestResult('');
-    const cfg = config();
+    try {
+      const cfg = config();
 
-    // 1. 更新内存 store
-    actions.setLlmConfig(cfg);
+      // 1. 更新内存 store
+      actions.setLlmConfig(cfg);
 
-    // 2. 同步 API Key 到 OpenCode（让 callAgent 能直接使用该 provider）
-    let openCodeSynced = false;
-    if (cfg.providerID && cfg.providerID !== 'custom' && cfg.apiKey && cfg.apiKey.length > 4) {
-      openCodeSynced = await setProviderAuth(cfg.providerID, cfg.apiKey);
+      // 2. 同步 API Key 到 OpenCode（让 callAgent 能直接使用该 provider）
+      let openCodeSynced = false;
+      if (cfg.providerID && cfg.providerID !== 'custom' && cfg.apiKey && cfg.apiKey.length > 4) {
+        openCodeSynced = await setProviderAuth(cfg.providerID, cfg.apiKey);
+      }
+
+      // 3. 持久化到 .xingjing/settings.yaml
+      const workDir = productStore.activeProduct()?.workDir;
+      let persisted = false;
+      if (workDir) {
+        persisted = await saveProjectSettings(workDir, { llm: cfg });
+      }
+
+      if (openCodeSynced) {
+        setTestResult(`✅ 配置已保存，${cfg.modelName} API Key 已同步到 OpenCode${persisted ? ' 并持久化' : ''}`);
+      } else if (cfg.providerID !== 'custom') {
+        setTestResult(`✓ 配置已保存${persisted ? '并持久化' : ''}（OpenCode 未连接，使用直连模式）`);
+      } else {
+        setTestResult(`✓ 自定义配置已保存${persisted ? '并持久化' : ''}`);
+      }
+    } catch (e) {
+      console.error('[handleSave] error:', e);
+      setTestResult('❌ 保存时发生错误，请重试');
+    } finally {
+      setSaving(false);
     }
-
-    // 3. 持久化到 .xingjing/settings.yaml
-    const { productStore } = useAppStore();
-    const workDir = productStore.activeProduct()?.workDir;
-    let persisted = false;
-    if (workDir) {
-      persisted = await saveProjectSettings(workDir, { llm: cfg });
-    }
-
-    if (openCodeSynced) {
-      setTestResult(`✅ 配置已保存，${cfg.modelName} API Key 已同步到 OpenCode${persisted ? ' 并持久化' : ''}`);
-    } else if (cfg.providerID !== 'custom') {
-      setTestResult(`✓ 配置已保存${persisted ? '并持久化' : ''}（OpenCode 未连接，使用直连模式）`);
-    } else {
-      setTestResult(`✓ 自定义配置已保存${persisted ? '并持久化' : ''}`);
-    }
-    setSaving(false);
   };
 
   return (

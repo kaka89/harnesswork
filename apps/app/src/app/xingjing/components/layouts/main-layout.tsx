@@ -18,6 +18,7 @@ export const BackNavigationContext = createContext<() => void>(() => {
   }
 });
 import { useAppStore, type Role } from '../../stores/app-store';
+import { currentUser } from '../../services/auth-service';
 import ProductSwitcher from '../product/product-switcher';
 import { callAgent } from '../../services/opencode-client';
 import {
@@ -440,9 +441,18 @@ const MainLayout: ParentComponent = (props) => {
 
             {/* User Avatar */}
             <div
-              class={`w-8 h-8 rounded-full flex items-center justify-center text-white text-sm cursor-pointer ${isSoloMode() ? 'bg-[var(--green-9)]' : 'bg-[var(--purple-9)]'}`}
+              class={`w-8 h-8 rounded-full flex items-center justify-center text-white text-sm cursor-pointer overflow-hidden ${isSoloMode() ? 'bg-[var(--green-9)]' : 'bg-[var(--purple-9)]'}`}
+              onClick={() => navigate(isSoloMode() ? '/solo/settings?tab=profile' : '/settings?tab=profile')}
+              title="个人信息"
             >
-              {state.currentUser[0]}
+              <Show
+                when={currentUser()?.avatar_url}
+                fallback={<span>{state.currentUser[0]}</span>}
+              >
+                {(url) => (
+                  <img src={url()} alt="头像" class="w-full h-full object-cover" />
+                )}
+              </Show>
             </div>
           </div>
         </header>

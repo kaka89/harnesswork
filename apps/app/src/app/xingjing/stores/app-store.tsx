@@ -39,6 +39,7 @@ export interface Product {
   type: 'web' | 'mobile' | 'enterprise' | 'saas' | 'tool' | 'other';
   mode: 'team' | 'solo';
   techStack?: string;
+  workDir?: string;
   createdAt: string;
 }
 

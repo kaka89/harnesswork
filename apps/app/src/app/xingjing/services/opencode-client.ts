@@ -535,6 +535,17 @@ export interface CallAgentOptions {
   onDone?: (fullText: string) => void;
   /** 错误回调 */
   onError?: (errMsg: string) => void;
+  /** 工具权限请求回调（用户决定是否授权）。
+   *  不提供时沿用自动拒绝兜底行为。
+   *  提供时 SSE 循环将暂停等待 resolve 后继续。*/
+  onPermissionAsked?: (params: {
+    permissionId: string;
+    sessionId: string;
+    tool?: string;
+    description?: string;
+    input?: string;
+    resolve: (action: 'once' | 'always' | 'reject') => void;
+  }) => void;
 }
 
 /**
@@ -589,11 +600,13 @@ async function runAgentSession(
   // 新建 session（Layer 2 或首次调用）
   if (!sid) {
     try {
-      // 传入 deny-all 权限规则，阻止 Agent 自动执行工具（双重防护：session 级 + 事件级 auto-reject）
-      const denyAllPermission = [{ permission: '*', pattern: '*', action: 'deny' }];
+      // 有 onPermissionAsked 时不设置 deny-all（否则 OpenCode 静默拒绝，不发 permission.asked 事件）
+      const sessionPermission = opts.onPermissionAsked
+        ? undefined
+        : [{ permission: '*', pattern: '*', action: 'deny' }];
       const result = await client.session.create({
         body: { ...(opts.title ? { title: opts.title } : { title: `xingjing-${Date.now()}` }) },
-        permission: denyAllPermission,
+        ...(sessionPermission ? { permission: sessionPermission } : {}),
         ...(opts.directory ?? _directory ? { directory: opts.directory ?? _directory } : {}),
       } as Parameters<typeof client.session.create>[0]);
       sid = (result.data as { id: string } | undefined)?.id ?? null;
@@ -741,14 +754,27 @@ async function runAgentSession(
             }
           }
 
-          // ── 工具权限请求：自动拒绝并继续，让 model 以文本形式完成响应 ──
-          // 原先视为 hard-error 会导致 UI 卡在 streaming 状态后进入漫长重试
+          // ── 工具权限请求 ──
           if (evt.type === 'permission.asked') {
             const evtSid = typeof p.sessionID === 'string' ? p.sessionID : null;
             if (evtSid && evtSid !== finalSid) continue;
             const permId = typeof p.id === 'string' ? p.id : null;
-            if (permId) {
-              // 自动拒绝权限请求，model 收到拒绝后会继续以纯文本形式生成响应
+            if (permId && opts.onPermissionAsked) {
+              // 有回调：暂停 SSE 循环，等待用户在 UI 上做决策
+              const action = await new Promise<'once' | 'always' | 'reject'>((res) => {
+                opts.onPermissionAsked!({
+                  permissionId: permId,
+                  sessionId: finalSid,
+                  tool: typeof p.tool === 'string' ? p.tool : undefined,
+                  description: typeof p.description === 'string' ? p.description : undefined,
+                  input: typeof p.input === 'string' ? p.input : (typeof p.path === 'string' ? p.path : undefined),
+                  resolve: res,
+                });
+              });
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              void (getClient().permission as any).reply({ requestID: permId, reply: action }).catch(() => {});
+            } else if (permId) {
+              // 无回调兜底：自动拒绝，model 继续以纯文本生成响应
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               void (getClient().permission as any).reply({ requestID: permId, reply: 'reject' }).catch(() => {});
             }

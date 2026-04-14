@@ -227,7 +227,7 @@ export async function sessionCreate(
 export async function sessionPrompt(
   sessionId: string,
   content: string,
-  opts?: { directory?: string; model?: { providerID: string; modelID: string } },
+  opts?: { directory?: string; model?: { providerID: string; modelID: string }; disableTools?: boolean },
 ): Promise<boolean> {
   const client = getXingjingClient();
   try {
@@ -237,6 +237,7 @@ export async function sessionPrompt(
       sessionID: sessionId,
       directory: opts?.directory ?? (_directory || undefined),
       ...(opts?.model ? { model: opts.model } : {}),
+      ...(opts?.disableTools ? { tools: {} } : {}),
       parts: [{ type: 'text', text: content }],
     });
     return true;
@@ -709,6 +710,24 @@ async function runAgentSession(
               return;
             }
           }
+
+          // ── 工具权限请求：视为硬错误，避免 session 永久挂起 ──
+          if (evt.type === 'permission.asked') {
+            const evtSid = typeof p.sessionID === 'string' ? p.sessionID : null;
+            if (evtSid && evtSid !== finalSid) continue;
+            cleanup();
+            resolve({ status: 'hard-error', accumulated: acc, sessionId: finalSid, error: 'Agent 请求工具权限（自动拒绝）：xingjing 虚拟 Agent 不支持工具调用' });
+            return;
+          }
+
+          // ── 澄清问题请求：视为硬错误，避免 session 永久挂起 ──
+          if (evt.type === 'question.asked') {
+            const evtSid = typeof p.sessionID === 'string' ? p.sessionID : null;
+            if (evtSid && evtSid !== finalSid) continue;
+            cleanup();
+            resolve({ status: 'hard-error', accumulated: acc, sessionId: finalSid, error: 'Agent 发起澄清问题请求（自动拒绝）：xingjing 虚拟 Agent 不支持交互式澄清' });
+            return;
+          }
         }
 
         // 事件流结束但未收到完成信号
@@ -743,6 +762,7 @@ async function runAgentSession(
             sessionID: finalSid,
             directory: opts.directory ?? (_directory || undefined),
             ...(opts.model ? { model: opts.model } : {}),
+            tools: {},  // 禁用所有工具，xingjing 虚拟 Agent 只需文本输出
             parts: [{ type: 'text', text: fullPrompt }],
           });
         } catch {
@@ -791,7 +811,6 @@ export async function callAgentWithClient(
       opts.onDone?.(accumulated);
       return;
     }
-
     if (r.status === 'hard-error' && !r.error?.includes('无法创建')) break;
     if (!sessionId) break;
   }
@@ -851,7 +870,6 @@ export async function callAgent(opts: CallAgentOptions): Promise<void> {
       opts.onDone?.(accumulated);
       return;
     }
-
     // 服务端硬错误（session.error）：不做 Layer 1 重试，直接进 Layer 2
     if (r.status === 'hard-error' && !r.error?.includes('无法创建')) {
       break;

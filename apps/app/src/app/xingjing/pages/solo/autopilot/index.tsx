@@ -155,6 +155,7 @@ const AgentPanelSidebar = (props: {
   runState: RunState;
   artifactCount: (id: string) => number;
   stepTimes: Record<string, string>;
+  progress: number;
 }) => {
   const [isCollapsed, setIsCollapsed] = createSignal(false);
 
@@ -325,18 +326,30 @@ const AgentPanelSidebar = (props: {
 
         {/* 进度区 */}
         <div style={{ padding: '8px 14px 10px', 'border-bottom': `1px solid ${themeColors.border}`, 'flex-shrink': '0' }}>
+          {/* 状态文字 + 百分比 */}
+          <Show when={props.runState !== 'idle'}>
+            <div style={{ display: 'flex', 'justify-content': 'space-between', 'align-items': 'center', 'margin-bottom': '4px' }}>
+              <span style={{ 'font-size': '11px', color: themeColors.textMuted, 'line-height': '1.3' }}>
+                {props.runState === 'done'
+                  ? `全部完成 · ${props.agents.length} 个角色脑并行调度`
+                  : `并行调度中... ${doneCount()}/${props.agents.length} 个脑已完成`}
+              </span>
+              <span style={{ 'font-size': '11px', color: themeColors.textMuted, 'flex-shrink': '0', 'margin-left': '6px' }}>{props.progress}%</span>
+            </div>
+          </Show>
+          {/* 进度条 */}
           <div style={{
             background: themeColors.border,
-            'border-radius': '2px',
-            height: '3px',
+            'border-radius': '4px',
+            height: '6px',
             'margin-bottom': '6px',
           }}>
             <div style={{
-              background: chartColors.success,
+              background: props.runState === 'done' ? chartColors.success : chartColors.primary,
               height: '100%',
-              'border-radius': '2px',
-              width: `${progressPct()}%`,
-              transition: 'width 0.5s ease',
+              'border-radius': '4px',
+              width: `${props.progress || progressPct()}%`,
+              transition: 'width 0.3s ease',
             }} />
           </div>
           <div style={{ display: 'flex', 'justify-content': 'space-between', 'align-items': 'center' }}>
@@ -941,6 +954,7 @@ const SoloAutopilot = () => {
           runState={runState()}
           artifactCount={agentArtifactCount}
           stepTimes={stepTimes()}
+          progress={progress()}
         />
       </div>
 
@@ -1620,32 +1634,7 @@ const SoloAutopilot = () => {
                 </div>
               </Show>
 
-              {/* 进度条 */}
-              <Show when={runState() !== 'idle'}>
-                <div>
-                  <div style={{ display: 'flex', 'justify-content': 'space-between', 'margin-bottom': '4px' }}>
-                    <span style={{ 'font-size': '12px', color: themeColors.textMuted }}>
-                      {runState() === 'done'
-                        ? `全部完成 · 4 个角色脑并行调度`
-                        : `并行调度中... ${doneAgents()}/4 个脑已完成`}
-                    </span>
-                    <span style={{ 'font-size': '12px', color: themeColors.textMuted }}>{progress()}%</span>
-                  </div>
-                  <div style={{
-                    background: themeColors.border,
-                    'border-radius': '4px',
-                    height: '6px',
-                  }}>
-                    <div style={{
-                      background: runState() === 'done' ? chartColors.success : chartColors.primary,
-                      height: '100%',
-                      'border-radius': '4px',
-                      width: `${progress()}%`,
-                      transition: 'width 0.3s ease',
-                    }} />
-                  </div>
-                </div>
-              </Show>
+
             </div>
           </div>
         </Show>

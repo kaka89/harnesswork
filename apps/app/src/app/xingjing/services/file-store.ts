@@ -1188,6 +1188,49 @@ export async function saveUserFeedback(workDir: string, feedback: SoloUserFeedba
   );
 }
 
+// ─── Autopilot 会话历史持久化 ─────────────────────────────────────────────
+
+export interface AutopilotChatMessage {
+  id: string;
+  type: 'user' | 'ai' | 'system';
+  text: string;
+  time: string;
+  agentId?: string;
+  agentName?: string;
+  agentEmoji?: string;
+}
+
+export interface AutopilotSession {
+  id: string;
+  goal: string;
+  startedAt: string;
+  messages: AutopilotChatMessage[];
+}
+
+export interface AutopilotHistory {
+  sessions: AutopilotSession[];
+}
+
+export async function loadAutopilotHistory(workDir: string): Promise<AutopilotHistory> {
+  const path = `${workDir}/.xingjing/autopilot-history.json`;
+  try {
+    const content = await fileRead(path);
+    if (!content) return { sessions: [] };
+    return JSON.parse(content) as AutopilotHistory;
+  } catch {
+    return { sessions: [] };
+  }
+}
+
+export async function saveAutopilotHistory(
+  workDir: string,
+  history: AutopilotHistory,
+): Promise<boolean> {
+  const trimmed = { sessions: history.sessions.slice(0, 20) };
+  const content = JSON.stringify(trimmed, null, 2);
+  return fileWrite(`${workDir}/.xingjing/autopilot-history.json`, content);
+}
+
 // ─── Agent 定义加载（.opencode/agents/*.md）──────────────────────────────
 
 export interface AgentDefRecord {

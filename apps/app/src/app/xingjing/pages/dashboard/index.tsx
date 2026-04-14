@@ -9,7 +9,7 @@ import { themeColors, chartColors } from '../../utils/colors';
 const Dashboard = () => {
   // API 集成
   const { data: metrics, isUsingFallback } = useApi(
-    () => metricsApi.list(),
+    () => metricsApi.list() as unknown as Promise<{ doraMetrics: typeof fallbackDoraMetrics; doraTrend: typeof fallbackDoraTrend }>,
     { doraMetrics: fallbackDoraMetrics, doraTrend: fallbackDoraTrend }
   );
 

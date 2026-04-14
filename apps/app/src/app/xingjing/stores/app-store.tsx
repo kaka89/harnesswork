@@ -69,6 +69,11 @@ export interface XingjingOpenworkContext {
   readOpencodeConfig: (workspaceId: string) => Promise<unknown>;
   /** 写回指定工作区的 OpenCode 配置文件 */
   writeOpencodeConfig: (workspaceId: string, content: string) => Promise<boolean>;
+  /**
+   * 根据产品目录在 OpenWork 中创建一个本地工作区。
+   * 成功时返回新建的 workspace ID，失败返回 null。
+   */
+  createWorkspaceByDir: (productDir: string, productName: string) => Promise<string | null>;
 }
 
 interface AppState {
@@ -130,6 +135,12 @@ const AppStoreContext = createContext<{
     upsertOpenworkSkill: (name: string, content: string, description?: string) => Promise<boolean>;
     readOpencodeConfig: () => Promise<unknown>;
     writeOpencodeConfig: (content: string) => Promise<boolean>;
+    /**
+     * 确保当前活跃产品已关联 OpenWork 工作区。
+     * 若无匹配工作区，则根据产品 workDir 自动创建一个，并更新 resolvedWorkspaceId。
+     * 返回最终的 workspaceId（成功）或 null（失败/不可用）。
+     */
+    ensureWorkspaceForActiveProduct: () => Promise<string | null>;
     getWorkDir: () => string;
   };
 }>();
@@ -467,6 +478,23 @@ export const AppStoreProvider: ParentComponent<{
       const wsId = resolvedWorkspaceId();
       if (!wsId || !props.openworkCtx) return Promise.resolve(false);
       return props.openworkCtx.writeOpencodeConfig(wsId, content);
+    },
+    ensureWorkspaceForActiveProduct: async (): Promise<string | null> => {
+      if (!props.openworkCtx) return null;
+      const product = productStore.activeProduct();
+      if (!product?.workDir) return null;
+      // 先尝试再查一次（避免竞争条件）
+      const existing = await props.openworkCtx.resolveWorkspaceByDir(product.workDir).catch(() => null);
+      if (existing) {
+        setResolvedWorkspaceId(existing);
+        return existing;
+      }
+      // 创建新工作区
+      const newWsId = await props.openworkCtx.createWorkspaceByDir(product.workDir, product.name).catch(() => null);
+      if (newWsId) {
+        setResolvedWorkspaceId(newWsId);
+      }
+      return newWsId;
     },
     getWorkDir,
   };

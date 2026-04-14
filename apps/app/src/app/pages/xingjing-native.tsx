@@ -86,6 +86,19 @@ export default function XingjingNativePage(props: XingjingNativePageProps) {
           writeOpencodeConfig: (workspaceId, content) =>
             props.openworkServerClient!.writeOpencodeConfigFile(workspaceId, 'project', content)
               .then(() => true).catch(() => false),
+          createWorkspaceByDir: async (productDir: string, productName: string) => {
+            // 创建 OpenWork 本地工作区
+            await props.openworkServerClient!.createLocalWorkspace({
+              folderPath: productDir,
+              name: productName,
+              preset: 'starter',
+            }).catch(() => null);
+            // 创建后重新查询列表以获取新工作区 ID
+            const list = await props.openworkServerClient!.listWorkspaces().catch(() => null);
+            const match = list?.items?.find((w) => w.path === productDir)
+              ?? list?.workspaces?.find((w) => w.path === productDir);
+            return match?.id ?? null;
+          },
         }
       : undefined
   );

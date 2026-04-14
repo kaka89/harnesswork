@@ -27,7 +27,7 @@ function isValidCode(code: string): boolean {
 }
 
 const NewProductModal: Component<Props> = (props) => {
-  const { productStore } = useAppStore();
+  const { productStore, actions } = useAppStore();
 
   // ── 通用字段 ──
   const [productType, setProductType] = createSignal<ProductType>('team');
@@ -136,7 +136,7 @@ const NewProductModal: Component<Props> = (props) => {
           productCode().trim(),
           soloAppCode().trim(),
         );
-        await productStore.addProduct({
+        const newSoloProduct = await productStore.addProduct({
           name: name().trim(),
           code: productCode().trim(),
           workDir: workDir().trim(),
@@ -144,6 +144,12 @@ const NewProductModal: Component<Props> = (props) => {
           description: '',
           productType: 'solo',
         });
+        // 非首个产品不会自动激活，确保新产品处于活跃状态
+        if (productStore.activeProduct()?.id !== newSoloProduct.id) {
+          await productStore.switchProduct(newSoloProduct.id);
+        }
+        // 在 OpenWork 中为产品目录创建 workspace（静默失败，不阻断产品创建流程）
+        await actions.ensureWorkspaceForActiveProduct().catch(() => null);
       } else {
         plGit.commitToken();
         domainGit.commitToken();
@@ -164,7 +170,7 @@ const NewProductModal: Component<Props> = (props) => {
             app: appGit.gitUrl().trim() || undefined,
           },
         );
-        await productStore.addProduct({
+        const newTeamProduct = await productStore.addProduct({
           name: name().trim(),
           code: productCode().trim(),
           workDir: workDir().trim(),
@@ -172,6 +178,12 @@ const NewProductModal: Component<Props> = (props) => {
           productType: 'team',
           teamStructure,
         });
+        // 非首个产品不会自动激活，确保新产品处于活跃状态
+        if (productStore.activeProduct()?.id !== newTeamProduct.id) {
+          await productStore.switchProduct(newTeamProduct.id);
+        }
+        // 在 OpenWork 中为产品目录创建 workspace（静默失败，不阻断产品创建流程）
+        await actions.ensureWorkspaceForActiveProduct().catch(() => null);
       }
       resetForm();
       props.onClose();

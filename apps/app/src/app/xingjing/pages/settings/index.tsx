@@ -4,7 +4,7 @@ import { Palette, Bot, Github, Clock, ShieldCheck, Sun, Moon, Save, FlaskConical
 import { useAppStore } from '../../stores/app-store';
 import { themeColors, chartColors } from '../../utils/colors';
 import { callAgent, setProviderAuth, gitSync } from '../../services/opencode-client';
-import { saveProjectSettings, loadProjectSettings } from '../../services/file-store';
+import { saveGlobalSettings, loadGlobalSettings, saveProjectSettings, loadProjectSettings } from '../../services/file-store';
 import {
   defaultLLMConfig, modelOptions, LLMConfig, ModelOption,
   defaultGitRepos, GitRepoConfig,
@@ -128,17 +128,14 @@ const LLMTab: Component = () => {
     }
     // 加载 per-provider API Keys
     try {
-      const workDir = productStore.activeProduct()?.workDir;
-      if (workDir) {
-        const settings = await loadProjectSettings(workDir);
-        const keys: Record<string, string> = { ...(settings.llmProviderKeys ?? {}) };
-        // 以 store 中当前 provider 的 key 为准（可能比文件更新）
-        const cur = state.llmConfig;
-        if (cur.providerID && cur.apiKey) {
-          keys[cur.providerID] = cur.apiKey;
-        }
-        setProviderKeys(keys);
+      const globalSettings = await loadGlobalSettings();
+      const keys: Record<string, string> = { ...(globalSettings.llmProviderKeys ?? {}) };
+      // 以 store 中当前 provider 的 key 为准（可能比文件更新）
+      const cur = state.llmConfig;
+      if (cur.providerID && cur.apiKey) {
+        keys[cur.providerID] = cur.apiKey;
       }
+      setProviderKeys(keys);
     } catch {
       // 静默降级
     }
@@ -475,18 +472,15 @@ const LLMTab: Component = () => {
         setOwSyncStatus('error');
       }
 
-      // 4. 持久化到 .xingjing/settings.yaml（包含 per-provider keys 居底）
-      const workDir = productStore.activeProduct()?.workDir;
+      // 4. 持久化到全局配置（~/.xingjing/global-settings.yaml，不依赖 workDir）
       let persisted = false;
-      if (workDir) {
-        // 同步当前 provider 最新 key 到 providerKeys
-        const allKeys = {
-          ...providerKeys(),
-          ...(cfg.providerID ? { [cfg.providerID]: cfg.apiKey } : {}),
-        };
-        setProviderKeys(allKeys);
-        persisted = await saveProjectSettings(workDir, { llm: cfg, llmProviderKeys: allKeys });
-      }
+      // 同步当前 provider 最新 key 到 providerKeys
+      const allKeys = {
+        ...providerKeys(),
+        ...(cfg.providerID ? { [cfg.providerID]: cfg.apiKey } : {}),
+      };
+      setProviderKeys(allKeys);
+      persisted = await saveGlobalSettings({ llm: cfg, llmProviderKeys: allKeys });
 
       if (owWritten) {
         setTestResult(`✅ 配置已同步至 OpenWork 工作区${openCodeSynced ? '，API Key 已注入 OpenCode' : ''}${persisted ? '，并本地持久化' : ''}`);

@@ -8,9 +8,10 @@ import {
   loadPrds, savePrd,
   loadTasks, saveTask,
   loadBacklog, saveBacklog,
-  loadProjectSettings, saveProjectSettings,
+  loadProjectSettings,
+  loadGlobalSettings, saveGlobalSettings,
 } from '../services/file-store';
-import { callAgent as _callAgent, callAgentWithClient, callAgentDirect, type CallAgentOptions } from '../services/opencode-client';
+import { callAgent as _callAgent, callAgentWithClient, callAgentDirect, setProviderAuth, type CallAgentOptions } from '../services/opencode-client';
 import { appendAgentLog } from '../services/agent-logger';
 import { currentUser } from '../services/auth-service';
 import type { createClient } from '../../lib/opencode';
@@ -169,14 +170,11 @@ export const AppStoreProvider: ParentComponent<{
     }
   });
 
-  // ── 从文件系统加载项目数据 ──
+  // ── 从文件系统加载项目数据（不包含 LLM 配置，已改为全局加载）──
   async function loadFromFiles(workDir: string) {
     try {
-      // 加载项目级设置（LLM 配置等）
-      const settings = await loadProjectSettings(workDir);
-      if (settings.llm) {
-        setState('llmConfig', { ...DEFAULT_LLM_CONFIG, ...settings.llm });
-      }
+      // 加载项目级设置（不包含 LLM， LLM 已统一从全局配置加载）
+      await loadProjectSettings(workDir); // 保留调用以兼容其他设置字段
 
       // 加载 PRDs（如果文件存在，覆盖 mock 数据；否则保留 mock 数据作为初始种子）
       const prds = await loadPrds(workDir);
@@ -208,12 +206,17 @@ export const AppStoreProvider: ParentComponent<{
     }
   });
 
-  // ── 当活跃产品切换时，加载对应项目数据 ──
+  // ── 当活跃产品切换时，加载对应项目数据，并将全局 LLM 配置注入 OpenCode ──
   createEffect(() => {
     const product = productStore.activeProduct();
     if (product?.workDir) {
       setState('currentProject', product.name);
       loadFromFiles(product.workDir).catch(() => {/* silent */});
+      // 将全局 LLM 配置自动注入 OpenCode（切换 workspace 时确保模型配置有效）
+      const cfg = state.llmConfig;
+      if (cfg.providerID && cfg.providerID !== 'custom' && cfg.apiKey && cfg.apiKey.length > 4) {
+        setProviderAuth(cfg.providerID, cfg.apiKey).catch(() => {/* silent */});
+      }
     }
   });
 
@@ -224,6 +227,12 @@ export const AppStoreProvider: ParentComponent<{
   // Attempt to load products from file on mount
   onMount(() => {
     productStore.loadFromFile().catch(() => {/* silent */});
+    // 加载全局 LLM 配置（~/.xingjing/global-settings.yaml）
+    loadGlobalSettings().then((g) => {
+      if (g.llm) {
+        setState('llmConfig', { ...DEFAULT_LLM_CONFIG, ...g.llm });
+      }
+    }).catch(() => {/* silent */});
   });
 
   // ── 获取当前活跃产品的 workDir ──
@@ -306,11 +315,8 @@ export const AppStoreProvider: ParentComponent<{
 
     setLlmConfig: (config: LLMConfig) => {
       setState('llmConfig', config);
-      // 持久化到项目级 settings.yaml
-      const workDir = getWorkDir();
-      if (workDir) {
-        saveProjectSettings(workDir, { llm: config }).catch(() => {});
-      }
+      // 持久化到全局配置（~/.xingjing/global-settings.yaml，不再依赖 workDir）
+      saveGlobalSettings({ llm: config }).catch(() => {});
     },
 
     callAgent: (opts: CallAgentOptions) => {

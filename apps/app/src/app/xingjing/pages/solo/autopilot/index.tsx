@@ -1,6 +1,6 @@
 import { createSignal, Show, For, onCleanup, onMount } from 'solid-js';
 import { useNavigate } from '@solidjs/router';
-import { FileText, PlayCircle, CheckCircle, Clock, Zap, Loader2, Settings, Maximize2 } from 'lucide-solid';
+import { FileText, PlayCircle, CheckCircle, Clock, Zap, Loader2, Settings, Maximize2, ChevronDown, ChevronUp } from 'lucide-solid';
 import CreateProductModal from '../../../components/product/new-product-modal';
 import { useAppStore } from '../../../stores/app-store';
 import { themeColors, chartColors } from '../../../utils/colors';
@@ -173,6 +173,12 @@ const SoloAutopilot = () => {
   const [artifactWidth, setArtifactWidth] = createSignal(420);
   const [artifactFloat, setArtifactFloat] = createSignal(false);
   const [artifactFloatPos, setArtifactFloatPos] = createSignal({ x: 0, y: 64 });
+  // 展开/折叠状态：key = step.id 或 agentId
+  const [expandedSteps, setExpandedSteps] = createSignal<Record<string, boolean>>({});
+  // 步骤出现时间戳：key = step.id 或 agentId
+  const [stepTimes, setStepTimes] = createSignal<Record<string, string>>({});
+  const [artifactFloatWidth, setArtifactFloatWidth] = createSignal(420);
+  const [artifactFloatHeight, setArtifactFloatHeight] = createSignal(Math.round(window.innerHeight * 0.78));
 
   // ─── 模型选择器状态 ───────────────────────────────────────────────────────────
   // per-provider 已配置的 API Keys（从 settings.yaml 读取）
@@ -241,6 +247,19 @@ const SoloAutopilot = () => {
     setAgentStreamTexts({});
     setAgentExecStatuses({});
     setDirectAnswer(null);
+    setExpandedSteps({});
+    setStepTimes({});
+  };
+
+  // 格式化当前时间 HH:MM:SS
+  const nowTime = () => {
+    const d = new Date();
+    return d.toTimeString().slice(0, 8);
+  };
+
+  // 切换单个步骤展开/折叠
+  const toggleStep = (key: string) => {
+    setExpandedSteps(prev => ({ ...prev, [key]: !prev[key] }));
   };
 
   // ─── 解析流式文本为 Timeline 步骤 ───
@@ -385,12 +404,18 @@ const SoloAutopilot = () => {
       onOrchestratorDone: (plan) => {
         setDispatchPlan(plan);
         const statuses: Record<string, AgentExecutionStatus> = {};
-        plan.forEach(({ agentId }) => { statuses[agentId] = 'pending'; });
+        const times: Record<string, string> = {};
+        plan.forEach(({ agentId }) => { statuses[agentId] = 'pending'; times[agentId] = ''; });
         setAgentExecStatuses(statuses);
+        setStepTimes(prev => ({ ...prev, ...times }));
         setProgress(20);
       },
       onAgentStatus: (agentId, status) => {
         setAgentExecStatuses((prev) => ({ ...prev, [agentId]: status }));
+        // 开始思考时记录时间戳
+        if (status === 'thinking') {
+          setStepTimes(prev => ({ ...prev, [agentId]: nowTime() }));
+        }
         const legacyMap: Record<AgentExecutionStatus, 'idle' | 'thinking' | 'working' | 'done' | 'waiting'> = {
           idle: 'idle', pending: 'waiting', thinking: 'thinking',
           working: 'working', done: 'done', error: 'done',
@@ -503,22 +528,62 @@ const SoloAutopilot = () => {
     const dx = e.clientX - floatDragStart.x;
     const dy = e.clientY - floatDragStart.y;
     setArtifactFloatPos({
-      x: Math.max(0, Math.min(floatPosStart.x + dx, window.innerWidth - artifactWidth())),
+      x: Math.max(0, Math.min(floatPosStart.x + dx, window.innerWidth - artifactFloatWidth())),
       y: Math.max(0, floatPosStart.y + dy),
     });
   };
   const handleFloatDragEnd = () => { isFloatDragging = false; };
 
+  // ─── 浮动面板边框 Resize ──────────────────────────────────────────────────────
+  let isFloatResizing = false;
+  let floatResizeDir = '';
+  let floatResizeStart = { x: 0, y: 0, w: 0, h: 0, px: 0 };
+
+  const handleFloatResizeMove = (e: PointerEvent) => {
+    if (!isFloatResizing) return;
+    const dx = e.clientX - floatResizeStart.x;
+    const dy = e.clientY - floatResizeStart.y;
+    if (floatResizeDir.includes('right')) {
+      setArtifactFloatWidth(Math.max(280, Math.min(window.innerWidth - 40, floatResizeStart.w + dx)));
+    }
+    if (floatResizeDir.includes('left')) {
+      const newW = Math.max(280, Math.min(window.innerWidth - 40, floatResizeStart.w - dx));
+      setArtifactFloatWidth(newW);
+      setArtifactFloatPos(prev => ({ ...prev, x: Math.max(0, floatResizeStart.px + floatResizeStart.w - newW) }));
+    }
+    if (floatResizeDir.includes('bottom')) {
+      setArtifactFloatHeight(Math.max(200, Math.min(window.innerHeight - 80, floatResizeStart.h + dy)));
+    }
+  };
+
+  const handleFloatResizeEnd = () => {
+    isFloatResizing = false;
+    document.removeEventListener('pointermove', handleFloatResizeMove);
+    document.removeEventListener('pointerup', handleFloatResizeEnd);
+  };
+
+  const handleFloatResizeEdge = (e: PointerEvent, dir: string) => {
+    isFloatResizing = true;
+    floatResizeDir = dir;
+    floatResizeStart = { x: e.clientX, y: e.clientY, w: artifactFloatWidth(), h: artifactFloatHeight(), px: artifactFloatPos().x };
+    document.addEventListener('pointermove', handleFloatResizeMove);
+    document.addEventListener('pointerup', handleFloatResizeEnd);
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
   onCleanup(() => {
     clearTimers();
     document.removeEventListener('pointermove', handleResizeMove);
     document.removeEventListener('pointerup', handleResizeEnd);
+    document.removeEventListener('pointermove', handleFloatResizeMove);
+    document.removeEventListener('pointerup', handleFloatResizeEnd);
   });
 
   const doneAgents = () => Object.values(agentStatuses()).filter((s) => s === 'done').length;
 
   return (
-    <div style={{ display: 'flex', 'align-items': 'flex-start', 'max-width': '1400px', margin: '0 auto' }}>
+    <div style={{ display: 'flex', 'align-items': 'flex-start', width: '100%' }}>
       {/* 左列：信息横幅 + 目标输入 + Agent卡片 + 执行流 */}
       <div style={{ flex: '1', 'min-width': '0', display: 'flex', 'flex-direction': 'column', gap: '16px', 'padding-right': '8px' }}>
 
@@ -881,121 +946,276 @@ const SoloAutopilot = () => {
                   </div>
                 </Show>
 
-                {/* Phase 2: Agent 流式输出 */}
-                <For each={dispatchPlan()}>
-                  {(item) => {
-                    const agent = SOLO_AGENTS.find((a) => a.id === item.agentId);
-                    const text = () => agentStreamTexts()[item.agentId] ?? '';
-                    const execStatus = () => agentExecStatuses()[item.agentId] ?? 'pending';
-                    const isStreaming = () => execStatus() === 'thinking' || execStatus() === 'working';
-                    if (!agent) return null;
-                    return (
-                      <div style={{ 'padding-bottom': '10px', display: 'flex', gap: '10px' }}>
-                        <div style={{
-                          width: '24px', height: '24px', 'border-radius': '50%', 'flex-shrink': '0',
-                          background: execStatus() === 'done' ? agent.color : 'transparent',
-                          border: isStreaming() ? `2px solid ${agent.color}` : `2px solid ${themeColors.border}`,
-                          display: 'flex', 'align-items': 'center', 'justify-content': 'center',
-                          color: themeColors.surface, 'font-size': '14px',
-                        }}>
-                          <Show when={isStreaming()}>
-                            <Loader2 size={12} style={{ color: agent.color, animation: 'spin 1s linear infinite' }} />
-                          </Show>
-                          <Show when={!isStreaming() && execStatus() === 'done'}>
-                            {agent.emoji}
-                          </Show>
-                        </div>
-                        <div style={{ flex: '1' }}>
-                          <div style={{ display: 'flex', 'align-items': 'center', gap: '6px', 'margin-bottom': '4px' }}>
+                {/* Phase 2: Agent 执行时间轴（折叠卡片） */}
+                <Show when={dispatchPlan().length > 0}>
+                  <div style={{ display: 'flex', 'flex-direction': 'column' }}>
+                    <For each={dispatchPlan()}>
+                      {(item, idx) => {
+                        const agent = SOLO_AGENTS.find((a) => a.id === item.agentId);
+                        const text = () => agentStreamTexts()[item.agentId] ?? '';
+                        const execStatus = () => agentExecStatuses()[item.agentId] ?? 'pending';
+                        const isPending = () => execStatus() === 'pending';
+                        const isActive = () => execStatus() === 'thinking' || execStatus() === 'working';
+                        const isDone = () => execStatus() === 'done';
+                        const isExpanded = () => expandedSteps()[item.agentId] ?? false;
+                        const time = () => stepTimes()[item.agentId] || '';
+                        const isLast = () => idx() === dispatchPlan().length - 1;
+                        const hasDetail = () => text().length > 0;
+                        const summaryText = () => text() ? text().split('\n')[0].slice(0, 100) : '';
+                        if (!agent) return null;
+                        return (
+                          <div style={{ display: 'flex', 'align-items': 'stretch' }}>
+                            {/* 左側：状态圆圈 + 竖线 */}
                             <div style={{
-                              display: 'inline-flex', 'align-items': 'center',
-                              padding: '2px 8px', 'border-radius': '4px', 'font-size': '11px',
-                              border: `1px solid ${themeColors.border}`,
-                              background: agent.color + '20', color: agent.color, margin: '0',
+                              'flex-shrink': '0', display: 'flex', 'flex-direction': 'column',
+                              'align-items': 'center', width: '28px',
                             }}>
-                              {agent.name}
+                              <div style={{
+                                width: '20px', height: '20px', 'border-radius': '50%', 'flex-shrink': '0',
+                                background: isDone() ? chartColors.success : isActive() ? '#f97316' : 'transparent',
+                                border: isPending() ? `2px solid ${themeColors.border}` : isDone() ? `2px solid ${chartColors.success}` : '2px solid #f97316',
+                                display: 'flex', 'align-items': 'center', 'justify-content': 'center',
+                                'margin-top': '14px', 'z-index': '1',
+                              }}>
+                                <Show when={isActive()}>
+                                  <Loader2 size={10} style={{ color: 'white', animation: 'spin 1s linear infinite' }} />
+                                </Show>
+                                <Show when={isDone()}>
+                                  <span style={{ color: 'white', 'font-size': '10px', 'font-weight': 'bold', 'line-height': '1' }}>&#10003;</span>
+                                </Show>
+                              </div>
+                              <Show when={!isLast()}>
+                                <div style={{
+                                  flex: '1', width: '2px', 'min-height': '8px',
+                                  background: isDone() ? chartColors.success + '50' : themeColors.border,
+                                }} />
+                              </Show>
                             </div>
-                            <span style={{ 'font-size': '11px', color: themeColors.textMuted }}>
-                              {item.task.slice(0, 40)}...
-                            </span>
+                            {/* 右側：卡片 */}
+                            <div style={{
+                              flex: '1', 'padding-left': '8px',
+                              'padding-top': '8px',
+                              'padding-bottom': isLast() ? '0' : '8px',
+                            }}>
+                              <div style={{
+                                border: `1px solid ${isActive() ? '#f9731640' : themeColors.border}`,
+                                'border-radius': '8px',
+                                background: isActive() ? '#f9731605' : themeColors.surface,
+                                overflow: 'hidden',
+                              }}>
+                                {/* Header行 */}
+                                <div
+                                  style={{
+                                    display: 'flex', 'align-items': 'center', gap: '6px',
+                                    padding: '8px 10px',
+                                    cursor: hasDetail() ? 'pointer' : 'default',
+                                  }}
+                                  onClick={() => hasDetail() && toggleStep(item.agentId)}
+                                >
+                                  <span style={{
+                                    'font-size': '12px', 'font-weight': '600', flex: '1',
+                                    color: isPending() ? themeColors.textMuted : themeColors.textPrimary,
+                                    overflow: 'hidden', 'text-overflow': 'ellipsis', 'white-space': 'nowrap',
+                                  }}>
+                                    {item.task.slice(0, 50)}
+                                  </span>
+                                  <div style={{
+                                    display: 'inline-flex', 'align-items': 'center',
+                                    padding: '1px 6px', 'border-radius': '4px', 'font-size': '10px',
+                                    background: agent.color + '20', color: agent.color, 'flex-shrink': '0',
+                                  }}>
+                                    {agent.name}
+                                  </div>
+                                  <span style={{
+                                    'font-size': '10px', color: themeColors.textMuted,
+                                    'flex-shrink': '0', 'min-width': '52px', 'text-align': 'right',
+                                  }}>
+                                    {isPending() ? '—' : time()}
+                                  </span>
+                                  <Show when={hasDetail()}>
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); toggleStep(item.agentId); }}
+                                      style={{
+                                        background: 'none', border: 'none', cursor: 'pointer',
+                                        padding: '0', color: themeColors.textMuted,
+                                        'flex-shrink': '0', display: 'flex', 'align-items': 'center',
+                                      }}
+                                    >
+                                      <Show when={isExpanded()} fallback={<ChevronDown size={14} />}>
+                                        <ChevronUp size={14} />
+                                      </Show>
+                                    </button>
+                                  </Show>
+                                  <Show when={!hasDetail()}>
+                                    <span style={{ 'font-size': '10px', color: themeColors.textMuted, 'flex-shrink': '0' }}>—</span>
+                                  </Show>
+                                </div>
+                                {/* Summary行（始终显示） */}
+                                <Show when={(isActive() || isDone()) && (summaryText() || isActive())}>
+                                  <div style={{
+                                    'border-left': `3px solid ${agent.color}`,
+                                    margin: '0 10px 8px 10px', 'padding-left': '8px',
+                                    'font-size': '11px', color: themeColors.textSecondary, 'line-height': '1.5',
+                                  }}>
+                                    <Show when={summaryText()} fallback={
+                                      <span style={{ color: '#f97316' }}>执行中...</span>
+                                    }>
+                                      {summaryText()}
+                                    </Show>
+                                  </div>
+                                </Show>
+                                {/* 展开详情 */}
+                                <Show when={isExpanded() && hasDetail()}>
+                                  <div style={{
+                                    'border-top': `1px solid ${themeColors.border}`,
+                                    margin: '0 10px 8px 10px', 'padding-top': '6px',
+                                    'font-size': '11px', color: themeColors.textSecondary,
+                                    'white-space': 'pre-wrap', 'line-height': '1.6',
+                                    'max-height': '280px', 'overflow-y': 'auto',
+                                    background: themeColors.primaryBg,
+                                    'border-radius': '4px', padding: '8px',
+                                  }}>
+                                    {text()}
+                                  </div>
+                                </Show>
+                              </div>
+                            </div>
                           </div>
-                          <Show when={text()}>
-                            <div style={{
-                              'font-size': '11px', color: themeColors.textMuted,
-                              'white-space': 'pre-wrap', 'line-height': '1.6',
-                              'max-height': '180px', 'overflow-y': 'auto',
-                              background: themeColors.successBg, padding: '4px 8px', 'border-radius': '4px',
-                            }}>
-                              {text()}
-                            </div>
-                          </Show>
-                        </div>
-                      </div>
-                    );
-                  }}
-                </For>
+                        );
+                      }}
+                    </For>
+                  </div>
+                </Show>
 
-                <div style={{ display: 'flex', 'flex-direction': 'column', gap: '12px' }}>
-                  <For each={visibleSteps()}>
-                    {(step, idx) => {
-                      const agent = SOLO_AGENTS.find((a) => a.id === step.agentId)!;
-                      const isLast = idx() === visibleSteps().length - 1 && runState() === 'running';
-                      return (
-                        <div style={{
-                          display: 'flex',
-                          gap: '12px',
-                          'padding-bottom': '4px',
-                        }}>
-                          <div style={{
-                            width: '24px',
-                            height: '24px',
-                            'border-radius': '50%',
-                            background: agent.color,
-                            display: 'flex',
-                            'align-items': 'center',
-                            'justify-content': 'center',
-                            color: themeColors.surface,
-                            'flex-shrink': '0',
-                            'font-size': '14px',
-                          }}>
-                            {isLast ? '⟳' : agent.emoji}
-                          </div>
-                          <div style={{ flex: '1' }}>
-                            <div style={{ display: 'flex', 'align-items': 'center', gap: '6px', 'margin-bottom': '2px' }}>
+                {/* visibleSteps 时间轴（暂时只在 dispatchPlan 为空时显示） */}
+                <Show when={dispatchPlan().length === 0 && visibleSteps().length > 0}>
+                  <div style={{ display: 'flex', 'flex-direction': 'column' }}>
+                    <For each={visibleSteps()}>
+                      {(step, idx) => {
+                        const agent = SOLO_AGENTS.find((a) => a.id === step.agentId) ?? {
+                          color: chartColors.success, name: step.agentName, emoji: '🤖',
+                        } as any;
+                        const isLast = () => idx() === visibleSteps().length - 1;
+                        const isExpanded = () => expandedSteps()[step.id] ?? false;
+                        const hasDetail = () => !!(step.artifact?.content);
+                        const time = () => stepTimes()[step.id] || '';
+                        return (
+                          <div style={{ display: 'flex', 'align-items': 'stretch' }}>
+                            {/* 左側：圆圈 + 竖线 */}
+                            <div style={{
+                              'flex-shrink': '0', display: 'flex', 'flex-direction': 'column',
+                              'align-items': 'center', width: '28px',
+                            }}>
                               <div style={{
-                                display: 'inline-flex',
-                                'align-items': 'center',
-                                padding: '2px 8px',
-                                'border-radius': '4px',
-                                'font-size': '11px',
-                                border: `1px solid ${themeColors.border}`,
-                                background: agent.color + '20',
-                                color: agent.color,
-                                margin: '0',
+                                width: '20px', height: '20px', 'border-radius': '50%', 'flex-shrink': '0',
+                                background: chartColors.success,
+                                border: `2px solid ${chartColors.success}`,
+                                display: 'flex', 'align-items': 'center', 'justify-content': 'center',
+                                'margin-top': '14px', 'z-index': '1',
                               }}>
-                                {agent.name}
+                                <span style={{ color: 'white', 'font-size': '10px', 'font-weight': 'bold', 'line-height': '1' }}>&#10003;</span>
                               </div>
-                              <span style={{ 'font-size': '12px', 'font-weight': '600' }}>{step.action}</span>
+                              <Show when={!isLast()}>
+                                <div style={{
+                                  flex: '1', width: '2px', 'min-height': '8px',
+                                  background: chartColors.success + '50',
+                                }} />
+                              </Show>
                             </div>
-                            <div style={{ 'font-size': '11px', color: themeColors.textMuted }}>{step.output}</div>
-                            <Show when={step.artifact}>
+                            {/* 右側：卡片 */}
+                            <div style={{
+                              flex: '1', 'padding-left': '8px',
+                              'padding-top': '8px',
+                              'padding-bottom': isLast() ? '0' : '8px',
+                            }}>
                               <div style={{
-                                'margin-top': '4px',
-                                'font-size': '11px',
-                                padding: '4px 8px',
-                                background: themeColors.successBg,
-                                'border-radius': '4px',
-                                color: chartColors.success,
+                                border: `1px solid ${themeColors.border}`,
+                                'border-radius': '8px',
+                                background: themeColors.surface,
+                                overflow: 'hidden',
                               }}>
-                                ✓ {step.artifact?.title}
+                                {/* Header行 */}
+                                <div
+                                  style={{
+                                    display: 'flex', 'align-items': 'center', gap: '6px',
+                                    padding: '8px 10px',
+                                    cursor: hasDetail() ? 'pointer' : 'default',
+                                  }}
+                                  onClick={() => hasDetail() && toggleStep(step.id)}
+                                >
+                                  <span style={{
+                                    'font-size': '12px', 'font-weight': '600', flex: '1',
+                                    color: themeColors.textPrimary,
+                                    overflow: 'hidden', 'text-overflow': 'ellipsis', 'white-space': 'nowrap',
+                                  }}>
+                                    {step.action}
+                                  </span>
+                                  <div style={{
+                                    display: 'inline-flex', 'align-items': 'center',
+                                    padding: '1px 6px', 'border-radius': '4px', 'font-size': '10px',
+                                    background: agent.color + '20', color: agent.color, 'flex-shrink': '0',
+                                  }}>
+                                    {agent.name}
+                                  </div>
+                                  <span style={{
+                                    'font-size': '10px', color: themeColors.textMuted,
+                                    'flex-shrink': '0', 'min-width': '52px', 'text-align': 'right',
+                                  }}>
+                                    {time() || '—'}
+                                  </span>
+                                  <Show when={hasDetail()}>
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); toggleStep(step.id); }}
+                                      style={{
+                                        background: 'none', border: 'none', cursor: 'pointer',
+                                        padding: '0', color: themeColors.textMuted,
+                                        'flex-shrink': '0', display: 'flex', 'align-items': 'center',
+                                      }}
+                                    >
+                                      <Show when={isExpanded()} fallback={<ChevronDown size={14} />}>
+                                        <ChevronUp size={14} />
+                                      </Show>
+                                    </button>
+                                  </Show>
+                                  <Show when={!hasDetail()}>
+                                    <span style={{ 'font-size': '10px', color: themeColors.textMuted, 'flex-shrink': '0' }}>—</span>
+                                  </Show>
+                                </div>
+                                {/* Summary行（概要）—始终显示 */}
+                                <Show when={step.output}>
+                                  <div style={{
+                                    'border-left': `3px solid ${agent.color}`,
+                                    margin: '0 10px 8px 10px', 'padding-left': '8px',
+                                    'font-size': '11px', color: themeColors.textSecondary, 'line-height': '1.5',
+                                  }}>
+                                    {step.output.slice(0, 120)}
+                                  </div>
+                                </Show>
+                                {/* 展开详情：artifact.content */}
+                                <Show when={isExpanded() && step.artifact?.content}>
+                                  <div style={{
+                                    'border-top': `1px solid ${themeColors.border}`,
+                                    margin: '0 10px 8px 10px', 'padding-top': '6px',
+                                    'font-size': '11px', color: themeColors.textSecondary,
+                                    'white-space': 'pre-wrap', 'line-height': '1.6',
+                                    'max-height': '280px', 'overflow-y': 'auto',
+                                    background: themeColors.successBg,
+                                    'border-radius': '4px', padding: '8px',
+                                  }}>
+                                    <div style={{ 'font-weight': '600', color: chartColors.success, 'margin-bottom': '4px', 'font-size': '11px' }}>
+                                      &#10003; {step.artifact!.title}
+                                    </div>
+                                    {step.artifact!.content}
+                                  </div>
+                                </Show>
                               </div>
-                            </Show>
+                            </div>
                           </div>
-                        </div>
-                      );
-                    }}
-                  </For>
-                </div>
+                        );
+                      }}
+                    </For>
+                  </div>
+                </Show>
               </div>
             }
           >
@@ -1053,6 +1273,8 @@ const SoloAutopilot = () => {
             artifacts={artifactsData()}
             isFloating={false}
             onToggleFloat={() => {
+              setArtifactFloatWidth(artifactWidth());
+              setArtifactFloatHeight(Math.round(window.innerHeight * 0.78));
               setArtifactFloatPos({ x: Math.max(0, window.innerWidth - artifactWidth() - 20), y: 64 });
               setArtifactFloat(true);
             }}
@@ -1067,8 +1289,8 @@ const SoloAutopilot = () => {
             position: 'fixed',
             left: `${artifactFloatPos().x}px`,
             top: `${artifactFloatPos().y}px`,
-            width: `${artifactWidth()}px`,
-            height: '80vh',
+            width: `${artifactFloatWidth()}px`,
+            height: `${artifactFloatHeight()}px`,
             'z-index': 200,
             'border-radius': '10px',
             overflow: 'hidden',
@@ -1082,6 +1304,7 @@ const SoloAutopilot = () => {
             onDragStart={handleFloatDragStart}
             onDragMove={handleFloatDragMove}
             onDragEnd={handleFloatDragEnd}
+            onResizeEdge={handleFloatResizeEdge}
           />
         </div>
       </Show>

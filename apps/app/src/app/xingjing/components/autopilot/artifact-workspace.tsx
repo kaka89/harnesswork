@@ -23,6 +23,7 @@ interface ArtifactWorkspaceProps {
   onDragStart?: (e: PointerEvent) => void;
   onDragMove?: (e: PointerEvent) => void;
   onDragEnd?: (e: PointerEvent) => void;
+  onResizeEdge?: (e: PointerEvent, direction: string) => void;
 }
 
 type ViewMode = 'edit' | 'source' | 'review';
@@ -118,6 +119,7 @@ const ArtifactWorkspace = (props: ArtifactWorkspaceProps) => {
         'flex-direction': 'column',
         height: '100%',
         overflow: 'hidden',
+        position: 'relative',
       }}
     >
       {/* ── 顶部：标题 + 文件数量 + 悬浮切换 ── */}
@@ -400,6 +402,64 @@ const ArtifactWorkspace = (props: ArtifactWorkspaceProps) => {
             </div>
           )}
         </Show>
+      </Show>
+      {/* Resize 手柄（仅悬浮模式） */}
+      <Show when={props.isFloating && props.onResizeEdge !== undefined}>
+        {/* 右边 */}
+        <div
+          style={{
+            position: 'absolute', right: '0', top: '8px', bottom: '8px',
+            width: '6px', cursor: 'e-resize', 'z-index': 10,
+            'border-radius': '3px', background: 'transparent', transition: 'background 0.15s',
+          }}
+          onPointerDown={(e) => props.onResizeEdge?.(e, 'right')}
+          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = chartColors.primary + '50'; }}
+          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+        />
+        {/* 左边 */}
+        <div
+          style={{
+            position: 'absolute', left: '0', top: '8px', bottom: '8px',
+            width: '6px', cursor: 'w-resize', 'z-index': 10,
+            'border-radius': '3px', background: 'transparent', transition: 'background 0.15s',
+          }}
+          onPointerDown={(e) => props.onResizeEdge?.(e, 'left')}
+          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = chartColors.primary + '50'; }}
+          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+        />
+        {/* 底边 */}
+        <div
+          style={{
+            position: 'absolute', bottom: '0', left: '8px', right: '8px',
+            height: '6px', cursor: 's-resize', 'z-index': 10,
+            'border-radius': '3px', background: 'transparent', transition: 'background 0.15s',
+          }}
+          onPointerDown={(e) => props.onResizeEdge?.(e, 'bottom')}
+          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = chartColors.primary + '50'; }}
+          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+        />
+        {/* 右下角 */}
+        <div
+          style={{
+            position: 'absolute', right: '0', bottom: '0',
+            width: '12px', height: '12px', cursor: 'se-resize', 'z-index': 11,
+            'border-radius': '0 0 8px 0', background: 'transparent', transition: 'background 0.15s',
+          }}
+          onPointerDown={(e) => props.onResizeEdge?.(e, 'right-bottom')}
+          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = chartColors.primary + '50'; }}
+          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+        />
+        {/* 左下角 */}
+        <div
+          style={{
+            position: 'absolute', left: '0', bottom: '0',
+            width: '12px', height: '12px', cursor: 'sw-resize', 'z-index': 11,
+            'border-radius': '0 0 0 8px', background: 'transparent', transition: 'background 0.15s',
+          }}
+          onPointerDown={(e) => props.onResizeEdge?.(e, 'left-bottom')}
+          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = chartColors.primary + '50'; }}
+          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+        />
       </Show>
     </div>
   );

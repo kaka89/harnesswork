@@ -461,7 +461,17 @@ const LLMTab: Component = () => {
         },
         ...(cfg.apiKey && cfg.providerID ? { providers: { [cfg.providerID as string]: { apiKey: cfg.apiKey } } } : {}),
       }, null, 2);
-      const owWritten = await actions.writeOpencodeConfig(owConfigContent);
+      let owWritten = await actions.writeOpencodeConfig(owConfigContent);
+
+      // 3a. 若未写入原因是"未关联工作区"，且 OpenWork 已连接，则自动按产品目录创建工作区后重试
+      if (!owWritten && openworkStatus() !== 'disconnected' && !resolvedWorkspaceId()) {
+        setOwSyncStatus('no-workspace'); // 先显示中间态
+        const newWsId = await actions.ensureWorkspaceForActiveProduct();
+        if (newWsId) {
+          owWritten = await actions.writeOpencodeConfig(owConfigContent);
+        }
+      }
+
       if (owWritten) {
         setOwSyncStatus('synced');
       } else if (openworkStatus() === 'disconnected') {

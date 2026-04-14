@@ -586,9 +586,13 @@ export async function callAgentWithClient(
   };
 
   // 启动事件流监听（fire-and-forget，回调式通知结果）
+  // 传入 opts.directory 作为订阅目录，确保收到该 Session 所属目录的事件
   void (async () => {
     try {
-      const sub = await client.event.subscribe(undefined, { signal: controller.signal });
+      const sub = await client.event.subscribe(
+        opts.directory ? { directory: opts.directory } : undefined,
+        { signal: controller.signal },
+      );
       for await (const raw of sub.stream as AsyncIterable<unknown>) {
         if (done) break;
         const evt = normalizeRawEvent(raw);
@@ -674,8 +678,12 @@ export async function callAgentWithClient(
         if (evt.type === 'session.status') {
           const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
           if (sid !== sessionId) continue;
-          const status = String(p.status ?? '');
-          if (status === 'idle' || status === 'completed') {
+          // p.status 是 SessionStatus 对象 { type: 'idle' | 'busy' | 'retry' }，不是字符串
+          const statusObj = p.status;
+          const statusType = typeof statusObj === 'object' && statusObj !== null
+            ? String((statusObj as Record<string, unknown>).type ?? '')
+            : String(statusObj ?? '');
+          if (statusType === 'idle' || statusType === 'completed') {
             cleanup();
             opts.onDone?.(accumulated);
             return;
@@ -756,9 +764,14 @@ export async function callAgent(opts: CallAgentOptions): Promise<void> {
   };
 
   // 启动事件流监听
+  // 传入 opts.directory 作为订阅目录，确保收到该 Session 所属目录的事件
   void (async () => {
     try {
-      const sub = await client.event.subscribe(undefined, { signal: controller.signal });
+      const eventDir = opts.directory ?? (_directory || undefined);
+      const sub = await client.event.subscribe(
+        eventDir ? { directory: eventDir } : undefined,
+        { signal: controller.signal },
+      );
       for await (const raw of sub.stream as AsyncIterable<unknown>) {
         if (done) break;
         const evt = normalizeRawEvent(raw);
@@ -837,8 +850,12 @@ export async function callAgent(opts: CallAgentOptions): Promise<void> {
         if (evt.type === 'session.status') {
           const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
           if (sid !== sessionId) continue;
-          const status = String(p.status ?? '');
-          if (status === 'idle' || status === 'completed') {
+          // p.status 是 SessionStatus 对象 { type: 'idle' | 'busy' | 'retry' }，不是字符串
+          const statusObj = p.status;
+          const statusType = typeof statusObj === 'object' && statusObj !== null
+            ? String((statusObj as Record<string, unknown>).type ?? '')
+            : String(statusObj ?? '');
+          if (statusType === 'idle' || statusType === 'completed') {
             cleanup();
             opts.onDone?.(accumulated);
             return;

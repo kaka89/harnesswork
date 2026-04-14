@@ -9,7 +9,7 @@ import {
 import CreateProductModal from '../../components/product/new-product-modal';
 import {
   Bot, CheckCircle, Loader2, Clock, PlayCircle, FileText, Network,
-  Bug, Rocket, BarChart3, Plus, Send, Settings,
+  Bug, Rocket, BarChart3, Plus, Send, Settings, Zap,
   MessageSquare, Activity, X, ChevronLeft, ChevronRight,
 } from 'lucide-solid';
 import { useAppStore } from '../../stores/app-store';
@@ -364,34 +364,103 @@ const EnterpriseAutopilot = () => {
 
   const hasMessages = () => chatMessages().length > 0;
 
-  // ─── Inline ChatInputBar ─────────────────────────────────────────────────
+  // ─── GoalInputPanel ──────────────────────────────────────────────────────
 
-  const ChatInputBar = (props: { centered?: boolean }) => (
-    <div style={{ width: '100%', 'max-width': props.centered ? '640px' : 'none' }}>
-      <div style={{ display: 'flex', 'align-items': 'flex-end', gap: '8px', background: themeColors.surface, border: `1px solid ${themeColors.border}`, 'border-radius': '10px', padding: '8px 12px' }}>
-        <Show when={configuredModels().length > 0}>
-          <select
-            value={sessionModelId()} onChange={(e) => setSessionModelId(e.currentTarget.value)}
-            disabled={runState() === 'running'}
-            style={{ 'font-size': '11px', padding: '3px 4px', 'border-radius': '4px', border: `1px solid ${themeColors.border}`, background: themeColors.surface, color: themeColors.textMuted, outline: 'none', 'flex-shrink': 0 }}
-          >
-            <For each={configuredModels()}>{(o) => <option value={o.modelID}>{o.label}</option>}</For>
-          </select>
-        </Show>
-        <MentionInput
-          value={goal()} onChange={setGoal} disabled={runState() === 'running'}
-          placeholder="输入消息，与 Agent 对话..."
-          agents={TEAM_AGENTS}
-          style={{ flex: '1' }}
+  const GoalInputPanel = (props: { centered?: boolean }) => (
+    <div style={{ width: '100%', 'max-width': props.centered ? '680px' : 'none' }}>
+      {/* 卡片 */}
+      <div style={{
+        border: `1px solid ${themeColors.border}`,
+        'border-radius': '8px',
+        overflow: 'hidden',
+        background: themeColors.surface,
+      }}>
+        {/* 标题行 */}
+        <div style={{ padding: '12px 16px 0', display: 'flex', 'align-items': 'center', gap: '6px' }}>
+          <Zap size={15} style={{ color: chartColors.primary }} />
+          <span style={{ 'font-size': '14px', 'font-weight': 600, color: themeColors.textPrimary }}>
+            输入目标，启动 Agent 自动驾驶
+          </span>
+        </div>
+        {/* 大 textarea */}
+        <textarea
+          value={goal()}
+          onInput={(e) => setGoal(e.currentTarget.value)}
+          disabled={runState() === 'running'}
+          placeholder="描述你的目标，例如：为苍穹财务增加「智能费用报销审批」功能，支持 OCR 识别票据、自动匹配审批规则..."
+          style={{
+            width: '100%', 'min-height': '88px', border: 'none', outline: 'none',
+            resize: 'vertical', padding: '12px 16px', 'font-size': '13px',
+            'line-height': '1.6', background: 'transparent', color: themeColors.textPrimary,
+            'box-sizing': 'border-box', 'font-family': 'inherit',
+          }}
+          onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleStart(); }}
         />
-        <button
-          onClick={handleStart}
-          disabled={runState() === 'running' || !goal().trim()}
-          style={{ width: '32px', height: '32px', 'border-radius': '50%', border: 'none', background: (!goal().trim() || runState() === 'running') ? themeColors.border : chartColors.primary, color: 'white', cursor: 'pointer', display: 'flex', 'align-items': 'center', 'justify-content': 'center', 'flex-shrink': 0, transition: 'background 0.2s' }}
-        >
-          {runState() === 'running' ? <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} /> : <Send size={16} />}
-        </button>
+        {/* 底部：快速示例 + 操作按钮 */}
+        <div style={{
+          display: 'flex', 'align-items': 'center', gap: '8px',
+          padding: '8px 12px', 'border-top': `1px solid ${themeColors.border}`,
+          'flex-wrap': 'wrap',
+        }}>
+          <span style={{ 'font-size': '12px', color: themeColors.textMuted, 'flex-shrink': 0 }}>快速示例：</span>
+          <For each={teamSampleGoals}>{(g) => (
+            <button
+              onClick={() => { if (runState() !== 'running') setGoal(g); }}
+              style={{
+                'font-size': '12px', padding: '3px 10px', 'border-radius': '12px',
+                border: `1px solid ${themeColors.border}`, background: themeColors.surface,
+                cursor: 'pointer', color: themeColors.textSecondary,
+                'max-width': '220px', overflow: 'hidden', 'text-overflow': 'ellipsis',
+                'white-space': 'nowrap', 'flex-shrink': 0,
+              }}
+            >{g.slice(0, 22)}…</button>
+          )}</For>
+          <div style={{ flex: 1 }} />
+          {/* 重置 */}
+          <button
+            onClick={() => { setGoal(''); resetExecution(); setChatMessages([]); setSessionId('session-' + Date.now()); }}
+            style={{
+              padding: '6px 14px', 'border-radius': '6px', 'font-size': '13px',
+              border: `1px solid ${themeColors.border}`, background: 'transparent',
+              cursor: 'pointer', color: themeColors.textSecondary, 'flex-shrink': 0,
+            }}
+          >重置</button>
+          {/* 重新启动 */}
+          <button
+            onClick={handleStart}
+            disabled={runState() === 'running' || !goal().trim()}
+            style={{
+              display: 'flex', 'align-items': 'center', gap: '6px',
+              padding: '6px 16px', 'border-radius': '6px', 'font-size': '13px',
+              border: 'none', cursor: (!goal().trim() || runState() === 'running') ? 'not-allowed' : 'pointer',
+              background: (!goal().trim() || runState() === 'running') ? themeColors.border : chartColors.primary,
+              color: 'white', 'font-weight': 500, 'flex-shrink': 0, transition: 'background 0.2s',
+            }}
+          >
+            {runState() === 'running'
+              ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} />
+              : <PlayCircle size={14} />}
+            重新启动
+          </button>
+        </div>
       </div>
+      {/* 进度条行（运行中或完成时显示） */}
+      <Show when={runState() !== 'idle'}>
+        <div style={{ padding: '8px 2px 0', display: 'flex', 'align-items': 'center', gap: '10px' }}>
+          <span style={{ 'font-size': '12px', color: themeColors.textMuted, 'flex-shrink': 0, 'min-width': '140px' }}>
+            {runState() === 'done' ? '所有 Agent 执行完成' : `执行中 · ${doneCount()}/${TEAM_AGENTS.length} Agent`}
+          </span>
+          <div style={{ flex: 1, height: '4px', background: themeColors.border, 'border-radius': '2px', overflow: 'hidden' }}>
+            <div style={{
+              height: '100%',
+              width: `${progress()}%`,
+              background: runState() === 'done' ? chartColors.success : chartColors.primary,
+              'border-radius': '2px', transition: 'width 0.5s ease',
+            }} />
+          </div>
+          <span style={{ 'font-size': '12px', color: themeColors.textMuted, 'flex-shrink': 0 }}>{progress()}%</span>
+        </div>
+      </Show>
     </div>
   );
 
@@ -419,53 +488,127 @@ const EnterpriseAutopilot = () => {
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden', gap: '0' }}>
         {/* ── LEFT: Agent Panel ── */}
         <div style={{
-          width: leftPanelCollapsed() ? '0px' : '220px',
-          'min-width': leftPanelCollapsed() ? '0px' : '220px',
-          'border-right': leftPanelCollapsed() ? 'none' : `1px solid ${themeColors.border}`,
+          width: leftPanelCollapsed() ? '44px' : '220px',
+          'min-width': leftPanelCollapsed() ? '44px' : '220px',
+          'border-right': `1px solid ${themeColors.border}`,
           display: 'flex', 'flex-direction': 'column', 'flex-shrink': 0,
           overflow: 'hidden', transition: 'width 0.2s, min-width 0.2s', background: themeColors.surface,
         }}>
-          <div style={{ padding: '10px 12px', display: 'flex', 'align-items': 'center', 'justify-content': 'space-between', 'border-bottom': `1px solid ${themeColors.border}`, 'flex-shrink': 0 }}>
-            <span style={{ 'font-weight': 600, 'font-size': '13px' }}>Agent 面板</span>
-            <button onClick={() => setLeftPanelCollapsed(true)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: themeColors.textMuted, padding: '2px', display: 'flex' }}>
-              <ChevronLeft size={16} />
-            </button>
-          </div>
-          <div style={{ padding: '8px 12px', display: 'flex', 'justify-content': 'space-between', 'font-size': '11px', color: themeColors.textMuted, 'border-bottom': `1px solid ${themeColors.border}`, 'flex-shrink': 0 }}>
-            <span>已用时 {formatElapsed(elapsedSeconds())}</span>
-            <span>{doneCount()}/{TEAM_AGENTS.length} 完成</span>
-          </div>
-          <div style={{ flex: 1, 'overflow-y': 'auto', padding: '4px 0' }}>
-            <For each={TEAM_AGENTS}>
-              {(agent) => {
-                const outputCount = () => artifacts().filter((a) => a.agentId === agent.id && a.artifact).length;
-                return (
-                  <SidebarAgentCard
-                    agent={agent}
-                    status={agentStatuses()[agent.id]}
-                    outputCount={outputCount()}
-                    elapsedText={agentStatuses()[agent.id] !== 'idle' ? formatElapsed(elapsedSeconds()) : undefined}
-                    onClick={() => setFilterAgentId(filterAgentId() === agent.id ? null : agent.id)}
-                    selected={filterAgentId() === agent.id}
-                  />
-                );
-              }}
-            </For>
-          </div>
-          {/* Bottom stats */}
-          <div style={{ padding: '8px 12px', 'border-top': `1px solid ${themeColors.border}`, display: 'flex', gap: '12px', 'font-size': '12px', 'flex-shrink': 0 }}>
-            <span style={{ color: chartColors.success, 'font-weight': 600 }}>{doneCount()}<br /><span style={{ 'font-weight': 400, color: themeColors.textMuted }}>完成</span></span>
-            <span style={{ color: chartColors.primary, 'font-weight': 600 }}>{runningCount()}<br /><span style={{ 'font-weight': 400, color: themeColors.textMuted }}>运行</span></span>
-            <span style={{ color: themeColors.warning, 'font-weight': 600 }}>{waitingCount()}<br /><span style={{ 'font-weight': 400, color: themeColors.textMuted }}>等待</span></span>
-          </div>
+          <Show when={!leftPanelCollapsed()} fallback={
+            /* ── 收起态：进度 + 图标列 + 执行数据 ── */
+            <div style={{ display: 'flex', 'flex-direction': 'column', 'align-items': 'center', height: '100%' }}>
+              {/* 展开按钮 */}
+              <button
+                onClick={() => setLeftPanelCollapsed(false)}
+                style={{ width: '100%', padding: '8px 0', background: 'none', border: 'none', cursor: 'pointer', display: 'flex', 'align-items': 'center', 'justify-content': 'center', color: themeColors.textMuted, 'border-bottom': `1px solid ${themeColors.border}`, 'flex-shrink': 0 }}
+              >
+                <ChevronRight size={16} />
+              </button>
+              {/* 进度条 + 百分比 */}
+              <div style={{ width: '100%', padding: '6px 8px', 'flex-shrink': 0 }}>
+                <div style={{ width: '100%', height: '3px', background: themeColors.border, 'border-radius': '2px', overflow: 'hidden' }}>
+                  <div style={{
+                    height: '100%',
+                    width: `${Math.round(doneCount() / TEAM_AGENTS.length * 100)}%`,
+                    background: runState() === 'done' ? chartColors.success : chartColors.primary,
+                    'border-radius': '2px',
+                    transition: 'width 0.5s ease',
+                  }} />
+                </div>
+                <div style={{ 'text-align': 'center', 'font-size': '10px', color: themeColors.textMuted, 'margin-top': '3px', 'font-weight': 500 }}>
+                  {doneCount()}/{TEAM_AGENTS.length}
+                </div>
+              </div>
+              {/* Agent 图标列 */}
+              <div style={{ flex: 1, 'overflow-y': 'auto', padding: '4px 0', display: 'flex', 'flex-direction': 'column', 'align-items': 'center', gap: '6px' }}>
+                <For each={TEAM_AGENTS}>
+                  {(agent) => {
+                    const status = () => agentStatuses()[agent.id];
+                    const dotColor = () => statusBadge[status()]?.color ?? themeColors.textMuted;
+                    return (
+                      <div
+                        title={`${agent.name} · ${statusBadge[status()]?.text ?? '待命'}`}
+                        style={{ position: 'relative', cursor: 'pointer', 'flex-shrink': 0 }}
+                        onClick={() => { setLeftPanelCollapsed(false); setFilterAgentId(agent.id); }}
+                      >
+                        <div style={{
+                          width: '28px', height: '28px', 'border-radius': '8px',
+                          background: agent.bgColor, display: 'flex', 'align-items': 'center',
+                          'justify-content': 'center', 'font-size': '14px',
+                          filter: status() === 'idle' ? 'grayscale(80%) opacity(0.5)' : 'none',
+                          transition: 'filter 0.3s',
+                          'box-shadow': (status() === 'thinking' || status() === 'working') ? `0 0 0 2px ${chartColors.primary}40` : 'none',
+                        }}>
+                          {agent.emoji}
+                        </div>
+                        <span style={{
+                          position: 'absolute', bottom: '-1px', right: '-1px',
+                          width: '6px', height: '6px', 'border-radius': '50%',
+                          background: dotColor(),
+                          border: `1px solid ${themeColors.surface}`,
+                          display: 'block',
+                        }} />
+                      </div>
+                    );
+                  }}
+                </For>
+              </div>
+              {/* 底部执行数据 */}
+              <div style={{ 'border-top': `1px solid ${themeColors.border}`, padding: '6px 0', display: 'flex', 'flex-direction': 'column', 'align-items': 'center', gap: '5px', 'flex-shrink': 0, width: '100%' }}>
+                <div style={{ 'text-align': 'center' }}>
+                  <div style={{ 'font-size': '12px', 'font-weight': 700, color: chartColors.success, 'line-height': 1 }}>{doneCount()}</div>
+                  <div style={{ 'font-size': '9px', color: themeColors.textMuted, 'margin-top': '1px' }}>完成</div>
+                </div>
+                <Show when={runningCount() > 0}>
+                  <div style={{ 'text-align': 'center' }}>
+                    <div style={{ 'font-size': '12px', 'font-weight': 700, color: chartColors.primary, 'line-height': 1 }}>{runningCount()}</div>
+                    <div style={{ 'font-size': '9px', color: themeColors.textMuted, 'margin-top': '1px' }}>运行</div>
+                  </div>
+                </Show>
+                <Show when={runState() !== 'idle'}>
+                  <div style={{ 'writing-mode': 'vertical-rl', transform: 'rotate(180deg)', 'font-size': '10px', color: themeColors.textMuted, 'line-height': 1, 'padding': '2px 0', 'max-height': '52px', overflow: 'hidden' }}>
+                    {formatElapsed(elapsedSeconds())}
+                  </div>
+                </Show>
+              </div>
+            </div>
+          }>
+            {/* ── 展开态 ── */}
+            <div style={{ padding: '10px 12px', display: 'flex', 'align-items': 'center', 'justify-content': 'space-between', 'border-bottom': `1px solid ${themeColors.border}`, 'flex-shrink': 0 }}>
+              <span style={{ 'font-weight': 600, 'font-size': '13px' }}>Agent 面板</span>
+              <button onClick={() => setLeftPanelCollapsed(true)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: themeColors.textMuted, padding: '2px', display: 'flex' }}>
+                <ChevronLeft size={16} />
+              </button>
+            </div>
+            <div style={{ padding: '8px 12px', display: 'flex', 'justify-content': 'space-between', 'font-size': '11px', color: themeColors.textMuted, 'border-bottom': `1px solid ${themeColors.border}`, 'flex-shrink': 0 }}>
+              <span>已用时 {formatElapsed(elapsedSeconds())}</span>
+              <span>{doneCount()}/{TEAM_AGENTS.length} 完成</span>
+            </div>
+            <div style={{ flex: 1, 'overflow-y': 'auto', padding: '4px 0' }}>
+              <For each={TEAM_AGENTS}>
+                {(agent) => {
+                  const outputCount = () => artifacts().filter((a) => a.agentId === agent.id && a.artifact).length;
+                  return (
+                    <SidebarAgentCard
+                      agent={agent}
+                      status={agentStatuses()[agent.id]}
+                      outputCount={outputCount()}
+                      elapsedText={agentStatuses()[agent.id] !== 'idle' ? formatElapsed(elapsedSeconds()) : undefined}
+                      onClick={() => setFilterAgentId(filterAgentId() === agent.id ? null : agent.id)}
+                      selected={filterAgentId() === agent.id}
+                    />
+                  );
+                }}
+              </For>
+            </div>
+            {/* Bottom stats */}
+            <div style={{ padding: '8px 12px', 'border-top': `1px solid ${themeColors.border}`, display: 'flex', gap: '12px', 'font-size': '12px', 'flex-shrink': 0 }}>
+              <span style={{ color: chartColors.success, 'font-weight': 600 }}>{doneCount()}<br /><span style={{ 'font-weight': 400, color: themeColors.textMuted }}>完成</span></span>
+              <span style={{ color: chartColors.primary, 'font-weight': 600 }}>{runningCount()}<br /><span style={{ 'font-weight': 400, color: themeColors.textMuted }}>运行</span></span>
+              <span style={{ color: themeColors.warning, 'font-weight': 600 }}>{waitingCount()}<br /><span style={{ 'font-weight': 400, color: themeColors.textMuted }}>等待</span></span>
+            </div>
+          </Show>
         </div>
-
-        {/* Collapse expand handle */}
-        <Show when={leftPanelCollapsed()}>
-          <button onClick={() => setLeftPanelCollapsed(false)} style={{ width: '24px', 'flex-shrink': 0, background: themeColors.hover, border: 'none', 'border-right': `1px solid ${themeColors.border}`, cursor: 'pointer', display: 'flex', 'align-items': 'center', 'justify-content': 'center', color: themeColors.textMuted }}>
-            <ChevronRight size={14} />
-          </button>
-        </Show>
 
         {/* ── CENTER: Chat / Flow ── */}
         <div style={{ flex: 1, display: 'flex', 'flex-direction': 'column', overflow: 'hidden', 'min-width': 0 }}>
@@ -494,24 +637,11 @@ const EnterpriseAutopilot = () => {
           {/* Chat tab */}
           <Show when={activeTab() === 'chat'}>
             <Show when={hasMessages()} fallback={
-              /* ── Empty state: centered input + quick examples ── */
-              <div style={{ flex: 1, display: 'flex', 'flex-direction': 'column', 'align-items': 'center', 'justify-content': 'center', padding: '24px', gap: '16px' }}>
-                <Bot size={48} style={{ color: themeColors.border, 'margin-bottom': '4px' }} />
-                <div style={{ 'font-size': '15px', color: themeColors.textMuted, 'text-align': 'center' }}>输入目标，启动 Agent 自动驾驶</div>
-                <ChatInputBar centered />
-                {/* Quick examples */}
-                <div style={{ display: 'flex', 'flex-wrap': 'wrap', gap: '6px', 'justify-content': 'center', 'max-width': '640px' }}>
-                  <span style={{ 'font-size': '12px', color: themeColors.textMuted }}>快速示例：</span>
-                  <For each={teamSampleGoals}>
-                    {(g) => (
-                      <button onClick={() => { if (runState() !== 'running') setGoal(g); }} style={{ 'border': `1px solid ${themeColors.border}`, 'border-radius': '12px', padding: '2px 10px', 'font-size': '12px', background: themeColors.surface, cursor: 'pointer', 'max-width': '260px', overflow: 'hidden', 'text-overflow': 'ellipsis', 'white-space': 'nowrap' }}>
-                        {g.slice(0, 30)}…
-                      </button>
-                    )}
-                  </For>
-                </div>
+              /* ── Empty state: centered input ── */
+              <div style={{ flex: 1, display: 'flex', 'flex-direction': 'column', 'align-items': 'center', 'justify-content': 'flex-start', padding: '40px 24px 24px', gap: '12px' }}>
+                <GoalInputPanel centered />
                 <Show when={agentError() !== null}>
-                  <div style={{ 'max-width': '640px', width: '100%', padding: '10px 14px', 'border-radius': '6px', 'font-size': '13px', background: '#fff2f0', border: '1px solid #ffccc7', color: '#cf1322', display: 'flex', gap: '8px' }}>
+                  <div style={{ 'max-width': '680px', width: '100%', padding: '10px 14px', 'border-radius': '6px', 'font-size': '13px', background: '#fff2f0', border: '1px solid #ffccc7', color: '#cf1322', display: 'flex', gap: '8px' }}>
                     <span>⚠️</span>
                     <div style={{ flex: 1 }}><strong>AI 调用失败</strong><br />{agentError()}</div>
                     <button onClick={() => setAgentError(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#cf1322' }}>✕</button>
@@ -579,7 +709,7 @@ const EnterpriseAutopilot = () => {
               </div>
               {/* Bottom input */}
               <div style={{ padding: '10px 16px', 'border-top': `1px solid ${themeColors.border}`, 'flex-shrink': 0, background: themeColors.surface }}>
-                <ChatInputBar />
+                <GoalInputPanel />
               </div>
             </Show>
           </Show>

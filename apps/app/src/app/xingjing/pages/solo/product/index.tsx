@@ -96,7 +96,7 @@ const HypothesisColumn: Component<{
         transition: 'background 0.18s, border-color 0.18s',
         overflow: 'hidden',
       }}
-      onDragOver={(e) => { e.preventDefault(); }}
+      onDragOver={(e) => { e.preventDefault(); e.dataTransfer!.dropEffect = 'move'; }}
       onDragEnter={(e) => { e.preventDefault(); props.drag.onDragEnter(props.status); }}
       onDragLeave={(e) => {
         // 只有真正离开整个列容器时才清除高亮（忽略移入子元素的假 leave）
@@ -105,8 +105,10 @@ const HypothesisColumn: Component<{
       }}
       onDrop={(e) => {
         e.preventDefault();
+        e.stopPropagation();
         // 双保险：优先用信号，WebKit fallback 从 dataTransfer 读取
-        const transferId = e.dataTransfer?.getData('text/plain') ?? undefined;
+        const transferId = e.dataTransfer?.getData('text/plain') || undefined;
+        console.error('[DnD] drop targetStatus=', props.status, 'transferId=', transferId);
         props.drag.onDrop(props.status, transferId);
       }}
     >
@@ -149,10 +151,11 @@ const HypothesisColumn: Component<{
                 draggable={true}
                 onDragStart={(e) => {
                   e.stopPropagation();
-                  // WebKit/Tauri 要求必须调用 setData，否则 drop 事件不触发
-                  // dragstart 时 dataTransfer 实際不会为 null
+                  // WebKit/Tauri 要求必须调用 setData + effectAllowed，否则 drop 不触发
+                  e.dataTransfer!.effectAllowed = 'move';
                   e.dataTransfer!.setData('text/plain', h.id);
                   props.drag.onDragStart(h.id);
+                  console.error('[DnD] dragstart id=', h.id);
                 }}
                 style={{
                   'border-radius': '10px',
@@ -354,7 +357,8 @@ const SoloProduct: Component = () => {
     dragOverStatus,
     onDragStart: (id) => setDraggingId(id),
     onDrop: (targetStatus, transferId?) => {
-      const id = draggingId() ?? transferId ?? null;
+      const id = draggingId() ?? (transferId && transferId.trim() !== '' ? transferId : null);
+      console.error('[DnD] handler id=', id, 'targetStatus=', targetStatus, 'hypotheses=', hypotheses().length);
       if (!id) return;
       const original = hypotheses().find(h => h.id === id);
       if (!original) { setDraggingId(null); setDragOverStatus(null); return; }

@@ -7,12 +7,20 @@
  * 3. 任务调度模式：Orchestrator 两阶段调度 + 内联执行状态可视化
  */
 import {
-  createSignal, createEffect, For, Show, onCleanup,
+  createSignal, createEffect, For, Show, onCleanup, onMount,
   type Component,
 } from 'solid-js';
 import { Portal } from 'solid-js/web';
 import { Bot, Wifi, WifiOff, Loader2, ChevronDown, ChevronUp, Zap, MessageSquare, History, ChevronRight } from 'lucide-solid';
 import type { CallAgentOptions } from '../../services/opencode-client';
+import {
+  type SessionRecord as PersistedSessionRecord,
+  loadSessions,
+  appendSession,
+  saveSessions,
+  nowTimeStr,
+  nowDateTimeStr,
+} from '../../services/chat-session-store';
 import {
   SOLO_AGENTS,
   TEAM_AGENTS,
@@ -43,6 +51,7 @@ interface AiMessage {
   type: 'chat' | 'dispatch' | 'direct-agent';
   dispatchState?: DispatchState;
   agentName?: string;  // direct-agent 模式下的 Agent 名称
+  ts?: string;         // 消息显示时间，格式 "HH:mm"
 }
 
 interface AiChatDrawerProps {
@@ -69,6 +78,35 @@ interface SessionRecord {
   summary: string;
   messages: AiMessage[];
   ts: string;
+}
+
+/** AiMessage → PersistedSessionRecord messages 格式转换 */
+function toPersistedMessages(msgs: AiMessage[]): PersistedSessionRecord['messages'] {
+  return msgs.map(m => ({
+    id: m.id,
+    role: m.role,
+    content: m.content,
+    type: m.type,
+    agentName: m.agentName,
+    ts: m.ts,
+  }));
+}
+
+/** PersistedSessionRecord → SessionRecord 还原（忽略 dispatchState） */
+function fromPersistedSession(s: PersistedSessionRecord): SessionRecord {
+  return {
+    id: s.id,
+    summary: s.summary,
+    ts: s.ts,
+    messages: s.messages.map(m => ({
+      id: m.id,
+      role: m.role,
+      content: m.content,
+      type: m.type as AiMessage['type'],
+      agentName: m.agentName,
+      ts: m.ts,
+    })),
+  };
 }
 
 // ─── 调度消息卡片 ──────────────────────────────────────────────────────────────
@@ -371,10 +409,103 @@ const WELCOME_MESSAGE: AiMessage = {
   role: 'assistant',
   content: '你好！我是你的 AI 虚拟团队。我了解你的产品所有决策、技术笔记和用户洞察。\n\n你可以：\n· 直接提问（对话模式）\n· 切换「调度模式」让多个 AI Agent 并行执行任务\n· 输入 @ 直接呼叫特定 Agent',
   type: 'chat',
+  ts: nowTimeStr(),
 };
 
 const QUICK_QUESTIONS_SOLO = ['今天先做什么？', '假设验证进展', '用户留存分析'];
 const QUICK_QUESTIONS_TEAM = ['本迭代优先级？', '技术风险评估', '发布准备情况'];
+
+// ─── 三点跳动加载动画 ───────────────────────────────────────────────────────────
+const TypingDots: Component = () => (
+  <span class="flex items-center gap-1 py-1" aria-label="AI 正在输入">
+    <span class="w-2 h-2 rounded-full bg-current" style={{ animation: 'bounce 1.2s ease-in-out 0s infinite' }} />
+    <span class="w-2 h-2 rounded-full bg-current" style={{ animation: 'bounce 1.2s ease-in-out 0.2s infinite' }} />
+    <span class="w-2 h-2 rounded-full bg-current" style={{ animation: 'bounce 1.2s ease-in-out 0.4s infinite' }} />
+  </span>
+);
+
+// ─── 消息气泡组件（统一处理 user / assistant） ──────────────────────────────────
+const MessageBubble: Component<{
+  msg: AiMessage;
+  accentColor: string;
+  accentBg: string;
+  agents: AutopilotAgent[];
+  loading: boolean;
+}> = (props) => {
+  const isUser = () => props.msg.role === 'user';
+  const isLoading = () => props.loading && !props.msg.content && !isUser();
+  const bgClass = () => props.accentBg.split(' ')[0];
+
+  return (
+    <div class={`flex ${isUser() ? 'justify-end' : 'justify-start'} items-end gap-2`}>
+      {/* AI 头像（左侧） */}
+      <Show when={!isUser()}>
+        <div
+          class="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 text-white text-xs font-bold"
+          style={{ background: props.accentColor }}
+        >
+          AI
+        </div>
+      </Show>
+
+      {/* 消息主体 */}
+      <div class={`flex flex-col ${isUser() ? 'items-end' : 'items-start'} max-w-[80%]`}>
+
+        {/* AI 消息 */}
+        <Show when={!isUser()}>
+          <Show
+            when={props.msg.type === 'dispatch' && props.msg.dispatchState}
+            fallback={
+              <Show
+                when={props.msg.type === 'direct-agent'}
+                fallback={
+                  <div class="px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap bg-[var(--dls-surface)] border border-[var(--dls-border)] text-[var(--dls-text-primary)] rounded-2xl rounded-bl-sm shadow-sm" style={{ 'min-width': '60px' }}>
+                    <Show when={isLoading()} fallback={props.msg.content}>
+                      <TypingDots />
+                    </Show>
+                  </div>
+                }
+              >
+                <DirectAgentCard
+                  agentName={props.msg.agentName ?? 'Agent'}
+                  content={props.msg.content}
+                  loading={isLoading()}
+                  agentColor={props.agents.find(a => props.msg.agentName?.includes(a.name))?.color}
+                />
+              </Show>
+            }
+          >
+            <DispatchCard state={props.msg.dispatchState!} agents={props.agents} />
+          </Show>
+        </Show>
+
+        {/* 用户消息 */}
+        <Show when={isUser()}>
+          <div class={`px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap text-white rounded-2xl rounded-tr-sm shadow-sm ${bgClass()}`}>
+            {props.msg.content}
+          </div>
+        </Show>
+
+        {/* 时间戳 */}
+        <Show when={props.msg.ts}>
+          <span class="text-[10px] text-[var(--dls-text-muted)] mt-1 px-1">
+            {props.msg.ts}
+          </span>
+        </Show>
+      </div>
+
+      {/* 用户头像（右侧） */}
+      <Show when={isUser()}>
+        <div
+          class="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 text-white text-[10px] font-bold"
+          style={{ background: props.accentColor }}
+        >
+          我
+        </div>
+      </Show>
+    </div>
+  );
+};
 
 const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
   // ─── 拖拽调宽 ─────────────────────────────────────────────────────────────
@@ -393,6 +524,14 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
   const [showHistory, setShowHistory] = createSignal(false);
   const [historyExpanded, setHistoryExpanded] = createSignal(false);
   const [viewingSession, setViewingSession] = createSignal<SessionRecord | null>(null);
+
+  // 加载持久化的历史会话
+  onMount(() => {
+    const persisted = loadSessions();
+    if (persisted.length > 0) {
+      setSessionHistory(persisted.map(fromPersistedSession));
+    }
+  });
 
   const agents = () => props.isSoloMode ? SOLO_AGENTS : TEAM_AGENTS;
   const accentColor = () => props.isSoloMode ? 'var(--green-9)' : 'var(--purple-9)';
@@ -414,9 +553,17 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
     if (userMsgs.length === 0) return;
     const first = userMsgs[0].content;
     const summary = first.slice(0, 30) + (first.length > 30 ? '...' : '');
-    const now = new Date();
-    const ts = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
-    setSessionHistory(prev => [{ id: Date.now().toString(), summary, messages: msgs, ts }, ...prev]);
+    const sessionId = Date.now().toString();
+    const sessionTs = nowDateTimeStr();
+    const session: SessionRecord = { id: sessionId, summary, messages: msgs, ts: sessionTs };
+    setSessionHistory(prev => [session, ...prev]);
+    // 持久化到本地存储
+    appendSession({
+      id: session.id,
+      summary: session.summary,
+      ts: session.ts,
+      messages: toPersistedMessages(session.messages),
+    });
   };
 
   const startNewSession = () => {
@@ -433,8 +580,9 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
     const systemPrompt = `你是「星静」智能研发平台的 AI 虚拟团队助手。\n当前模式：${modeLabel}\n当前产品：${props.currentProductName ?? '未选择产品'}\n\n请根据用户的问题提供专业、简洁的回答。如果涉及任务管理、产品规划、技术建议等，请结合当前角色给出具体可执行的建议。`;
 
     const msgId = genId();
+    const msgTs = nowTimeStr();
     setMessages(prev => [...prev, {
-      id: msgId, role: 'assistant', type: 'chat', content: '正在思考中...',
+      id: msgId, role: 'assistant', type: 'chat', content: '', ts: msgTs,
     }]);
 
     void props.callAgentFn({
@@ -445,7 +593,23 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
       onText: (text) => {
         setMessages(prev => prev.map(m => m.id === msgId ? { ...m, content: text } : m));
       },
-      onDone: () => setLoading(false),
+      onDone: () => {
+        setLoading(false);
+        // AI 回复完成后自动快照保存
+        const snapshot = messages();
+        const userMsgs = snapshot.filter(m => m.role === 'user');
+        if (userMsgs.length > 0) {
+          const first = userMsgs[0].content;
+          const summary = first.slice(0, 30) + (first.length > 30 ? '...' : '');
+          const sid = snapshot[0]?.id === 'welcome' ? (snapshot[1]?.id ?? 'cur') : snapshot[0].id;
+          saveSessions([...loadSessions().filter(s => s.id !== sid), {
+            id: sid,
+            summary,
+            ts: nowDateTimeStr(),
+            messages: toPersistedMessages(snapshot),
+          }]);
+        }
+      },
       onError: () => {
         // 降级 mock 回复
         let reply = '';
@@ -475,6 +639,7 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
       type: 'direct-agent',
       content: '',
       agentName: `${agent.emoji} ${agent.name}`,
+      ts: nowTimeStr(),
     }]);
 
     void runDirectAgent(agent, prompt, {
@@ -509,7 +674,7 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
       progress: 0,
     };
     setMessages(prev => [...prev, {
-      id: msgId, role: 'assistant', type: 'dispatch', content: '', dispatchState: initState,
+      id: msgId, role: 'assistant', type: 'dispatch', content: '', dispatchState: initState, ts: nowTimeStr(),
     }]);
 
     const updateDispatch = (updater: (prev: DispatchState) => DispatchState) => {
@@ -614,7 +779,7 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
     if (!q || loading()) return;
 
     // 添加用户消息
-    setMessages(prev => [...prev, { id: genId(), role: 'user', type: 'chat', content: q }]);
+    setMessages(prev => [...prev, { id: genId(), role: 'user', type: 'chat', content: q, ts: nowTimeStr() }]);
     setInput('');
     setLoading(true);
 
@@ -766,15 +931,7 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
                 <div class="p-4 flex flex-col gap-3">
                   <For each={viewingSession()!.messages}>
                     {(msg) => (
-                      <div class={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                        <div class={`max-w-[85%] px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
-                          msg.role === 'user'
-                            ? `${accentBg().split(' ')[0]} text-white rounded-2xl rounded-br-sm`
-                            : 'bg-[var(--dls-chat-assist-bg)] text-[var(--dls-chat-assist-text)] rounded-2xl rounded-bl-sm'
-                        }`}>
-                          {msg.content}
-                        </div>
-                      </div>
+                      <MessageBubble msg={msg} accentColor={accentColor()} accentBg={accentBg()} agents={agents()} loading={false} />
                     )}
                   </For>
                 </div>
@@ -823,12 +980,25 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
 
           <Show when={!showHistory()}>
             {/* ── 消息列表 ── */}
-            <div class="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
-              {/* 欢迎消息（固定置顶） */}
+            <div class="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
+
+              {/* 欢迎消息（AI 头像 + 气泡） */}
               <Show when={messages().length > 0}>
-                <div class="flex justify-start">
-                  <div class="max-w-[92%] px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap bg-[var(--dls-chat-assist-bg)] text-[var(--dls-chat-assist-text)] rounded-2xl rounded-bl-sm">
-                    {messages()[0].content}
+                <div class="flex justify-start items-end gap-2">
+                  {/* AI 头像 */}
+                  <div
+                    class="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 text-white text-xs font-bold"
+                    style={{ background: accentColor() }}
+                  >
+                    AI
+                  </div>
+                  <div class="flex flex-col gap-1 max-w-[80%]">
+                    <div class="px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap bg-[var(--dls-surface)] border border-[var(--dls-border)] text-[var(--dls-text-primary)] rounded-2xl rounded-bl-sm shadow-sm">
+                      {messages()[0].content}
+                    </div>
+                    <Show when={messages()[0].ts}>
+                      <span class="text-[10px] text-[var(--dls-text-muted)] pl-1">{messages()[0].ts}</span>
+                    </Show>
                   </div>
                 </div>
               </Show>
@@ -847,17 +1017,7 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
                   }
                 >
                   <For each={messages().slice(1, -2)}>
-                    {(msg) => (
-                      <div class={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                        <div class={`max-w-[80%] px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
-                          msg.role === 'user'
-                            ? `${accentBg().split(' ')[0]} text-white rounded-2xl rounded-br-sm opacity-70`
-                            : 'bg-[var(--dls-chat-assist-bg)] text-[var(--dls-chat-assist-text)] rounded-2xl rounded-bl-sm opacity-80'
-                        }`}>
-                          {msg.content}
-                        </div>
-                      </div>
-                    )}
+                    {(msg) => <MessageBubble msg={msg} accentColor={accentColor()} accentBg={accentBg()} agents={agents()} loading={false} />}
                   </For>
                   <button
                     class="text-xs text-center text-[var(--dls-text-muted)] hover:text-[var(--dls-text-secondary)] py-1 transition-colors"
@@ -879,37 +1039,7 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
 
               {/* 最新 2 条消息（user + assistant） */}
               <For each={messages().length > 1 ? messages().slice(-2) : []}>
-                {(msg) => (
-                  <div class={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                    <Show
-                      when={msg.role === 'user'}
-                      fallback={
-                        <div class="max-w-[92%] flex flex-col gap-1.5 w-full">
-                          <Show when={msg.type === 'dispatch' && msg.dispatchState}>
-                            <DispatchCard state={msg.dispatchState!} agents={agents()} />
-                          </Show>
-                          <Show when={msg.type === 'direct-agent'}>
-                            <DirectAgentCard
-                              agentName={msg.agentName ?? 'Agent'}
-                              content={msg.content}
-                              loading={loading() && !msg.content}
-                              agentColor={agents().find(a => msg.agentName?.includes(a.name))?.color}
-                            />
-                          </Show>
-                          <Show when={msg.type === 'chat'}>
-                            <div class="max-w-[92%] px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap bg-[var(--dls-chat-assist-bg)] text-[var(--dls-chat-assist-text)] rounded-2xl rounded-bl-sm">
-                              {msg.content}
-                            </div>
-                          </Show>
-                        </div>
-                      }
-                    >
-                      <div class={`max-w-[80%] px-3 py-2 text-sm leading-relaxed text-white rounded-2xl rounded-br-sm ${accentBg().split(' ')[0]}`}>
-                        {msg.content}
-                      </div>
-                    </Show>
-                  </div>
-                )}
+                {(msg) => <MessageBubble msg={msg} accentColor={accentColor()} accentBg={accentBg()} agents={agents()} loading={loading()} />}
               </For>
             </div>
 

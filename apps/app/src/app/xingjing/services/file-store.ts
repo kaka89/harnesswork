@@ -961,6 +961,37 @@ export async function saveCompetitors(workDir: string, items: SoloCompetitor[]):
   );
 }
 
+// ─── Solo: Requirement Outputs ──────────────────────────────────────────────
+
+export type SoloRequirementType = 'user-story' | 'acceptance' | 'nfr';
+
+export interface SoloRequirementOutput {
+  id: string;
+  title: string;
+  type: SoloRequirementType;
+  content: string;
+  priority: 'P0' | 'P1' | 'P2' | 'P3';
+  linkedHypothesis?: string;
+  createdAt: string;
+}
+
+export async function loadRequirementOutputs(workDir: string): Promise<SoloRequirementOutput[]> {
+  const dir = `${workDir}/.xingjing/solo/requirements`;
+  try {
+    const items = await readYamlDir<SoloRequirementOutput>(dir);
+    return items.filter((t) => !!t.id);
+  } catch {
+    return [];
+  }
+}
+
+export async function saveRequirementOutput(workDir: string, item: SoloRequirementOutput): Promise<boolean> {
+  return writeYaml(
+    `${workDir}/.xingjing/solo/requirements/${item.id}.yaml`,
+    item as unknown as Record<string, unknown>,
+  );
+}
+
 // ─── Solo: Tasks ────────────────────────────────────────────────────────────
 
 export type SoloTaskType = 'dev' | 'product' | 'ops' | 'growth';

@@ -53,7 +53,7 @@ export interface SkillDef {
 
 export interface SkillExecution {
   skillName: string;
-  status: 'pending' | 'running' | 'done';
+  status: 'pending' | 'running' | 'done' | 'error';
   output?: string;
 }
 
@@ -61,7 +61,7 @@ export interface TaskOrchestration {
   agentId: string;
   taskId: string;
   taskTitle?: string;
-  status?: 'pending' | 'running' | 'done';
+  status?: 'pending' | 'running' | 'done' | 'error';
   steps: SkillExecution[];
 }
 

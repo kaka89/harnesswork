@@ -9,7 +9,7 @@ import { loadSoloTasks, loadAgentDefs, loadAgentWorkshopData, saveAgentWorkshopD
 import { useAppStore } from '../../../stores/app-store';
 import { themeColors, chartColors } from '../../../utils/colors';
 import { Plus, Trash2, Edit2, Clock, CheckCircle, Zap, Loader2 } from 'lucide-solid';
-import { callAgent } from '../../../services/opencode-client';
+
 
 const categoryColor: Record<string, string> = {
   '产品': chartColors.primary, '工程': chartColors.success, '增长': themeColors.warning, '运营': themeColors.success,
@@ -155,10 +155,13 @@ const SoloAgentWorkshop: Component = () => {
   const [assignments, setAssignments] = createSignal<AgentAssignment[]>([...initialSoloAssignments]);
   const [skillPool, setSkillPool] = createSignal<SkillDef[]>([...soloSkillPool]);
 
+  const { actions } = useAppStore();
+
   // Panel state
   const [selectedAgent, setSelectedAgent] = createSignal<AgentDef | null>(null);
   const [panelTab, setPanelTab] = createSignal<'skills' | 'tasks' | 'orchestrations'>('skills');
   const [pendingTaskIds, setPendingTaskIds] = createSignal<string[]>([]);
+  const [execErrors, setExecErrors] = createSignal<Record<string, string>>({});
 
   // Drag state
   const [, setDraggingSkill] = createSignal<string | null>(null);
@@ -285,9 +288,20 @@ const SoloAgentWorkshop: Component = () => {
       alert('该 AI搭档尚未配置技能，请先添加技能');
       return;
     }
+    const agent = agents().find(a => a.id === agentId);
     const task = soloTasks().find(t => t.id === taskId);
     const taskTitle = task?.title || taskId;
+    const workDir = productStore.activeProduct()?.workDir;
+
+    // 自动切换到「编排」Tab 以展示执行流
+    setPanelTab('orchestrations');
     setExecutingTaskId(taskId);
+    setExecErrors(prev => { const n = { ...prev }; delete n[`${agentId}-${taskId}`]; return n; });
+
+    // Agent 角色人设 —— 注入到每个 Skill 调用的 systemPrompt 前缀
+    const agentPersona = agent
+      ? `你是「${agent.name}」，职责是${agent.role}。${agent.description ? '\n' + agent.description : ''}`
+      : '';
 
     const initialSteps = skills.map(skillName => ({
       skillName, status: 'pending' as const, output: undefined as string | undefined,
@@ -310,14 +324,19 @@ const SoloAgentWorkshop: Component = () => {
           : o
       ));
 
-      const systemPrompt = skillDef?.systemPrompt || `你是一个专业的${skillName}执行助手。`;
+      // 合并 Agent 人设 + Skill 系统提示
+      const skillBasePrompt = skillDef?.systemPrompt || `你是一个专业的${skillName}执行助手。`;
+      const systemPrompt = agentPersona ? `${agentPersona}\n\n${skillBasePrompt}` : skillBasePrompt;
       const prevOutput = i > 0 ? initialSteps[i - 1].output : '';
-      const userPrompt = `请执行「${skillName}」技能。\n任务：${taskTitle}${prevOutput ? `\n上一步输出：${prevOutput}` : ''}\n请简洁地输出执行结果（100字以内）。`;
+      const userPrompt = `请以「${agent?.name ?? 'AI搭档'}」的身份执行「${skillName}」技能。\n当前任务：${taskTitle}${prevOutput ? `\n上一步输出：\n${prevOutput}` : ''}\n\n请输出执行结果，包含：\n1. 执行摘要（2~3句）\n2. 产出物（如有，用 ### 产出物：标题\n内容 格式输出）`;
 
       try {
         const output: string = await new Promise((resolve, reject) => {
-          callAgent({
-            systemPrompt, userPrompt,
+          actions.callAgent({
+            systemPrompt,
+            userPrompt,
+            title: `[${agent?.name ?? agentId}] ${skillName} — ${taskTitle}`,
+            directory: workDir,
             onText: (text) => {
               setOrchestrations(prev => prev.map(o =>
                 o.agentId === agentId && o.taskId === taskId
@@ -335,14 +354,24 @@ const SoloAgentWorkshop: Component = () => {
             ? { ...o, steps: o.steps.map((s, idx) => idx === i ? { ...s, status: 'done' as const, output } : s) }
             : o
         ));
-      } catch {
-        const mockOutput = `⚠️ [模拟] ${skillName} 已完成：已分析"${taskTitle}"并生成结果`;
-        initialSteps[i].output = mockOutput;
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        // 记录错误状态，不再静默 Mock
         setOrchestrations(prev => prev.map(o =>
           o.agentId === agentId && o.taskId === taskId
-            ? { ...o, steps: o.steps.map((s, idx) => idx === i ? { ...s, status: 'done' as const, output: mockOutput } : s) }
+            ? { ...o, steps: o.steps.map((s, idx) => idx === i ? { ...s, status: 'error' as const, output: `❌ ${errMsg}` } : s) }
             : o
         ));
+        setExecErrors(prev => ({ ...prev, [`${agentId}-${taskId}`]: `${skillName} 执行失败：${errMsg}` }));
+        // 中止当前任务的后续步骤
+        setOrchestrations(prev => prev.map(o =>
+          o.agentId === agentId && o.taskId === taskId ? { ...o, status: 'error' as const } : o
+        ));
+        setAssignments(prev => prev.map(a =>
+          a.agentId === agentId && a.taskId === taskId ? { ...a, status: 'assigned' as const } : a
+        ));
+        setExecutingTaskId(null);
+        return;
       }
     }
 
@@ -460,6 +489,7 @@ const SoloAgentWorkshop: Component = () => {
   const orchStatusStyle = (status: string) => {
     if (status === 'done') return { bg: themeColors.successBg, color: chartColors.success };
     if (status === 'running') return { bg: themeColors.primaryBg, color: chartColors.primary };
+    if (status === 'error') return { bg: 'rgba(239,68,68,0.08)', color: '#ef4444' };
     return { bg: themeColors.bgSubtle, color: themeColors.textMuted };
   };
 
@@ -769,35 +799,42 @@ const SoloAgentWorkshop: Component = () => {
                             <div class="flex items-center justify-between mb-2">
                               <span class="font-semibold text-xs" style={{ color: themeColors.text }}>{orch.taskTitle}</span>
                               <span class="text-xs px-1.5 py-0.5 rounded" style={{ background: orchStatusStyle(orch.status ?? '').bg, color: orchStatusStyle(orch.status ?? '').color }}>
-                                {orch.status === 'done' ? '完成' : orch.status === 'running' ? '执行中' : '待执行'}
+                                {orch.status === 'done' ? '完成' : orch.status === 'running' ? '执行中' : orch.status === 'error' ? '失败' : '待执行'}
                               </span>
                             </div>
                             <div class="flex flex-col gap-1">
                               <For each={orch.steps}>
                                 {(step) => (
-                                  <div class="flex items-center gap-2 text-xs py-0.5">
-                                    <span style={{
-                                      color: step.status === 'done' ? chartColors.success : step.status === 'running' ? chartColors.primary : themeColors.textMuted,
+                                  <div class="flex items-start gap-2 text-xs py-0.5">
+                                    <span class="flex-shrink-0 mt-0.5" style={{
+                                      color: step.status === 'done' ? chartColors.success : step.status === 'error' ? '#ef4444' : step.status === 'running' ? chartColors.primary : themeColors.textMuted,
                                     }}>
-                                      {step.status === 'done' ? '✓' : step.status === 'running' ? '⟳' : '○'}
+                                      {step.status === 'done' ? '✓' : step.status === 'error' ? '✗' : step.status === 'running' ? '⟳' : '○'}
                                     </span>
-                                    <span style={{ color: themeColors.textSecondary }}>{step.skillName}</span>
-                                    <Show when={step.output}>
-                                      <span class="flex-1 truncate" style={{ color: themeColors.textMuted }}>→ {step.output}</span>
-                                    </Show>
+                                    <div class="flex-1 min-w-0">
+                                      <span style={{ color: themeColors.textSecondary }}>{step.skillName}</span>
+                                      <Show when={step.output}>
+                                        <div class="mt-0.5 text-xs whitespace-pre-wrap break-words" style={{ color: step.status === 'error' ? '#ef4444' : themeColors.textMuted }}>{step.output}</div>
+                                      </Show>
+                                    </div>
                                   </div>
                                 )}
                               </For>
                             </div>
-                            {/* 执行按钮 */}
+                            {/* 执行按钮 + 错误提示 */}
+                            <Show when={execErrors()[`${orch.agentId}-${orch.taskId}`]}>
+                              <div class="mt-2 px-2 py-1.5 rounded-lg text-xs" style={{ background: 'rgba(239,68,68,0.08)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.2)' }}>
+                                ⚠️ {execErrors()[`${orch.agentId}-${orch.taskId}`]}
+                              </div>
+                            </Show>
                             <div class="mt-2 flex justify-end">
                               <button
                                 class="text-xs px-3 py-1 rounded-lg text-white transition-colors"
-                                style={{ background: orch.status === 'done' ? chartColors.success : chartColors.primary }}
+                                style={{ background: orch.status === 'done' ? chartColors.success : orch.status === 'error' ? '#ef4444' : chartColors.primary }}
                                 disabled={executingTaskId() !== null}
                                 onClick={() => executeSkills(selectedAgent()!.id, orch.taskId)}
                               >
-                                {executingTaskId() === orch.taskId ? '⟳ 执行中...' : orch.status === 'done' ? '↻ 重新执行' : '▶ 执行'}
+                                {executingTaskId() === orch.taskId ? '⟳ 执行中...' : orch.status === 'done' ? '↻ 重新执行' : orch.status === 'error' ? '↻ 重试' : '▶ 执行'}
                               </button>
                             </div>
                           </div>

@@ -63,10 +63,10 @@ interface TaskOrchestration {
   agentId: string;
   taskId: string;
   taskTitle?: string;
-  status?: 'pending' | 'running' | 'done';
+  status?: 'pending' | 'running' | 'done' | 'error';
   steps: Array<{
     skillName: string;
-    status: 'pending' | 'running' | 'done';
+    status: 'pending' | 'running' | 'done' | 'error';
     output?: string;
   }>;
 }
@@ -435,7 +435,7 @@ const AgentWorkshop: Component = () => {
         if (step.skillName === skillName) {
           if (step.status === 'running') return 'running';
           if (step.status === 'done') latestStatus = 'done';
-          else if (!latestStatus) latestStatus = step.status;
+          else if (step.status === 'pending' && !latestStatus) latestStatus = 'pending';
         }
       }
     }

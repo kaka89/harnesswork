@@ -493,7 +493,45 @@ export async function saveBacklog(workDir: string, items: BacklogRecord[]): Prom
   );
 }
 
-// ─── 项目级设置（LLM / Git / Gate 等）────────────────────────────────────────
+// ─── 全局设置（LLM 配置，跨所有 workspace 共享）──────────────────────────────
+
+const GLOBAL_SETTINGS_FILE = '~/.xingjing/global-settings.yaml';
+
+/**
+ * 全局大模型配置，存储在 ~/.xingjing/global-settings.yaml，
+ * 不绑定任何具体产品/workspace，应用启动时自动加载。
+ */
+export interface GlobalSettings {
+  llm?: {
+    modelName: string;
+    modelID?: string;       // OpenCode model ID
+    providerID?: string;    // OpenCode provider ID
+    apiUrl: string;
+    apiKey: string;
+    temperature: number;
+    maxTokens: number;
+  };
+  llmProviderKeys?: Record<string, string>; // per-provider API Keys
+}
+
+/**
+ * 加载全局大模型配置（~/.xingjing/global-settings.yaml）
+ */
+export async function loadGlobalSettings(): Promise<GlobalSettings> {
+  return readYaml<GlobalSettings>(GLOBAL_SETTINGS_FILE, {});
+}
+
+/**
+ * 保存全局大模型配置（~/.xingjing/global-settings.yaml）
+ */
+export async function saveGlobalSettings(settings: GlobalSettings): Promise<boolean> {
+  return writeYaml(
+    GLOBAL_SETTINGS_FILE,
+    settings as unknown as Record<string, unknown>,
+  );
+}
+
+// ─── 项目级设置（Git / Gate 等，不再包含 LLM）──────────────────────────────
 
 export interface ProjectSettings {
   llm?: {

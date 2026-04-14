@@ -24,6 +24,9 @@ let _password = '';
 /** 断线重试退避时间（ms）：1s / 2s / 5s */
 const RETRY_DELAYS = [1000, 2000, 5000] as const;
 
+/** SSE 事件流无活动超时（ms）：90 秒内无任何新事件则视为连接挂起，触发 sse-fail 重试 */
+const SSE_INACTIVITY_TIMEOUT_MS = 90_000;
+
 /** 异步等待指定毫秒 */
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -604,7 +607,28 @@ async function runAgentSession(
   return new Promise<{ status: 'done' | 'sse-fail' | 'hard-error'; accumulated: string; sessionId: string | null; error?: string }>((resolve) => {
     let done = false;
     const controller = new AbortController();
-    const cleanup = () => { if (!done) { done = true; controller.abort(); } };
+
+    // 无活动超时：若 SSE 流长时间无新事件（连接挂起），自动 abort 并触发 sse-fail 重试
+    let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
+    const resetInactivityTimer = () => {
+      if (inactivityTimer) clearTimeout(inactivityTimer);
+      if (done) return;
+      inactivityTimer = setTimeout(() => {
+        if (!done) {
+          done = true;
+          controller.abort();
+          resolve({ status: 'sse-fail', accumulated: acc, sessionId: finalSid, error: `SSE 超时：${SSE_INACTIVITY_TIMEOUT_MS / 1000}s 内无新事件，已触发重试` });
+        }
+      }, SSE_INACTIVITY_TIMEOUT_MS);
+    };
+
+    const cleanup = () => {
+      if (!done) {
+        done = true;
+        controller.abort();
+        if (inactivityTimer) { clearTimeout(inactivityTimer); inactivityTimer = null; }
+      }
+    };
 
     // ── SSE 订阅（fire-and-resolve 模式）──
     void (async () => {
@@ -615,8 +639,11 @@ async function runAgentSession(
           { signal: controller.signal },
         );
 
+        resetInactivityTimer(); // 启动首次无活动计时器
+
         for await (const raw of sub.stream as AsyncIterable<unknown>) {
           if (done) break;
+          resetInactivityTimer(); // 每收到任何事件都重置计时器
           const evt = normalizeRawEvent(raw);
           if (!evt) continue;
           const p = evt.props;

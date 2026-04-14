@@ -191,6 +191,8 @@ export interface OrchestratedRunOpts {
   model?: { providerID: string; modelID: string };
   /** 注入 callAgent 实现，优先使用 store.actions.callAgent（复用 OpenWork client）*/
   callAgentFn?: (opts: CallAgentOptions) => Promise<void>;
+  /** 工具权限请求回调，透传给各 Agent 的 callAgent 调用 */
+  onPermissionAsked?: CallAgentOptions['onPermissionAsked'];
   onOrchestrating?: (text: string) => void;
   onOrchestratorDone?: (plan: DispatchItem[]) => void;
   onAgentStatus?: (agentId: string, status: AgentExecutionStatus) => void;
@@ -224,6 +226,7 @@ export async function runOrchestratedAutopilot(
       systemPrompt: orchestratorSystemPrompt,
       userPrompt: goal,
       model,
+      onPermissionAsked: opts.onPermissionAsked,
       onText: (accumulated) => {
         orchestratorOutput = accumulated;
         opts.onOrchestrating?.(accumulated);
@@ -280,6 +283,7 @@ export async function runOrchestratedAutopilot(
           systemPrompt: agentDef.systemPrompt,
           userPrompt: task,
           model,
+          onPermissionAsked: opts.onPermissionAsked,
           onText: (accumulated) => {
             opts.onAgentStatus?.(agentId, 'working');
             opts.onAgentStream?.(agentId, accumulated);
@@ -317,6 +321,8 @@ export async function runDirectAgent(
     model?: { providerID: string; modelID: string };
     /** 注入 callAgent 实现，优先使用 store.actions.callAgent（复用 OpenWork client）*/
     callAgentFn?: (options: CallAgentOptions) => Promise<void>;
+    /** 工具权限请求回调，透传给 callAgent */
+    onPermissionAsked?: CallAgentOptions['onPermissionAsked'];
     onStatus?: (status: AgentExecutionStatus) => void;
     onStream?: (text: string) => void;
     onDone?: (fullText: string) => void;
@@ -334,6 +340,7 @@ export async function runDirectAgent(
       systemPrompt: agent.systemPrompt,
       userPrompt: prompt,
       model: opts.model,
+      onPermissionAsked: opts.onPermissionAsked,
       onText: (accumulated) => {
         opts.onStatus?.('working');
         opts.onStream?.(accumulated);

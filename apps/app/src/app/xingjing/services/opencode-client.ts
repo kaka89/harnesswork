@@ -21,6 +21,12 @@ let _directory = '';
 let _username = '';
 let _password = '';
 
+/** 断线重试退避时间（ms）：1s / 2s / 5s */
+const RETRY_DELAYS = [1000, 2000, 5000] as const;
+
+/** 异步等待指定毫秒 */
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
 export function initXingjingClient(baseUrl: string, directory: string, auth?: { username?: string; password?: string }) {
   _baseUrl = baseUrl;
   _directory = directory;
@@ -547,6 +553,210 @@ function normalizeRawEvent(raw: unknown): { type: string; props: Record<string, 
 }
 
 /**
+ * 执行一次 Agent 会话生命周期：订阅 SSE 事件流 → 可选发送 prompt → 等待完成。
+ *
+ * @param getClient   返回 OpenCode client 的工厂函数
+ * @param sessionId   已有 session ID（Layer 1 重连复用）；为 null 时新建 session
+ * @param accumulated 已累积的文本（Layer 1 重连时保留；Layer 2 重试时传 ''）
+ * @param sendPrompt  是否发送 prompt（Layer 1 重连不重发；Layer 2 全新调用发送）
+ * @param opts        原始 CallAgentOptions
+ * @returns
+ *   - { status: 'done', accumulated, sessionId }     — 正常完成
+ *   - { status: 'sse-fail', accumulated, sessionId } — SSE 网络断开，可重试
+ *   - { status: 'hard-error', accumulated, sessionId, error } — 不可重试错误
+ */
+async function runAgentSession(
+  getClient: () => ReturnType<typeof createClient>,
+  sessionId: string | null,
+  accumulated: string,
+  sendPrompt: boolean,
+  opts: CallAgentOptions,
+): Promise<{
+  status: 'done' | 'sse-fail' | 'hard-error';
+  accumulated: string;
+  sessionId: string | null;
+  error?: string;
+}> {
+  const client = getClient();
+  let sid = sessionId;
+  const sessionMsgIds = new Set<string>();
+  let acc = accumulated;
+
+  // 新建 session（Layer 2 或首次调用）
+  if (!sid) {
+    try {
+      const result = await client.session.create({
+        body: { ...(opts.title ? { title: opts.title } : { title: `xingjing-${Date.now()}` }) },
+        ...(opts.directory ?? _directory ? { directory: opts.directory ?? _directory } : {}),
+      } as Parameters<typeof client.session.create>[0]);
+      sid = (result.data as { id: string } | undefined)?.id ?? null;
+    } catch { /* fall through */ }
+
+    if (!sid) {
+      return { status: 'hard-error', accumulated: acc, sessionId: null, error: '无法创建 AI 会话，请检查 OpenCode 服务是否已启动' };
+    }
+  }
+
+  const finalSid = sid;
+
+  // Promise 封装整个 SSE 生命周期
+  return new Promise<{ status: 'done' | 'sse-fail' | 'hard-error'; accumulated: string; sessionId: string | null; error?: string }>((resolve) => {
+    let done = false;
+    const controller = new AbortController();
+    const cleanup = () => { if (!done) { done = true; controller.abort(); } };
+
+    // ── SSE 订阅（fire-and-resolve 模式）──
+    void (async () => {
+      try {
+        const eventDir = opts.directory ?? (_directory || undefined);
+        const sub = await client.event.subscribe(
+          eventDir ? { directory: eventDir } : undefined,
+          { signal: controller.signal },
+        );
+
+        for await (const raw of sub.stream as AsyncIterable<unknown>) {
+          if (done) break;
+          const evt = normalizeRawEvent(raw);
+          if (!evt) continue;
+          const p = evt.props;
+
+          // ── message.part.updated ──
+          if (evt.type === 'message.part.updated') {
+            const part = p.part as Record<string, unknown> | undefined;
+            if (!part || String(part.sessionID ?? '') !== finalSid) continue;
+            if (part.messageID) sessionMsgIds.add(String(part.messageID));
+            if (part.type === 'text') {
+              const fullText = String(part.text ?? '');
+              if (fullText.length >= acc.length) {
+                acc = fullText;
+                opts.onText?.(acc);
+              } else if (typeof p.delta === 'string' && p.delta) {
+                acc += p.delta;
+                opts.onText?.(acc);
+              }
+            }
+            continue;
+          }
+
+          // ── message.part.delta ──
+          if (evt.type === 'message.part.delta') {
+            const msgId = typeof p.messageID === 'string' ? p.messageID : null;
+            if (msgId && sessionMsgIds.has(msgId)) {
+              const delta = typeof p.delta === 'string' ? p.delta : '';
+              const field = typeof p.field === 'string' ? p.field : '';
+              if (delta && field === 'text') {
+                acc += delta;
+                opts.onText?.(acc);
+              }
+            }
+            continue;
+          }
+
+          // ── message.part (旧格式) ──
+          if (evt.type === 'message.part') {
+            if (String(p.sessionID ?? '') !== finalSid) continue;
+            const part = p.part as Record<string, unknown> | undefined;
+            if (part?.type === 'text') {
+              const text = String(part.text ?? part.content ?? '');
+              acc += text;
+              opts.onText?.(acc);
+            }
+            continue;
+          }
+
+          // ── session.error（服务端硬错误，不重试）──
+          if (evt.type === 'session.error') {
+            const evtSid = typeof p.sessionID === 'string' ? p.sessionID : null;
+            if (evtSid && evtSid !== finalSid) continue;
+            cleanup();
+            const errObj = p.error as Record<string, unknown> | undefined;
+            const errMsg = errObj
+              ? String(errObj.message ?? errObj.name ?? '未知错误')
+              : String(p.message ?? '未知错误');
+            resolve({ status: 'hard-error', accumulated: acc, sessionId: finalSid, error: errMsg });
+            return;
+          }
+
+          // ── session.completed ──
+          if (evt.type === 'session.completed') {
+            const evtSid = typeof p.sessionID === 'string' ? p.sessionID : null;
+            if (evtSid && evtSid !== finalSid) continue;
+            cleanup();
+            resolve({ status: 'done', accumulated: acc, sessionId: finalSid });
+            return;
+          }
+
+          // ── session.idle ──
+          if (evt.type === 'session.idle') {
+            const evtSid = typeof p.sessionID === 'string' ? p.sessionID : null;
+            if (evtSid !== finalSid) continue;
+            cleanup();
+            resolve({ status: 'done', accumulated: acc, sessionId: finalSid });
+            return;
+          }
+
+          // ── session.status ──
+          if (evt.type === 'session.status') {
+            const evtSid = typeof p.sessionID === 'string' ? p.sessionID : null;
+            if (evtSid !== finalSid) continue;
+            const statusObj = p.status;
+            const statusType = typeof statusObj === 'object' && statusObj !== null
+              ? String((statusObj as Record<string, unknown>).type ?? '')
+              : String(statusObj ?? '');
+            if (statusType === 'idle' || statusType === 'completed') {
+              cleanup();
+              resolve({ status: 'done', accumulated: acc, sessionId: finalSid });
+              return;
+            }
+          }
+        }
+
+        // 事件流结束但未收到完成信号
+        if (!done) {
+          cleanup();
+          resolve({
+            status: acc ? 'done' : 'sse-fail',
+            accumulated: acc,
+            sessionId: finalSid,
+            error: 'SSE 事件流意外结束',
+          });
+        }
+      } catch (e) {
+        if (done) return;
+        const msg = e instanceof Error ? e.message : String(e);
+        if (msg.toLowerCase().includes('abort')) return;
+        cleanup();
+        resolve({ status: 'sse-fail', accumulated: acc, sessionId: finalSid, error: `SSE 连接失败: ${msg}` });
+      }
+    })();
+
+    // ── 发送 prompt（仅首次调用或 Layer 2 重试时）──
+    if (sendPrompt) {
+      const fullPrompt = opts.systemPrompt
+        ? `${opts.systemPrompt}\n\n---\n\n${opts.userPrompt}`
+        : opts.userPrompt;
+
+      void (async () => {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          await (client.session as any).promptAsync({
+            sessionID: finalSid,
+            directory: opts.directory ?? (_directory || undefined),
+            ...(opts.model ? { model: opts.model } : {}),
+            parts: [{ type: 'text', text: fullPrompt }],
+          });
+        } catch {
+          if (!done) {
+            cleanup();
+            resolve({ status: 'hard-error', accumulated: acc, sessionId: finalSid, error: '发送提示词失败' });
+          }
+        }
+      })();
+    }
+  });
+}
+
+/**
  * 使用外部注入的 client（来自 OpenWork）调用 AI Agent。
  *
  * 采用 SDK 的 client.event.subscribe() 替代原生 EventSource，
@@ -558,339 +768,127 @@ export async function callAgentWithClient(
 ): Promise<void> {
   await refreshBaseUrl();
 
+  const getClient = () => client;
   let sessionId: string | null = null;
-  try {
-    const result = await client.session.create({
-      body: { ...(opts.title ? { title: opts.title } : {}) },
-      ...(opts.directory ? { directory: opts.directory } : {}),
-    } as Parameters<typeof client.session.create>[0]);
-    sessionId = (result.data as { id: string } | undefined)?.id ?? null;
-  } catch { /* fall through */ }
-
-  if (!sessionId) {
-    opts.onError?.('无法创建 AI 会话（外部 client）');
-    return;
-  }
-
   let accumulated = '';
-  let done = false;
-  const controller = new AbortController();
-  // 跟踪本会话关联的 messageID，用于过滤 message.part.delta 事件
-  const sessionMsgIds = new Set<string>();
 
-  const cleanup = () => {
-    if (!done) {
-      done = true;
-      controller.abort();
+  // ── Layer 1: SSE 重连（复用 sessionId，不重发 prompt）──
+  for (let sseTry = 0; sseTry <= RETRY_DELAYS.length; sseTry++) {
+    if (sseTry > 0) await sleep(RETRY_DELAYS[sseTry - 1]);
+
+    const r = await runAgentSession(
+      getClient,
+      sseTry === 0 ? null : sessionId,
+      sseTry === 0 ? '' : accumulated,
+      sseTry === 0,
+      opts,
+    );
+
+    accumulated = r.accumulated;
+    sessionId = r.sessionId;
+
+    if (r.status === 'done') {
+      opts.onDone?.(accumulated);
+      return;
     }
-  };
 
-  // 启动事件流监听（fire-and-forget，回调式通知结果）
-  // 传入 opts.directory 作为订阅目录，确保收到该 Session 所属目录的事件
-  void (async () => {
-    try {
-      const sub = await client.event.subscribe(
-        opts.directory ? { directory: opts.directory } : undefined,
-        { signal: controller.signal },
-      );
-      for await (const raw of sub.stream as AsyncIterable<unknown>) {
-        if (done) break;
-        const evt = normalizeRawEvent(raw);
-        if (!evt) continue;
-        const p = evt.props;
-
-        // ── 新格式: message.part.updated ──
-        if (evt.type === 'message.part.updated') {
-          const part = p.part as Record<string, unknown> | undefined;
-          if (!part || String(part.sessionID ?? '') !== sessionId) continue;
-          if (part.messageID) sessionMsgIds.add(String(part.messageID));
-          if (part.type === 'text') {
-            const fullText = String(part.text ?? '');
-            if (fullText.length >= accumulated.length) {
-              accumulated = fullText;
-              opts.onText?.(accumulated);
-            } else if (typeof p.delta === 'string' && p.delta) {
-              accumulated += p.delta;
-              opts.onText?.(accumulated);
-            }
-          }
-          continue;
-        }
-
-        // ── 新格式: message.part.delta ──
-        if (evt.type === 'message.part.delta') {
-          const msgId = typeof p.messageID === 'string' ? p.messageID : null;
-          if (msgId && sessionMsgIds.has(msgId)) {
-            const delta = typeof p.delta === 'string' ? p.delta : '';
-            const field = typeof p.field === 'string' ? p.field : '';
-            if (delta && field === 'text') {
-              accumulated += delta;
-              opts.onText?.(accumulated);
-            }
-          }
-          continue;
-        }
-
-        // ── 旧格式: message.part ──
-        if (evt.type === 'message.part') {
-          if (String(p.sessionID ?? '') !== sessionId) continue;
-          const part = p.part as Record<string, unknown> | undefined;
-          if (part?.type === 'text') {
-            const text = String(part.text ?? part.content ?? '');
-            accumulated += text;
-            opts.onText?.(accumulated);
-          }
-          continue;
-        }
-
-        // ── 错误: session.error ──
-        if (evt.type === 'session.error') {
-          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
-          if (sid && sid !== sessionId) continue;
-          cleanup();
-          const errObj = p.error as Record<string, unknown> | undefined;
-          const errMsg = errObj
-            ? String(errObj.message ?? errObj.name ?? '未知错误')
-            : String(p.message ?? '未知错误');
-          opts.onError?.(errMsg);
-          return;
-        }
-
-        // ── 完成: session.completed (旧) ──
-        if (evt.type === 'session.completed') {
-          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
-          if (sid && sid !== sessionId) continue;
-          cleanup();
-          opts.onDone?.(accumulated);
-          return;
-        }
-
-        // ── 完成: session.idle (新) ──
-        if (evt.type === 'session.idle') {
-          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
-          if (sid !== sessionId) continue;
-          cleanup();
-          opts.onDone?.(accumulated);
-          return;
-        }
-
-        // ── 完成: session.status + idle (新) ──
-        if (evt.type === 'session.status') {
-          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
-          if (sid !== sessionId) continue;
-          // p.status 是 SessionStatus 对象 { type: 'idle' | 'busy' | 'retry' }，不是字符串
-          const statusObj = p.status;
-          const statusType = typeof statusObj === 'object' && statusObj !== null
-            ? String((statusObj as Record<string, unknown>).type ?? '')
-            : String(statusObj ?? '');
-          if (statusType === 'idle' || statusType === 'completed') {
-            cleanup();
-            opts.onDone?.(accumulated);
-            return;
-          }
-        }
-      }
-
-      // 事件流结束但未收到完成信号
-      if (!done) {
-        cleanup();
-        if (accumulated) opts.onDone?.(accumulated);
-        else opts.onError?.('SSE 事件流意外结束（外部 client）');
-      }
-    } catch (e) {
-      if (done) return;
-      const msg = e instanceof Error ? e.message : String(e);
-      if (msg.toLowerCase().includes('abort')) return;
-      cleanup();
-      if (accumulated) opts.onDone?.(accumulated);
-      else opts.onError?.(`SSE 连接失败: ${msg}`);
-    }
-  })();
-
-  const fullPrompt = opts.systemPrompt
-    ? `${opts.systemPrompt}\n\n---\n\n${opts.userPrompt}`
-    : opts.userPrompt;
-
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await (client.session as any).promptAsync({
-      sessionID: sessionId,
-      directory: opts.directory ?? (_directory || undefined),
-      ...(opts.model ? { model: opts.model } : {}),
-      parts: [{ type: 'text', text: fullPrompt }],
-    });
-  } catch {
-    cleanup();
-    opts.onError?.('发送提示词失败（外部 client）');
+    if (r.status === 'hard-error' && !r.error?.includes('无法创建')) break;
+    if (!sessionId) break;
   }
-}
 
+  // ── Layer 2: 全新调用（新 session + 重发 prompt）──
+  for (let callTry = 0; callTry <= RETRY_DELAYS.length; callTry++) {
+    if (callTry > 0) await sleep(RETRY_DELAYS[callTry - 1]);
+
+    const r = await runAgentSession(getClient, null, '', true, opts);
+
+    accumulated = r.accumulated;
+    sessionId = r.sessionId;
+
+    if (r.status === 'done') {
+      opts.onDone?.(accumulated);
+      return;
+    }
+
+    if (callTry === RETRY_DELAYS.length) {
+      opts.onError?.(r.error ?? '重试耗尽（外部 client）');
+      return;
+    }
+  }
+
+  opts.onError?.('重试耗尽（外部 client）');
+}
 /**
  * 调用 AI Agent：创建会话 → 发送提示词 → 流式接收结果 → 完成回调
  *
  * 采用 SDK 的 client.event.subscribe() 替代原生 EventSource，
  * 确保在 Tauri/WKWebView 环境下正确使用 tauriFetch。
+ * 支持两层静默重试：Layer 1 复用 sessionId 重连 SSE，Layer 2 全新调用。
  */
 export async function callAgent(opts: CallAgentOptions): Promise<void> {
   await refreshBaseUrl();
 
-  const client = getXingjingClient();
+  const getClient = () => getXingjingClient();
   let sessionId: string | null = null;
-  try {
-    const result = await client.session.create({
-      body: {
-        ...(opts.title ? { title: opts.title } : { title: `xingjing-${Date.now()}` }),
-      },
-      ...(opts.directory ?? _directory ? { directory: opts.directory ?? _directory } : {}),
-    } as Parameters<typeof client.session.create>[0]);
-    sessionId = (result.data as { id: string } | undefined)?.id ?? null;
-  } catch { /* fall through */ }
-
-  if (!sessionId) {
-    opts.onError?.('无法创建 AI 会话，请检查 OpenCode 服务是否启动');
-    return;
-  }
-
   let accumulated = '';
-  let done = false;
-  const controller = new AbortController();
-  const sessionMsgIds = new Set<string>();
 
-  const cleanup = () => {
-    if (!done) {
-      done = true;
-      controller.abort();
+  // ── Layer 1: SSE 重连（复用 sessionId，不重发 prompt）──
+  for (let sseTry = 0; sseTry <= RETRY_DELAYS.length; sseTry++) {
+    if (sseTry > 0) await sleep(RETRY_DELAYS[sseTry - 1]);
+
+    const r = await runAgentSession(
+      getClient,
+      sseTry === 0 ? null : sessionId,
+      sseTry === 0 ? '' : accumulated,
+      sseTry === 0,
+      opts,
+    );
+
+    accumulated = r.accumulated;
+    sessionId = r.sessionId;
+
+    if (r.status === 'done') {
+      opts.onDone?.(accumulated);
+      return;
     }
-  };
 
-  // 启动事件流监听
-  // 传入 opts.directory 作为订阅目录，确保收到该 Session 所属目录的事件
-  void (async () => {
-    try {
-      const eventDir = opts.directory ?? (_directory || undefined);
-      const sub = await client.event.subscribe(
-        eventDir ? { directory: eventDir } : undefined,
-        { signal: controller.signal },
-      );
-      for await (const raw of sub.stream as AsyncIterable<unknown>) {
-        if (done) break;
-        const evt = normalizeRawEvent(raw);
-        if (!evt) continue;
-        const p = evt.props;
-
-        if (evt.type === 'message.part.updated') {
-          const part = p.part as Record<string, unknown> | undefined;
-          if (!part || String(part.sessionID ?? '') !== sessionId) continue;
-          if (part.messageID) sessionMsgIds.add(String(part.messageID));
-          if (part.type === 'text') {
-            const fullText = String(part.text ?? '');
-            if (fullText.length >= accumulated.length) {
-              accumulated = fullText;
-              opts.onText?.(accumulated);
-            } else if (typeof p.delta === 'string' && p.delta) {
-              accumulated += p.delta;
-              opts.onText?.(accumulated);
-            }
-          }
-          continue;
-        }
-
-        if (evt.type === 'message.part.delta') {
-          const msgId = typeof p.messageID === 'string' ? p.messageID : null;
-          if (msgId && sessionMsgIds.has(msgId)) {
-            const delta = typeof p.delta === 'string' ? p.delta : '';
-            const field = typeof p.field === 'string' ? p.field : '';
-            if (delta && field === 'text') {
-              accumulated += delta;
-              opts.onText?.(accumulated);
-            }
-          }
-          continue;
-        }
-
-        if (evt.type === 'message.part') {
-          if (String(p.sessionID ?? '') !== sessionId) continue;
-          const part = p.part as Record<string, unknown> | undefined;
-          if (part?.type === 'text') {
-            const text = String(part.text ?? part.content ?? '');
-            accumulated += text;
-            opts.onText?.(accumulated);
-          }
-          continue;
-        }
-
-        if (evt.type === 'session.error') {
-          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
-          if (sid && sid !== sessionId) continue;
-          cleanup();
-          const errObj = p.error as Record<string, unknown> | undefined;
-          const errMsg = errObj
-            ? String(errObj.message ?? errObj.name ?? '未知错误')
-            : String(p.message ?? '未知错误');
-          opts.onError?.(errMsg);
-          return;
-        }
-
-        if (evt.type === 'session.completed') {
-          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
-          if (sid && sid !== sessionId) continue;
-          cleanup();
-          opts.onDone?.(accumulated);
-          return;
-        }
-
-        if (evt.type === 'session.idle') {
-          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
-          if (sid !== sessionId) continue;
-          cleanup();
-          opts.onDone?.(accumulated);
-          return;
-        }
-
-        if (evt.type === 'session.status') {
-          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
-          if (sid !== sessionId) continue;
-          // p.status 是 SessionStatus 对象 { type: 'idle' | 'busy' | 'retry' }，不是字符串
-          const statusObj = p.status;
-          const statusType = typeof statusObj === 'object' && statusObj !== null
-            ? String((statusObj as Record<string, unknown>).type ?? '')
-            : String(statusObj ?? '');
-          if (statusType === 'idle' || statusType === 'completed') {
-            cleanup();
-            opts.onDone?.(accumulated);
-            return;
-          }
-        }
-      }
-
-      if (!done) {
-        cleanup();
-        if (accumulated) opts.onDone?.(accumulated);
-        else opts.onError?.('SSE 事件流意外结束');
-      }
-    } catch (e) {
-      if (done) return;
-      const msg = e instanceof Error ? e.message : String(e);
-      if (msg.toLowerCase().includes('abort')) return;
-      cleanup();
-      if (accumulated) opts.onDone?.(accumulated);
-      else opts.onError?.(`SSE 连接失败: ${msg}`);
+    // 服务端硬错误（session.error）：不做 Layer 1 重试，直接进 Layer 2
+    if (r.status === 'hard-error' && !r.error?.includes('无法创建')) {
+      break;
     }
-  })();
 
-  // 发送提示词
-  const fullPrompt = opts.systemPrompt
-    ? `${opts.systemPrompt}\n\n---\n\n${opts.userPrompt}`
-    : opts.userPrompt;
-
-  const ok = await sessionPrompt(sessionId, fullPrompt, {
-    directory: opts.directory,
-    model: opts.model,
-  });
-  if (!ok) {
-    cleanup();
-    opts.onError?.('发送提示词失败，请检查 OpenCode 连接');
+    // session 创建失败：无法 Layer 1 重连，直接进 Layer 2
+    if (!sessionId) break;
   }
+
+  // ── Layer 2: 全新调用（新 session + 重发 prompt）──
+  for (let callTry = 0; callTry <= RETRY_DELAYS.length; callTry++) {
+    if (callTry > 0) await sleep(RETRY_DELAYS[callTry - 1]);
+
+    const r = await runAgentSession(
+      getClient,
+      null,
+      '',
+      true,
+      opts,
+    );
+
+    accumulated = r.accumulated;
+    sessionId = r.sessionId;
+
+    if (r.status === 'done') {
+      opts.onDone?.(accumulated);
+      return;
+    }
+
+    if (callTry === RETRY_DELAYS.length) {
+      const errMsg = r.error ?? '重试耗尽，请检查网络连接或 OpenCode 服务状态';
+      opts.onError?.(errMsg);
+      return;
+    }
+  }
+
+  opts.onError?.('重试耗尽，请检查网络连接或 OpenCode 服务状态');
 }
 
 // ─── 直连 LLM API（OpenCode 不可用时的降级路径）────────────────────────────

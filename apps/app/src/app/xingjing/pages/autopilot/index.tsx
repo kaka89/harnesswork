@@ -1,7 +1,6 @@
 import { createSignal, createMemo, onMount, onCleanup, Show, For } from 'solid-js';
 import { useNavigate } from '@solidjs/router';
 import {
-  teamWorkflowSteps,
   teamSampleGoals,
   type AgentDef,
   type WorkflowStep,
@@ -195,52 +194,6 @@ const EnterpriseAutopilot = () => {
     setAgentExecStatuses({});
   };
 
-  const startMockSimulation = () => {
-    let cumulativeDelay = 400;
-    const totalSteps = teamWorkflowSteps.length;
-
-    teamWorkflowSteps.forEach((step, idx) => {
-      cumulativeDelay += step.durationMs;
-
-      // Activate agent: thinking
-      const t1 = setTimeout(() => {
-        setAgentStatuses((prev) => ({ ...prev, [step.agentId]: 'thinking' }));
-        setAgentTasks((prev) => ({ ...prev, [step.agentId]: step.action }));
-      }, cumulativeDelay - step.durationMs + 200);
-      timersRef.push(t1);
-
-      // Agent: working
-      const t2 = setTimeout(() => {
-        setAgentStatuses((prev) => ({ ...prev, [step.agentId]: 'working' }));
-      }, cumulativeDelay - step.durationMs + 500);
-      timersRef.push(t2);
-
-      // Step appears in timeline
-      const t3 = setTimeout(() => {
-        setVisibleSteps((prev) => [...prev, step]);
-        setProgress(Math.round(((idx + 1) / totalSteps) * 100));
-        if (step.artifact) {
-          setArtifacts((prev) => [...prev, step]);
-        }
-        // Mark agent done after last step
-        const lastIdx = teamWorkflowSteps.reduce(
-          (acc: number, s, i) => (s.agentId === step.agentId ? i : acc),
-          -1
-        );
-        const isLastStepForAgent = lastIdx === idx;
-        if (isLastStepForAgent) {
-          setAgentStatuses((prev) => ({ ...prev, [step.agentId]: 'done' }));
-          setAgentTasks((prev) => ({ ...prev, [step.agentId]: '' }));
-        }
-        // All done
-        if (idx === totalSteps - 1) {
-          setRunState('done');
-        }
-      }, cumulativeDelay);
-      timersRef.push(t3);
-    });
-  };
-
   const handleStart = async () => {
     if (!goal().trim()) return;
     reset();
@@ -257,6 +210,7 @@ const EnterpriseAutopilot = () => {
       await runDirectAgent(targetAgent, cleanText, {
         workDir,
         model,
+        callAgentFn: (callOpts) => store.actions.callAgent(callOpts),
         onStatus: (status) => {
           const legacyMap: Record<AgentExecutionStatus, AgentStatus> = {
             idle: 'idle', pending: 'waiting', thinking: 'thinking',
@@ -288,6 +242,7 @@ const EnterpriseAutopilot = () => {
       availableAgents: TEAM_AGENTS,
       workDir,
       model,
+      callAgentFn: (callOpts) => store.actions.callAgent(callOpts),
       onOrchestrating: (text) => {
         setOrchestratorText(text);
         setProgress(10);
@@ -864,7 +819,7 @@ const EnterpriseAutopilot = () => {
               <div>
                 <div style={{ 'font-weight': 600, 'font-size': '13px', color: chartColors.success }}>全部完成</div>
                 <div style={{ 'font-size': '12px', color: themeColors.textMuted }}>
-                  调度 {TEAM_AGENTS.length} 个 Agent，完成 {artifacts().length || teamWorkflowSteps.length} 个任务，节省约 18 小时人工工时
+                  调度 {TEAM_AGENTS.length} 个 Agent，完成 {artifacts().length || dispatchPlan().length} 个任务，节省约 18 小时人工工时
                 </div>
               </div>
             </div>

@@ -3,7 +3,7 @@
  * 两阶段 Agent 调度：Orchestrator 解析意图 → 并发调用子 Agent
  * 支持 @mention 直接调用，零后端存储，OpenCode 不可用时降级 mock。
  */
-import { callAgent } from './opencode-client';
+import { callAgent, type CallAgentOptions } from './opencode-client';
 
 // ─── Agent 定义 ─────────────────────────────────────────────────
 
@@ -180,6 +180,8 @@ export interface OrchestratedRunOpts {
   workDir?: string;
   availableAgents: AutopilotAgent[];
   model?: { providerID: string; modelID: string };
+  /** 注入 callAgent 实现，优先使用 store.actions.callAgent（复用 OpenWork client）*/
+  callAgentFn?: (opts: CallAgentOptions) => Promise<void>;
   onOrchestrating?: (text: string) => void;
   onOrchestratorDone?: (plan: DispatchItem[]) => void;
   onAgentStatus?: (agentId: string, status: AgentExecutionStatus) => void;
@@ -195,6 +197,7 @@ export async function runOrchestratedAutopilot(
   opts: OrchestratedRunOpts,
 ): Promise<void> {
   const { availableAgents, workDir, model } = opts;
+  const invoke = opts.callAgentFn ?? callAgent;
   const orchestratorSystemPrompt = buildOrchestratorSystemPrompt(availableAgents);
 
   // Phase 1: Orchestrator 决定调用哪些 Agent
@@ -202,7 +205,7 @@ export async function runOrchestratedAutopilot(
   let phase1Ok = false;
 
   await new Promise<void>((resolve) => {
-    callAgent({
+    invoke({
       title: `xingjing-orchestrator-${Date.now()}`,
       directory: workDir,
       systemPrompt: orchestratorSystemPrompt,
@@ -245,7 +248,7 @@ export async function runOrchestratedAutopilot(
       opts.onAgentStatus?.(agentId, 'thinking');
 
       return new Promise<void>((resolve) => {
-        callAgent({
+        invoke({
           title: `xingjing-agent-${agentId}-${Date.now()}`,
           directory: workDir,
           systemPrompt: agentDef.systemPrompt,
@@ -281,15 +284,18 @@ export async function runDirectAgent(
   opts: {
     workDir?: string;
     model?: { providerID: string; modelID: string };
+    /** 注入 callAgent 实现，优先使用 store.actions.callAgent（复用 OpenWork client）*/
+    callAgentFn?: (options: CallAgentOptions) => Promise<void>;
     onStatus?: (status: AgentExecutionStatus) => void;
     onStream?: (text: string) => void;
     onDone?: (fullText: string) => void;
     onError?: (err: string) => void;
   },
 ): Promise<void> {
+  const invoke = opts.callAgentFn ?? callAgent;
   opts.onStatus?.('thinking');
   await new Promise<void>((resolve) => {
-    callAgent({
+    void invoke({
       title: `xingjing-direct-${agent.id}-${Date.now()}`,
       directory: opts.workDir,
       systemPrompt: agent.systemPrompt,

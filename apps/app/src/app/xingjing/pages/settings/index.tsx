@@ -1,6 +1,6 @@
 import { Component, createSignal, For, Show, createEffect, onMount } from 'solid-js';
 import { useSearchParams } from '@solidjs/router';
-import { Palette, Bot, Github, Clock, ShieldCheck, Sun, Moon, Save, FlaskConical, Zap, CheckCircle, AlertCircle, MessageSquare, X, Send, Loader, Package, Trash2, ChevronDown, ChevronUp, FolderOpen, User, Lock, AlertTriangle, Eye, EyeOff } from 'lucide-solid';
+import { Palette, Bot, Github, Clock, ShieldCheck, Sun, Moon, Save, FlaskConical, Zap, CheckCircle, AlertCircle, MessageSquare, X, Send, Loader, Package, Trash2, ChevronDown, ChevronUp, FolderOpen, User, Lock, AlertTriangle, Eye, EyeOff, Pencil } from 'lucide-solid';
 import { useAppStore } from '../../stores/app-store';
 import { themeColors, chartColors } from '../../utils/colors';
 import { callAgent, setProviderAuth, gitSync } from '../../services/opencode-client';
@@ -15,6 +15,7 @@ import { getAllGitTokens, setGitToken, clearGitToken, type XingjingProduct } fro
 import { deleteProductDir } from '../../../lib/tauri';
 import { isTauriRuntime } from '../../../utils';
 import AddDomainAppModal from '../../components/product/add-domain-app-modal';
+import EditProductModal from '../../components/product/edit-product-modal';
 import { currentUser, updateProfile, changePassword, deleteAccount } from '../../services/auth-service';
 
 const inputStyle = () => ({
@@ -84,13 +85,13 @@ const ThemeTab: Component = () => {
 
 // ===================== Tab2: LLM Config =====================
 const LLMTab: Component = () => {
-  const { state, actions, productStore } = useAppStore();
+  const { state, actions, productStore, openworkStatus, resolvedWorkspaceId } = useAppStore();
   const [config, setConfig] = createSignal<LLMConfig>({ ...state.llmConfig });
   const [testing, setTesting] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [testResult, setTestResult] = createSignal('');
-  // OpenWork 同步状态：null=未检查, true=已同步, false=本地保存
-  const [owSyncStatus, setOwSyncStatus] = createSignal<null | boolean>(null);
+  // OpenWork 同步状态：null=未检查, 'synced'=已同步, 'disconnected'=服务未连接, 'no-workspace'=无匹配工作区, 'error'=写入失败
+  const [owSyncStatus, setOwSyncStatus] = createSignal<null | 'synced' | 'disconnected' | 'no-workspace' | 'error'>(null);
   // Bug 2：per-provider API Keys 缓存（key=providerID, value=apiKey）
   const [providerKeys, setProviderKeys] = createSignal<Record<string, string>>({});
 
@@ -195,51 +196,45 @@ const LLMTab: Component = () => {
       .filter(m => m.content); // 过滤掉欢迎语等系统消息或空内容
     historyMsgs.push({ role: 'user', content: text });
 
-    // 层 1: 尝试 OpenCode callAgent
-    let openCodeUnavailable = false;
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('timeout')), 60000);
-        callAgent({
-          userPrompt: text,
-          title: `xingjing-chat-test-${Date.now()}`,
-          model: cfg.providerID && cfg.modelID && cfg.providerID !== 'custom'
-            ? { providerID: cfg.providerID, modelID: cfg.modelID }
-            : undefined,
-          onText: (accumulated: string) => {
-            setChatMessages(prev => {
-              const msgs = [...prev];
-              const last = msgs[msgs.length - 1];
-              if (last?.role === 'ai') msgs[msgs.length - 1] = { ...last, text: accumulated, streaming: true };
-              return msgs;
-            });
-          },
-          onDone: (full: string) => {
-            clearTimeout(timeout);
-            setChatMessages(prev => {
-              const msgs = [...prev];
-              const last = msgs[msgs.length - 1];
-              if (last?.role === 'ai') msgs[msgs.length - 1] = { ...last, text: full || last.text, streaming: false };
-              return msgs;
-            });
-            resolve();
-          },
-          onError: (err: string) => {
-            clearTimeout(timeout);
-            // 判断是否为 OpenCode 不可用类错误，若是则走降级直连分支
-            if (err.includes('无法创建 AI 会话') || err.includes('SSE 连接中断') || err.includes('无法连接 SSE')) {
-              openCodeUnavailable = true;
-            }
-            reject(new Error(err));
-          },
+    // 如果已配置 API Key，优先直连测试（跳过 OpenCode，避免 UnknownError 等内部错误干扰）
+    // 如果没有 API Key，先尝试 OpenCode callAgent
+    if (!cfg.apiKey) {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error('timeout')), 60000);
+          callAgent({
+            userPrompt: text,
+            title: `xingjing-chat-test-${Date.now()}`,
+            model: cfg.providerID && cfg.modelID && cfg.providerID !== 'custom'
+              ? { providerID: cfg.providerID, modelID: cfg.modelID }
+              : undefined,
+            onText: (accumulated: string) => {
+              setChatMessages(prev => {
+                const msgs = [...prev];
+                const last = msgs[msgs.length - 1];
+                if (last?.role === 'ai') msgs[msgs.length - 1] = { ...last, text: accumulated, streaming: true };
+                return msgs;
+              });
+            },
+            onDone: (full: string) => {
+              clearTimeout(timeout);
+              setChatMessages(prev => {
+                const msgs = [...prev];
+                const last = msgs[msgs.length - 1];
+                if (last?.role === 'ai') msgs[msgs.length - 1] = { ...last, text: full || last.text, streaming: false };
+                return msgs;
+              });
+              resolve();
+            },
+            onError: (err: string) => {
+              clearTimeout(timeout);
+              reject(new Error(err));
+            },
+          });
         });
-      });
-      // OpenCode 成功，直接返回
-      setChatLoading(false);
-      return;
-    } catch (e: unknown) {
-      if (!openCodeUnavailable) {
-        // 非 OpenCode 连通性错误（如模型返回错误等），直接展示
+        setChatLoading(false);
+        return;
+      } catch (e: unknown) {
         const errMsg = e instanceof Error ? e.message : String(e);
         setChatMessages(prev => {
           const msgs = [...prev];
@@ -252,7 +247,7 @@ const LLMTab: Component = () => {
       }
     }
 
-    // 层 2: OpenCode 不可用，降级为直连 API（兑容 OpenAI / DeepSeek / Qwen 等标准接口）
+    // 直连 API（有 API Key 时的主路径，或 OpenCode 不可用时的降级路径）
     try {
       if (!cfg.apiKey) throw new Error('请先配置 API Key 并保存');
       const apiUrl = cfg.apiUrl.replace(/\/$/, '');
@@ -348,7 +343,60 @@ const LLMTab: Component = () => {
     setTesting(true);
     setTestResult('');
     try {
-      // 优先尝试通过 OpenCode callAgent 真实测试
+      const cfg = config();
+  
+      // 如果已配置 API Key，优先直连测试（跳过 OpenCode，避免 15s 等待）
+      if (cfg.apiKey) {
+        const controller = new AbortController();
+        const fetchTimeout = setTimeout(() => controller.abort(), 15000);
+        try {
+          const apiUrl = cfg.apiUrl.replace(/\/$/, '');
+          const modelId = cfg.modelID || 'deepseek-chat';
+          const isAnthropic = cfg.providerID === 'anthropic';
+          const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+          if (isAnthropic) {
+            headers['x-api-key'] = cfg.apiKey;
+            headers['anthropic-version'] = '2023-06-01';
+          } else {
+            headers['Authorization'] = `Bearer ${cfg.apiKey}`;
+          }
+          const endpoint = isAnthropic ? `${apiUrl}/messages` : `${apiUrl}/chat/completions`;
+          const body = isAnthropic
+            ? { model: modelId, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1 }
+            : { model: modelId, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1, stream: false };
+  
+          const resp = await fetch(endpoint, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(body),
+            signal: controller.signal,
+          });
+          clearTimeout(fetchTimeout);
+          if (resp.ok) {
+            setTestResult(`✅ API 连接成功！${cfg.modelName} 直连模式正常`);
+          } else {
+            let detail = '';
+            try {
+              const errJson = await resp.json() as { error?: { message?: string }; message?: string };
+              detail = errJson.error?.message ?? errJson.message ?? '';
+            } catch {
+              detail = (await resp.text()).slice(0, 100);
+            }
+            setTestResult(`❌ API 返回错误 ${resp.status}: ${detail}`);
+          }
+        } catch (fetchErr: unknown) {
+          clearTimeout(fetchTimeout);
+          const errMsg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+          if (errMsg.toLowerCase().includes('abort')) {
+            setTestResult(`❌ 连接超时（15s），请检查网络或 API 地址：${cfg.apiUrl}`);
+          } else {
+            setTestResult(`❌ 网络请求失败: ${errMsg.slice(0, 120)}`);
+          }
+        }
+        return;
+      }
+  
+      // 没有 API Key：尝试通过 OpenCode 测试（适用于 OpenWork 模式）
       let resolved = false;
       await new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => {
@@ -357,10 +405,9 @@ const LLMTab: Component = () => {
             reject(new Error('timeout'));
           }
         }, 15000);
-
-        const cfg = config();
+  
         callAgent({
-          userPrompt: '请回夏“OK”以确认连接正常。',
+          userPrompt: '请回复"OK"以确认连接正常。',
           title: 'xingjing-llm-test',
           model: cfg.providerID && cfg.modelID && cfg.providerID !== 'custom'
             ? { providerID: cfg.providerID, modelID: cfg.modelID }
@@ -385,54 +432,9 @@ const LLMTab: Component = () => {
       });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (msg === 'timeout') {
-        setTestResult('⚠️ 连接超时15s，请检查 OpenCode 服务是否启动（端口4096）');
-      } else {
-        // 降级：用最小化请求直接探测 /chat/completions 接口
-        const cfg = config();
-        if (!cfg.apiKey) {
-          setTestResult('⚠️ 请先填写 API Key');
-        } else {
-          try {
-            const apiUrl = cfg.apiUrl.replace(/\/$/, '');
-            const modelId = cfg.modelID || 'deepseek-chat';
-            // Anthropic 使用不同的请求头和接口
-            const isAnthropic = cfg.providerID === 'anthropic';
-            const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-            if (isAnthropic) {
-              headers['x-api-key'] = cfg.apiKey;
-              headers['anthropic-version'] = '2023-06-01';
-            } else {
-              headers['Authorization'] = `Bearer ${cfg.apiKey}`;
-            }
-            const endpoint = isAnthropic ? `${apiUrl}/messages` : `${apiUrl}/chat/completions`;
-            const body = isAnthropic
-              ? { model: modelId, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1 }
-              : { model: modelId, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1, stream: false };
-
-            const resp = await fetch(endpoint, {
-              method: 'POST',
-              headers,
-              body: JSON.stringify(body),
-            });
-            if (resp.ok) {
-              setTestResult(`✅ API 连接成功！${cfg.modelName} 直连模式正常`);
-            } else {
-              let detail = '';
-              try {
-                const errJson = await resp.json() as { error?: { message?: string }; message?: string };
-                detail = errJson.error?.message ?? errJson.message ?? '';
-              } catch {
-                detail = (await resp.text()).slice(0, 100);
-              }
-              setTestResult(`❌ API 返回错误 ${resp.status}: ${detail}`);
-            }
-          } catch (fetchErr: unknown) {
-            const errMsg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
-            setTestResult(`❌ 网络请求失败: ${errMsg.slice(0, 120)}`);
-          }
-        }
-      }
+      setTestResult(msg === 'timeout'
+        ? '⚠️ OpenCode 响应超时，请先配置 API Key 以使用直连模式'
+        : `⚠️ ${msg}`);
     } finally {
       setTesting(false);
     }
@@ -463,7 +465,15 @@ const LLMTab: Component = () => {
         ...(cfg.apiKey && cfg.providerID ? { providers: { [cfg.providerID as string]: { apiKey: cfg.apiKey } } } : {}),
       }, null, 2);
       const owWritten = await actions.writeOpencodeConfig(owConfigContent);
-      setOwSyncStatus(owWritten);
+      if (owWritten) {
+        setOwSyncStatus('synced');
+      } else if (openworkStatus() === 'disconnected') {
+        setOwSyncStatus('disconnected');
+      } else if (!resolvedWorkspaceId()) {
+        setOwSyncStatus('no-workspace');
+      } else {
+        setOwSyncStatus('error');
+      }
 
       // 4. 持久化到 .xingjing/settings.yaml（包含 per-provider keys 居底）
       const workDir = productStore.activeProduct()?.workDir;
@@ -481,9 +491,11 @@ const LLMTab: Component = () => {
       if (owWritten) {
         setTestResult(`✅ 配置已同步至 OpenWork 工作区${openCodeSynced ? '，API Key 已注入 OpenCode' : ''}${persisted ? '，并本地持久化' : ''}`);
       } else if (openCodeSynced) {
-        setTestResult(`✓ 配置已保存，${cfg.modelName} API Key 已同步到 OpenCode${persisted ? ' 并持久化' : ''}（OpenWork 未连接）`);
+        const owReason = openworkStatus() === 'disconnected' ? 'OpenWork 未连接' : '未关联工作区';
+        setTestResult(`✓ 配置已保存，${cfg.modelName} API Key 已同步到 OpenCode${persisted ? ' 并持久化' : ''}（${owReason}）`);
       } else if (cfg.providerID !== 'custom') {
-        setTestResult(`✓ 配置已保存${persisted ? '并持久化' : ''}（OpenCode / OpenWork 均未连接，使用直连模式）`);
+        const owReason = openworkStatus() === 'disconnected' ? 'OpenWork 未连接' : '未关联工作区';
+        setTestResult(`✓ 配置已保存${persisted ? '并持久化' : ''}（OpenCode 未连接、${owReason}，使用直连模式）`);
       } else {
         setTestResult(`✓ 自定义配置已保存${persisted ? '并持久化' : ''}`);
       }
@@ -631,12 +643,18 @@ const LLMTab: Component = () => {
             <span
               class="text-xs px-2 py-1 rounded-full"
               style={{
-                background: owSyncStatus() ? themeColors.successBg : themeColors.bgSubtle,
-                color: owSyncStatus() ? chartColors.success : themeColors.textMuted,
-                border: `1px solid ${owSyncStatus() ? themeColors.successBorder ?? themeColors.border : themeColors.border}`,
+                background: owSyncStatus() === 'synced' ? themeColors.successBg : themeColors.bgSubtle,
+                color: owSyncStatus() === 'synced' ? chartColors.success : themeColors.textMuted,
+                border: `1px solid ${owSyncStatus() === 'synced' ? themeColors.successBorder ?? themeColors.border : themeColors.border}`,
               }}
             >
-              {owSyncStatus() ? '✓ 已同步至 OpenWork 工作区' : '⚠ OpenWork 未连接，仅本地保存'}
+              {owSyncStatus() === 'synced'
+                ? '✓ 已同步至 OpenWork 工作区'
+                : owSyncStatus() === 'disconnected'
+                  ? '⚠ OpenWork 未连接，仅本地保存'
+                  : owSyncStatus() === 'no-workspace'
+                    ? '⚠ 当前产品未关联 OpenWork 工作区，仅本地保存'
+                    : '⚠ 同步失败，仅本地保存'}
             </span>
           </Show>
         </div>
@@ -1479,6 +1497,16 @@ const ProductListTab: Component = () => {
   const [addModalOpen, setAddModalOpen] = createSignal(false);
   const [addModalTarget, setAddModalTarget] = createSignal<XingjingProduct | null>(null);
   const [addModalMode, setAddModalMode] = createSignal<'domain' | 'app'>('domain');
+  // 编辑产品弹窗
+  const [editingTarget, setEditingTarget] = createSignal<XingjingProduct | null>(null);
+
+  const openEditDialog = (product: XingjingProduct) => {
+    setEditingTarget(product);
+  };
+
+  const closeEditDialog = () => {
+    setEditingTarget(null);
+  };
 
   const openAddModal = (product: XingjingProduct, mode: 'domain' | 'app') => {
     setAddModalTarget(product);
@@ -1605,6 +1633,16 @@ const ProductListTab: Component = () => {
                     <Show when={expandedId() === product.id} fallback={<><ChevronDown size={12} />详情</>}>
                       <ChevronUp size={12} />收起
                     </Show>
+                  </button>
+                  <button
+                    class="p-1.5 rounded-lg transition-colors"
+                    style={{ color: themeColors.textSecondary, background: 'transparent', border: '1px solid transparent' }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = themeColors.bgSubtle; (e.currentTarget as HTMLButtonElement).style.borderColor = themeColors.border; }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; (e.currentTarget as HTMLButtonElement).style.borderColor = 'transparent'; }}
+                    onClick={() => openEditDialog(product)}
+                    title="编辑产品"
+                  >
+                    <Pencil size={14} />
                   </button>
                   <button
                     class="p-1.5 rounded-lg transition-colors"
@@ -1856,6 +1894,15 @@ const ProductListTab: Component = () => {
             </div>
           </div>
         </div>
+      </Show>
+
+      {/* 编辑产品弹窗 */}
+      <Show when={editingTarget() !== null}>
+        <EditProductModal
+          open={editingTarget() !== null}
+          product={editingTarget()!}
+          onClose={closeEditDialog}
+        />
       </Show>
 
       {/* 新增 Domain/App 弹窗 */}

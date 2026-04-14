@@ -142,7 +142,7 @@ const SoloBrainCard = (props: {
 type RunState = 'idle' | 'running' | 'done';
 
 const SoloAutopilot = () => {
-  const { state, productStore } = useAppStore();
+  const { state, productStore, actions } = useAppStore();
   const navigate = useNavigate();
   const soloProducts = () => state.products.filter((p: { mode: string }) => p.mode === 'solo');
 
@@ -300,35 +300,7 @@ const SoloAutopilot = () => {
     }
   };
 
-  // ─── Mock 降级模拟（OpenCode 不可用时使用） ───
-  const runMockSimulation = () => {
-    const staggerOffset = 300;
-    const totalSteps = soloWorkflowSteps.length;
-    soloWorkflowSteps.forEach((step, idx) => {
-      const baseDelay = idx * staggerOffset + 500;
-      const t1 = setTimeout(() => {
-        setAgentStatuses(prev => ({ ...prev, [step.agentId]: 'thinking' }));
-        setAgentTasks(prev => ({ ...prev, [step.agentId]: step.action }));
-      }, baseDelay);
-      timersRef.push(t1);
-      const t2 = setTimeout(() => {
-        setAgentStatuses(prev => ({ ...prev, [step.agentId]: 'working' }));
-      }, baseDelay + 400);
-      timersRef.push(t2);
-      const t3 = setTimeout(() => {
-        setAgentStatuses(prev => ({ ...prev, [step.agentId]: 'done' }));
-        setAgentTasks(prev => ({ ...prev, [step.agentId]: '' }));
-        setAgentDone(prev => ({ ...prev, [step.agentId]: (prev[step.agentId] || 0) + 1 }));
-        setVisibleSteps(prev => [...prev, step]);
-        setProgress(Math.round(((idx + 1) / totalSteps) * 100));
-        if (step.artifact) setArtifacts(prev => [...prev, step]);
-        if (idx === totalSteps - 1) setRunState('done');
-      }, baseDelay + step.durationMs);
-      timersRef.push(t3);
-    });
-  };
-
-  // ─── handleStart: 两阶段 Orchestrator 调度 + mock 降级 ───
+  // ─── handleStart: 两阶段 Orchestrator 调度 ───
   const handleStart = async () => {
     if (!goal().trim()) return;
     reset();
@@ -345,6 +317,7 @@ const SoloAutopilot = () => {
       await runDirectAgent(targetAgent, cleanText, {
         workDir,
         model,
+        callAgentFn: (callOpts) => actions.callAgent(callOpts),
         onStatus: (status) => {
           const legacyMap: Record<AgentExecutionStatus, 'idle' | 'thinking' | 'working' | 'done' | 'waiting'> = {
             idle: 'idle', pending: 'waiting', thinking: 'thinking',
@@ -377,6 +350,7 @@ const SoloAutopilot = () => {
       availableAgents: SOLO_AGENTS,
       workDir,
       model,
+      callAgentFn: (callOpts) => actions.callAgent(callOpts),
       onOrchestrating: (text) => {
         setOrchestratorText(text);
         setProgress(10);
@@ -435,8 +409,8 @@ const SoloAutopilot = () => {
         setRunState('done');
       },
       onError: (err) => {
-        console.warn('[solo-autopilot] orchestration failed, fallback to mock:', err);
-        runMockSimulation();
+        setAgentError(`编排执行失败：${err}`);
+        setRunState('idle');
       },
     });
   };

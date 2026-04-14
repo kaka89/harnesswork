@@ -15,18 +15,27 @@ import { initXingjingClient } from './opencode-client';
 import { isTauriRuntime } from '../../utils';
 
 // 动态获取 OpenCode 真实 baseUrl：Tauri 运行时从 engine_info 读取，浏览器内降级到默认端口
-async function resolveOpenCodeBaseUrl(): Promise<string> {
+async function resolveOpenCodeInfo(): Promise<{ baseUrl: string; username: string; password: string }> {
   if (isTauriRuntime()) {
     try {
       const info = await engineInfo();
       if (info.running && info.baseUrl) {
-        return info.baseUrl.replace(/\/$/, '');
+        return {
+          baseUrl: info.baseUrl.replace(/\/$/, ''),
+          username: info.opencodeUsername?.trim() ?? '',
+          password: info.opencodePassword?.trim() ?? '',
+        };
       }
     } catch {
       // Tauri invoke 失败，降级
     }
   }
-  return 'http://127.0.0.1:4096';
+  return { baseUrl: 'http://127.0.0.1:4096', username: '', password: '' };
+}
+
+// 兼容旧用法
+async function resolveOpenCodeBaseUrl(): Promise<string> {
+  return (await resolveOpenCodeInfo()).baseUrl;
 }
 
 // ─── 类型定义 ────────────────────────────────────────────────────────────────
@@ -246,8 +255,8 @@ export function createProductStore() {
     await savePreferences(updatedPrefs);
 
     // Re-initialize OpenCode client with the new product's workDir
-    const baseUrl = await resolveOpenCodeBaseUrl();
-    initXingjingClient(baseUrl, product.workDir);
+    const { baseUrl, username, password } = await resolveOpenCodeInfo();
+    initXingjingClient(baseUrl, product.workDir, { username, password });
   }
 
   async function setViewMode(mode: 'team' | 'solo') {
@@ -482,8 +491,8 @@ export function createProductStore() {
   createEffect(() => {
     const product = activeProduct();
     if (product) {
-      resolveOpenCodeBaseUrl().then(baseUrl => {
-        initXingjingClient(baseUrl, product.workDir);
+      resolveOpenCodeInfo().then(({ baseUrl, username, password }) => {
+        initXingjingClient(baseUrl, product.workDir, { username, password });
       });
     }
   });

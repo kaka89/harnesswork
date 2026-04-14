@@ -20,12 +20,12 @@ export const BackNavigationContext = createContext<() => void>(() => {
 import { useAppStore, type Role } from '../../stores/app-store';
 import { currentUser } from '../../services/auth-service';
 import ProductSwitcher from '../product/product-switcher';
-import { callAgent } from '../../services/opencode-client';
 import {
   Zap, TrendingUp, FileText, Palette, Code, Timer, CheckCircle, Cloud,
   BarChart3, BookOpen, Bot, Settings, PlayCircle, Lightbulb, Rocket, Sun, Moon, Wifi, WifiOff
 } from 'lucide-solid';
 import { themeColors } from '../../utils/colors';
+import { useOpenCodeStatus } from '../../hooks/use-opencode-status';
 
 const roleOptions: { value: Role; label: string }[] = [
   { value: 'pm', label: '产品经理' },
@@ -102,6 +102,7 @@ const MainLayout: ParentComponent = (props) => {
   const navigate = useNavigate();
   const location = useLocation();
   const { state, actions, openworkStatus } = useAppStore();
+  const opencodeStatus = useOpenCodeStatus();
 
   const [openKeys, setOpenKeys] = createSignal<string[]>([]);
   const [currentSlogan, setCurrentSlogan] = createSignal(
@@ -219,7 +220,7 @@ const MainLayout: ParentComponent = (props) => {
     const systemPrompt = `你是「星静」智能研发平台的 AI 虚拟团队助手。\n当前模式：${modeLabel}\n当前角色：${roleLabel}\n当前产品：${productName}\n\n请根据用户的问题提供专业、简洁的回答。如果涉及任务管理、产品规划、技术建议等，请结合当前角色给出具体可执行的建议。`;
 
     const llmCfg = state.llmConfig;
-    callAgent({
+    void actions.callAgent({
       systemPrompt,
       userPrompt: q,
       title: `星静对话-${productName}`,
@@ -304,7 +305,7 @@ const MainLayout: ParentComponent = (props) => {
         </div>
 
         {/* Menu */}
-        <nav class="flex-1 overflow-y-auto py-1 pb-20">
+        <nav class={`flex-1 overflow-y-auto py-1 ${isSoloMode() ? 'pb-[160px]' : 'pb-[72px]'}`}>
           <For each={menuItems()}>
             {(item) => (
               <div>
@@ -368,6 +369,72 @@ const MainLayout: ParentComponent = (props) => {
             )}
           </For>
         </nav>
+
+        {/* Connection Status */}
+        <div class={`absolute left-0 right-0 px-3 py-2 border-t border-[var(--dls-border)] bg-[var(--dls-surface)] ${isSoloMode() ? 'bottom-[88px]' : 'bottom-0'}`}>
+          <div class="flex items-center justify-between py-1">
+            <div class="flex items-center gap-1.5">
+              <span
+                class="inline-block w-1.5 h-1.5 rounded-full flex-shrink-0"
+                style={{
+                  background:
+                    openworkStatus() === 'connected'
+                      ? 'var(--green-9, #16a34a)'
+                      : openworkStatus() === 'limited'
+                        ? 'var(--amber-9, #d97706)'
+                        : 'var(--red-9, #dc2626)',
+                }}
+              />
+              <span class="text-xs text-[var(--dls-text-secondary)]">OpenWork</span>
+            </div>
+            <span
+              class="text-xs"
+              style={{
+                color:
+                  openworkStatus() === 'connected'
+                    ? 'var(--green-9, #16a34a)'
+                    : openworkStatus() === 'limited'
+                      ? 'var(--amber-9, #d97706)'
+                      : 'var(--red-9, #dc2626)',
+              }}
+            >
+              {openworkStatus() === 'connected' ? '已连接' : openworkStatus() === 'limited' ? '受限' : '断开'}
+            </span>
+          </div>
+          <div class="flex items-center justify-between py-1">
+            <div class="flex items-center gap-1.5">
+              <span
+                class="inline-block w-1.5 h-1.5 rounded-full flex-shrink-0"
+                style={{
+                  background:
+                    openworkStatus() !== 'disconnected'
+                      ? 'var(--green-9, #16a34a)'
+                      : opencodeStatus() === 'connected'
+                        ? 'var(--green-9, #16a34a)'
+                        : 'var(--red-9, #dc2626)',
+                }}
+              />
+              <span class="text-xs text-[var(--dls-text-secondary)]">OpenCode</span>
+            </div>
+            <span
+              class="text-xs"
+              style={{
+                color:
+                  openworkStatus() !== 'disconnected'
+                    ? 'var(--green-9, #16a34a)'
+                    : opencodeStatus() === 'connected'
+                      ? 'var(--green-9, #16a34a)'
+                      : 'var(--red-9, #dc2626)',
+              }}
+            >
+              {openworkStatus() !== 'disconnected'
+                ? '通过 OpenWork'
+                : opencodeStatus() === 'connected'
+                  ? '已连接'
+                  : '断开'}
+            </span>
+          </div>
+        </div>
 
         {/* Energy Mode (Solo only) */}
         <Show when={isSoloMode()}>

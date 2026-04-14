@@ -8,7 +8,7 @@
  * 认证守卫：onMount 时校验 xingjing-server token，
  * 未登录则渲染 AuthPage，登录后进入主应用。
  */
-import { lazy, Suspense, createSignal, onMount, Show } from 'solid-js';
+import { lazy, Suspense, createSignal, createMemo, onMount, Show } from 'solid-js';
 import { Router, Route, useNavigate } from '@solidjs/router';
 import { AppStoreProvider, type XingjingOpenworkContext } from '../xingjing/stores/app-store';
 import MainLayout, { BackNavigationContext } from '../xingjing/components/layouts/main-layout';
@@ -60,32 +60,35 @@ export default function XingjingNativePage(props: XingjingNativePageProps) {
   const outerNavigate = useNavigate();
 
   // 构建 XingjingOpenworkContext，将 OpenWork 能力注入到星静内部
-  const openworkCtx: XingjingOpenworkContext | undefined = props.openworkServerClient
-    ? {
-        resolveWorkspaceByDir: async (productDir: string) => {
-          const list = await props.openworkServerClient!.listWorkspaces().catch(() => null);
-          const match = list?.items?.find((w) => w.path === productDir)
-            ?? list?.workspaces?.find((w) => w.path === productDir);
-          return match?.id ?? null;
-        },
-        serverStatus: () => props.openworkServerStatus?.() ?? 'disconnected',
-        opencodeClient: () => props.opencodeClient ?? null,
-        selectedModel: () => props.selectedModel?.() ?? null,
-        listSkills: (workspaceId) =>
-          props.openworkServerClient!.listSkills(workspaceId)
-            .then((r) => r.items).catch(() => []),
-        getSkill: (workspaceId, name) =>
-          props.openworkServerClient!.getSkill(workspaceId, name).catch(() => null),
-        upsertSkill: (workspaceId, name, content, description) =>
-          props.openworkServerClient!.upsertSkill(workspaceId, { name, content, description })
-            .then(() => true).catch(() => false),
-        readOpencodeConfig: (workspaceId) =>
-          props.openworkServerClient!.readOpencodeConfigFile(workspaceId, 'project').catch(() => null),
-        writeOpencodeConfig: (workspaceId, content) =>
-          props.openworkServerClient!.writeOpencodeConfigFile(workspaceId, 'project', content)
-            .then(() => true).catch(() => false),
-      }
-    : undefined;
+  // 使用 createMemo 确保 openworkServerClient 连接/断开时响应式更新
+  const openworkCtx = createMemo<XingjingOpenworkContext | undefined>(() =>
+    props.openworkServerClient
+      ? {
+          resolveWorkspaceByDir: async (productDir: string) => {
+            const list = await props.openworkServerClient!.listWorkspaces().catch(() => null);
+            const match = list?.items?.find((w) => w.path === productDir)
+              ?? list?.workspaces?.find((w) => w.path === productDir);
+            return match?.id ?? null;
+          },
+          serverStatus: () => props.openworkServerStatus?.() ?? 'disconnected',
+          opencodeClient: () => props.opencodeClient ?? null,
+          selectedModel: () => props.selectedModel?.() ?? null,
+          listSkills: (workspaceId) =>
+            props.openworkServerClient!.listSkills(workspaceId)
+              .then((r) => r.items).catch(() => []),
+          getSkill: (workspaceId, name) =>
+            props.openworkServerClient!.getSkill(workspaceId, name).catch(() => null),
+          upsertSkill: (workspaceId, name, content, description) =>
+            props.openworkServerClient!.upsertSkill(workspaceId, { name, content, description })
+              .then(() => true).catch(() => false),
+          readOpencodeConfig: (workspaceId) =>
+            props.openworkServerClient!.readOpencodeConfigFile(workspaceId, 'project').catch(() => null),
+          writeOpencodeConfig: (workspaceId, content) =>
+            props.openworkServerClient!.writeOpencodeConfigFile(workspaceId, 'project', content)
+              .then(() => true).catch(() => false),
+        }
+      : undefined
+  );
 
   // ── 认证状态 ────────────────────────────────────────────────────────────────
   const [authChecked, setAuthChecked] = createSignal(false);
@@ -108,7 +111,7 @@ export default function XingjingNativePage(props: XingjingNativePageProps) {
         when={currentUser()}
         fallback={<AuthPage onSuccess={() => setAuthChecked(true)} />}
       >
-        <XingjingApp outerNavigate={outerNavigate} openworkCtx={openworkCtx} />
+        <XingjingApp outerNavigate={outerNavigate} openworkCtx={openworkCtx()} />
       </Show>
     </Show>
   );

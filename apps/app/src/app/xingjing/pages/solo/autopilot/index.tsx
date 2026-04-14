@@ -164,6 +164,7 @@ const SoloAutopilot = () => {
   const [agentStreamTexts, setAgentStreamTexts] = createSignal<Record<string, string>>({});
   const [agentExecStatuses, setAgentExecStatuses] = createSignal<Record<string, AgentExecutionStatus>>({});
   const [agentError, setAgentError] = createSignal<string | null>(null);
+  const [directAnswer, setDirectAnswer] = createSignal<string | null>(null);
 
   // ─── 模型选择器状态 ───────────────────────────────────────────────────────────
   // per-provider 已配置的 API Keys（从 settings.yaml 读取）
@@ -230,6 +231,7 @@ const SoloAutopilot = () => {
     setDispatchPlan([]);
     setAgentStreamTexts({});
     setAgentExecStatuses({});
+    setDirectAnswer(null);
   };
 
   // ─── 解析流式文本为 Timeline 步骤 ───
@@ -411,6 +413,11 @@ const SoloAutopilot = () => {
       onError: (err) => {
         setAgentError(`编排执行失败：${err}`);
         setRunState('idle');
+      },
+      onDirectAnswer: (text) => {
+        setDirectAnswer(text);
+        setProgress(100);
+        setRunState('done');
       },
     });
   };
@@ -717,6 +724,44 @@ const SoloAutopilot = () => {
                     </div>
                     <div style={{ 'font-size': '11px', color: themeColors.textSecondary, 'white-space': 'pre-wrap', 'max-height': '100px', 'overflow-y': 'auto' }}>
                       {orchestratorText()}
+                    </div>
+                  </div>
+                </Show>
+
+                {/* 直接回答模式：Orchestrator 未找到匹配 Agent 时降级为大模型直接回答 */}
+                <Show when={directAnswer()}>
+                  <div style={{
+                    padding: '12px 14px',
+                    background: themeColors.successBg,
+                    border: `1px solid ${themeColors.successBorder}`,
+                    'border-radius': '8px',
+                    'margin-bottom': '8px',
+                  }}>
+                    <div style={{ display: 'flex', 'align-items': 'center', gap: '6px', 'margin-bottom': '8px' }}>
+                      <div style={{
+                        width: '24px', height: '24px', 'border-radius': '50%',
+                        background: chartColors.success,
+                        display: 'flex', 'align-items': 'center', 'justify-content': 'center',
+                        'flex-shrink': 0, 'font-size': '14px',
+                      }}>
+                        🤖
+                      </div>
+                      <span style={{ 'font-size': '12px', 'font-weight': 600, color: chartColors.success }}>
+                        AI 直接回答
+                      </span>
+                      <span style={{ 'font-size': '11px', color: themeColors.textMuted }}>
+                        （未找到匹配的专业 Agent，已降级为大模型回答）
+                      </span>
+                    </div>
+                    <div style={{
+                      'font-size': '12px',
+                      color: themeColors.textPrimary,
+                      'white-space': 'pre-wrap',
+                      'line-height': '1.7',
+                      'max-height': '380px',
+                      'overflow-y': 'auto',
+                    }}>
+                      {directAnswer()}
                     </div>
                   </div>
                 </Show>

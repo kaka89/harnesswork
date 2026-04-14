@@ -19,6 +19,7 @@ import {
 import MentionInput from '../../../components/autopilot/mention-input';
 import ArtifactWorkspace, { type ArtifactItem } from '../../../components/autopilot/artifact-workspace';
 import ExpandableOverlay from '../../../components/autopilot/expandable-overlay';
+import PermissionDialog, { type PermissionRequest } from '../../../components/autopilot/permission-dialog';
 
 interface AgentStatus {
   [key: string]: 'idle' | 'thinking' | 'working' | 'done' | 'waiting';
@@ -453,6 +454,22 @@ const SoloAutopilot = () => {
   const [artifactsData, setArtifactsData] = createSignal<ArtifactItem[]>([]);
   const [showExpandOverlay, setShowExpandOverlay] = createSignal(false);
   const [directAnswer, setDirectAnswer] = createSignal<string | null>(null);
+
+  // ─── 权限授权队列 ─────────────────────────────────────────────────────────────
+  // 队列头部为当前展示的 Dialog，resolve 后自动弹出下一个
+  const [permissionQueue, setPermissionQueue] = createSignal<PermissionRequest[]>([]);
+
+  const handlePermissionAsked = (params: PermissionRequest) => {
+    setPermissionQueue((prev) => [...prev, params]);
+  };
+
+  const handlePermissionResolve = (action: 'once' | 'always' | 'reject') => {
+    const current = permissionQueue()[0];
+    if (current) {
+      current.resolve(action);
+      setPermissionQueue((prev) => prev.slice(1));
+    }
+  };
   const [artifactWidth, setArtifactWidth] = createSignal(420);
   const [artifactFloat, setArtifactFloat] = createSignal(false);
   const [artifactFloatPos, setArtifactFloatPos] = createSignal({ x: 0, y: 64 });
@@ -691,6 +708,7 @@ const SoloAutopilot = () => {
       await runDirectAgent(targetAgent, cleanText, {
         workDir,
         model,
+        onPermissionAsked: handlePermissionAsked,
         callAgentFn: (callOpts) => actions.callAgent(callOpts),
         onStatus: (status) => {
           const legacyMap: Record<AgentExecutionStatus, 'idle' | 'thinking' | 'working' | 'done' | 'waiting'> = {
@@ -728,6 +746,7 @@ const SoloAutopilot = () => {
       availableAgents: SOLO_AGENTS,
       workDir,
       model,
+      onPermissionAsked: handlePermissionAsked,
       callAgentFn: (callOpts) => actions.callAgent(callOpts),
       onOrchestrating: (text) => {
         setOrchestratorText(text);
@@ -1688,6 +1707,13 @@ const SoloAutopilot = () => {
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         @keyframes blink { 0%,80%,100% { opacity: 0; } 40% { opacity: 1; } }
       `}</style>
+      {/* 工具权限授权 Dialog */}
+      <Show when={permissionQueue().length > 0}>
+        <PermissionDialog
+          request={permissionQueue()[0]!}
+          onResolve={handlePermissionResolve}
+        />
+      </Show>
     </div>
   );
 };

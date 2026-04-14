@@ -150,7 +150,8 @@ const HypothesisColumn: Component<{
                 onDragStart={(e) => {
                   e.stopPropagation();
                   // WebKit/Tauri 要求必须调用 setData，否则 drop 事件不触发
-                  e.dataTransfer.setData('text/plain', h.id);
+                  // dragstart 时 dataTransfer 实際不会为 null
+                  e.dataTransfer!.setData('text/plain', h.id);
                   props.drag.onDragStart(h.id);
                 }}
                 style={{
@@ -764,6 +765,66 @@ ${reqSummary}
               <Show when={detailHypo()!.validatedAt}>
                 <span>· 验证于 {detailHypo()!.validatedAt}</span>
               </Show>
+            </div>
+          </div>
+        </div>
+      </Show>
+
+      {/* Requirement Detail Modal */}
+      <Show when={detailReq()}>
+        <div style={{ position: 'fixed', inset: 0, 'z-index': 50, display: 'flex', 'align-items': 'center', 'justify-content': 'center' }}>
+          <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.3)' }} onClick={() => setDetailReq(null)} />
+          <div style={{ position: 'relative', background: themeColors.surface, 'border-radius': '16px', 'box-shadow': '0 4px 24px rgba(0,0,0,0.15)', padding: '24px', width: '700px', 'max-height': '90vh', 'overflow-y': 'auto' }}>
+            <div style={{ display: 'flex', 'align-items': 'center', 'justify-content': 'space-between', 'margin-bottom': '16px' }}>
+              <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
+                <span style={{ 'font-weight': 600, 'font-size': '16px', color: themeColors.text }}>📋 {detailReq()!.title}</span>
+                <span style={{ 'font-size': '12px', padding: '1px 8px', 'border-radius': '4px', 'font-weight': 700, background: (priorityStyle[detailReq()!.priority] || priorityStyle.P3).bg, color: 'white' }}>
+                  {detailReq()!.priority}
+                </span>
+                <span style={{ 'font-size': '12px', padding: '1px 6px', background: themeColors.primaryBg, color: chartColors.primary, 'border-radius': '4px' }}>
+                  {reqTypeLabel[detailReq()!.type]}
+                </span>
+              </div>
+              <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
+                <button
+                  style={{ 'font-size': '12px', padding: '4px 12px', 'border-radius': '6px', border: `1px solid ${themeColors.border}`, background: reqEditMode() === 'preview' ? themeColors.primaryBg : themeColors.surface, color: reqEditMode() === 'preview' ? chartColors.primary : themeColors.textSecondary, cursor: 'pointer' }}
+                  onClick={() => setReqEditMode('preview')}
+                >预览</button>
+                <button
+                  style={{ 'font-size': '12px', padding: '4px 12px', 'border-radius': '6px', border: `1px solid ${themeColors.border}`, background: reqEditMode() === 'edit' ? themeColors.primaryBg : themeColors.surface, color: reqEditMode() === 'edit' ? chartColors.primary : themeColors.textSecondary, cursor: 'pointer' }}
+                  onClick={() => setReqEditMode('edit')}
+                >编辑</button>
+                <Show when={reqEditMode() === 'edit'}>
+                  <button
+                    style={{ 'font-size': '12px', padding: '4px 12px', 'border-radius': '6px', border: 'none', background: chartColors.primary, color: 'white', cursor: 'pointer' }}
+                    onClick={() => {
+                      const r = detailReq()!;
+                      const updated = { ...r, content: reqEditContent() };
+                      setRequirements(prev => prev.map(item => item.id === r.id ? updated : item));
+                      setDetailReq(updated);
+                      setReqEditMode('preview');
+                      const workDir = productStore.activeProduct()?.workDir;
+                      if (workDir) void saveRequirementOutput(workDir, updated as unknown as Parameters<typeof saveRequirementOutput>[1]);
+                    }}
+                  >保存</button>
+                </Show>
+                <button style={{ color: themeColors.textMuted, 'font-size': '20px', background: 'none', border: 'none', cursor: 'pointer' }} onClick={() => setDetailReq(null)}>✕</button>
+              </div>
+            </div>
+
+            <Show when={reqEditMode() === 'preview'}>
+              <div style={{ 'font-size': '14px', 'line-height': '1.8', color: themeColors.text }} innerHTML={markdownToSafeHtml(reqEditContent())} />
+            </Show>
+            <Show when={reqEditMode() === 'edit'}>
+              <textarea
+                value={reqEditContent()}
+                onInput={(e) => setReqEditContent(e.currentTarget.value)}
+                style={{ width: '100%', 'min-height': '360px', border: `1px solid ${themeColors.border}`, 'border-radius': '8px', padding: '12px', 'font-size': '13px', 'font-family': '"SF Mono", "Fira Code", monospace', 'line-height': '1.6', resize: 'vertical', 'box-sizing': 'border-box', background: themeColors.surface, color: themeColors.text, outline: 'none' }}
+              />
+            </Show>
+
+            <div style={{ 'margin-top': '16px', 'padding-top': '12px', 'border-top': `1px solid ${themeColors.borderLight}`, display: 'flex', 'align-items': 'center', gap: '8px', 'font-size': '12px', color: themeColors.textMuted }}>
+              <span>创建于 {detailReq()!.createdAt}</span>
             </div>
           </div>
         </div>

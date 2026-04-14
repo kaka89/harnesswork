@@ -139,6 +139,7 @@ export interface Hypothesis {
   impact: 'high' | 'medium' | 'low';
   createdAt: string;
   validatedAt?: string;
+  markdownDetail?: string; // Markdown 格式详细描述
 }
 
 export const hypotheses: Hypothesis[] = [
@@ -150,6 +151,7 @@ export const hypotheses: Hypothesis[] = [
     method: '邀请 5 位活跃用户内测 Beta，观察 3 天使用频率',
     impact: 'high',
     createdAt: '2026-04-07',
+    markdownDetail: '## 假设：用户需要「段落一键重写」功能\n\n### 背景\n\n用户在 Editor 内花大量时间手动改写，且频繁使用续写后再删除。\n\n### 验证方式\n\n- 邀请 **5 位活跃用户**内测 Beta\n- 观察 **3 天**使用频率\n- 收集定性反馈\n\n### 成功标准\n\n| 指标 | 目标 |\n|------|------|\n| 日均使用次数 | >= 3 次 |\n| 用户满意度 | >= 4/5 |',
   },
   {
     id: 'h2',
@@ -159,6 +161,7 @@ export const hypotheses: Hypothesis[] = [
     method: '在付费弹窗中增加「团队版」选项，观察点击率 vs 个人版',
     impact: 'high',
     createdAt: '2026-04-01',
+    markdownDetail: '## 假设：团队协作是付费核心驱动力\n\n### 背景\n\n多个用户在反馈中提到「希望和同事共享」，用户 zhuming@corp.com 明确询问团队版且愿意付费 5 人。\n\n### 验证方式\n\n在付费弹窗中增加「团队版」选项，对比点击率：\n\n1. A 组：仅显示个人版\n2. B 组：同时显示个人版 + 团队版\n\n### 风险\n\n> 企业版功能复杂度会让开发成本翻倍，当前 NPS 42 主要来自个人用户。',
   },
   {
     id: 'h3',
@@ -179,6 +182,7 @@ export const hypotheses: Hypothesis[] = [
     impact: 'high',
     createdAt: '2026-03-20',
     validatedAt: '2026-04-01',
+    markdownDetail: '## 假设：每日写作目标提醒能提升打开率\n\n### 实验设计\n\nA/B 测试：50% 用户开启推送提醒 vs 不开启\n\n### 结果\n\n- 开启推送组 DAU **+34%**\n- 7日留存 **+11%**\n- 已**全量上线**\n\n### 结论\n\n推送通知对写作工具同样有效，建议后续优化推送时间段（晚间 20:30 效果最佳）。',
   },
   {
     id: 'h5',
@@ -201,6 +205,7 @@ export const hypotheses: Hypothesis[] = [
     impact: 'low',
     createdAt: '2026-02-20',
     validatedAt: '2026-03-25',
+    markdownDetail: '## 假设：AI 自动生成大纲能成为核心功能\n\n### 背景\n\n用户调研中 70% 表示感兴趣。\n\n### 实验结果\n\n上线后仅 **12%** 用户使用超过 3 次。\n\n### 失败原因分析\n\n- 用户反馈「生成结果太模板化」\n- 「用户说想要」≠「用户会真正使用」\n- 调研数据有偏差，实际行为才是真相\n\n### 后续行动\n\n已降优先级，转为探索更个性化的大纲生成方式。',
   },
 ];
 
@@ -242,6 +247,66 @@ export const featureIdeas: FeatureIdea[] = [
     aiPriority: 'P3',
     aiReason: '仅 12% 用户使用引用检查功能，优先级较低',
     votes: 3,
+  },
+];
+
+// ─── Requirement Outputs ─────────────────────────────────────────────
+export type RequirementType = 'user-story' | 'acceptance' | 'nfr';
+
+export interface RequirementOutput {
+  id: string;
+  title: string;
+  type: RequirementType;
+  content: string;  // Markdown 格式
+  priority: 'P0' | 'P1' | 'P2' | 'P3';
+  linkedHypothesis?: string;  // 关联假设 ID
+  createdAt: string;
+}
+
+const reqTypeLabel: Record<RequirementType, string> = {
+  'user-story': '用户故事',
+  acceptance: '验收标准',
+  nfr: '非功能需求',
+};
+
+export { reqTypeLabel };
+
+export const requirementOutputs: RequirementOutput[] = [
+  {
+    id: 'req1',
+    title: '段落重写 MVP 用户故事',
+    type: 'user-story',
+    content: '### 用户故事\n\n**作为**一个 WriteFlow 用户，\n**我希望**选中一段文字后能一键 AI 重写，\n**以便**快速改善表达质量，无需手动逐句修改。\n\n### 场景描述\n\n1. 用户在编辑器中选中一段文字\n2. 浮动工具栏出现「重写」按钮\n3. 点击后 AI 生成重写版本，保留原意\n4. 用户可选择「采用」或「放弃」',
+    priority: 'P0',
+    linkedHypothesis: 'h1',
+    createdAt: '2026-04-08',
+  },
+  {
+    id: 'req2',
+    title: '段落重写验收标准',
+    type: 'acceptance',
+    content: '### 验收标准\n\n- [ ] 选中文本后 500ms 内出现重写按钮\n- [ ] 重写延迟 < 3 秒（P95）\n- [ ] 重写结果保留原文核心语义\n- [ ] 支持「采用/放弃/重新生成」三种操作\n- [ ] 错误时显示友好提示，不阻断编辑流程\n- [ ] 移动端触摸选中同样可用',
+    priority: 'P0',
+    linkedHypothesis: 'h1',
+    createdAt: '2026-04-08',
+  },
+  {
+    id: 'req3',
+    title: '共享链接功能用户故事',
+    type: 'user-story',
+    content: '### 用户故事\n\n**作为**一个想与同事协作的用户，\n**我希望**能生成一个只读共享链接分享文档，\n**以便**在不需要完整团队版的情况下实现基本协作。\n\n### 备注\n\n> 这是团队版的轻量替代方案，用于验证协作需求的真实程度。',
+    priority: 'P1',
+    linkedHypothesis: 'h2',
+    createdAt: '2026-04-09',
+  },
+  {
+    id: 'req4',
+    title: 'AI 重写性能要求',
+    type: 'nfr',
+    content: '### 非功能需求：AI 重写性能\n\n| 指标 | 要求 |\n|------|------|\n| 响应延迟（P95） | < 3 秒 |\n| 并发支持 | >= 50 用户同时重写 |\n| 错误率 | < 1% |\n| 降级策略 | API 超时后 5s 自动重试一次，仍失败则提示用户 |',
+    priority: 'P0',
+    linkedHypothesis: 'h1',
+    createdAt: '2026-04-08',
   },
 ];
 

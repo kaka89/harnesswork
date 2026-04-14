@@ -946,8 +946,6 @@ export interface DirectLLMConfig {
   apiKey: string;
   modelID?: string;
   providerID?: string;
-  maxTokens?: number;
-  temperature?: number;
 }
 
 /**
@@ -989,7 +987,7 @@ export async function callAgentDirect(
     endpoint = `${apiUrl}/messages`;
     body = {
       model: modelId,
-      max_tokens: llmConfig.maxTokens ?? 4096,
+      max_tokens: 4096,
       ...(systemContent ? { system: systemContent } : {}),
       messages: [{ role: 'user', content: userContent }],
       stream: true,
@@ -1001,8 +999,6 @@ export async function callAgentDirect(
       model: modelId,
       messages,
       stream: true,
-      max_tokens: llmConfig.maxTokens ?? 4096,
-      temperature: llmConfig.temperature ?? 0.7,
     };
   }
 

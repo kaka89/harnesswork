@@ -508,8 +508,6 @@ export interface GlobalSettings {
     providerID?: string;    // OpenCode provider ID
     apiUrl: string;
     apiKey: string;
-    temperature: number;
-    maxTokens: number;
   };
   llmProviderKeys?: Record<string, string>; // per-provider API Keys
 }
@@ -540,8 +538,6 @@ export interface ProjectSettings {
     providerID?: string;    // OpenCode provider ID
     apiUrl: string;
     apiKey: string;
-    temperature: number;
-    maxTokens: number;
   };
   llmProviderKeys?: Record<string, string>; // per-provider API Keys
   git?: {

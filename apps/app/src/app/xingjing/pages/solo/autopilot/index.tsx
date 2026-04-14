@@ -1067,23 +1067,6 @@ const SoloAutopilot = () => {
                         </For>
                       </select>
                     </Show>
-                    <button
-                      onClick={() => navigate('/solo/settings?tab=llm')}
-                      style={{
-                        'font-size': '12px',
-                        color: chartColors.success,
-                        background: 'none',
-                        border: 'none',
-                        cursor: 'pointer',
-                        padding: '0',
-                        display: 'flex',
-                        'align-items': 'center',
-                        gap: '3px',
-                        'text-decoration': 'underline',
-                      }}
-                    >
-                      <Settings size={12} />去配置更多模型
-                    </button>
                   </div>
                   <button
                     onClick={handleStart}
@@ -1548,23 +1531,6 @@ const SoloAutopilot = () => {
                       </For>
                     </select>
                   </Show>
-                  <button
-                    onClick={() => navigate('/solo/settings?tab=llm')}
-                    style={{
-                      'font-size': '12px',
-                      color: chartColors.success,
-                      background: 'none',
-                      border: 'none',
-                      cursor: 'pointer',
-                      padding: '0',
-                      display: 'flex',
-                      'align-items': 'center',
-                      gap: '3px',
-                      'text-decoration': 'underline',
-                    }}
-                  >
-                    <Settings size={12} />去配置更多模型
-                  </button>
                 </div>
                 <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
                   <Show when={runState() !== 'idle'}>

@@ -7,8 +7,6 @@ export interface LLMConfig {
   providerID?: string; // OpenCode 使用的 provider ID（如 openai）
   apiUrl: string;
   apiKey: string;
-  temperature: number;
-  maxTokens: number;
 }
 
 export const defaultLLMConfig: LLMConfig = {
@@ -18,8 +16,6 @@ export const defaultLLMConfig: LLMConfig = {
   providerID: 'openai',
   apiUrl: 'https://api.openai.com/v1',
   apiKey: '',
-  temperature: 0.7,
-  maxTokens: 4096,
 };
 
 export interface ModelOption {

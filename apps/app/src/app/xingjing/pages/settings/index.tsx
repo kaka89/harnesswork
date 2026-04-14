@@ -96,8 +96,12 @@ const LLMTab: Component = () => {
   const [providerKeys, setProviderKeys] = createSignal<Record<string, string>>({});
 
   // Bug 1 fix: 响应 store 的异步更新（loadFromFiles 完成时同步到本地 config）
+  // 同时感知 providerKeys，优先使用 per-provider 存储的 apiKey，防止覆盖已回填的值
   createEffect(() => {
-    setConfig({ ...state.llmConfig });
+    const llm = state.llmConfig;
+    const pk = providerKeys(); // 追踪 providerKeys，使其变化时也能触发
+    const key = (llm.providerID && pk[llm.providerID]) ? pk[llm.providerID] : llm.apiKey;
+    setConfig({ ...llm, apiKey: key });
   });
 
   // onMount：优先从 OpenWork 读取当前模型配置，并加载 per-provider keys
@@ -136,6 +140,11 @@ const LLMTab: Component = () => {
         keys[cur.providerID] = cur.apiKey;
       }
       setProviderKeys(keys);
+      // 回填当前选中 provider 的 apiKey（避免 g.llm.apiKey 为空或与 providerKeys 不同步时显示为空）
+      const currentProvider = config().providerID ?? state.llmConfig.providerID;
+      if (currentProvider && keys[currentProvider]) {
+        setConfig(prev => ({ ...prev, apiKey: keys[currentProvider] }));
+      }
     } catch {
       // 静默降级
     }
@@ -260,8 +269,6 @@ const LLMTab: Component = () => {
           model: modelId,
           messages: historyMsgs,
           stream: true,
-          max_tokens: cfg.maxTokens,
-          temperature: cfg.temperature,
         }),
       });
 
@@ -593,29 +600,6 @@ const LLMTab: Component = () => {
             />
           </div>
         </Show>
-
-        {/* Temperature & Max Tokens */}
-        <div>
-          <label class="text-xs block mb-1" style={{ color: themeColors.textSecondary }}>Temperature: {config().temperature}</label>
-          <input
-            type="range"
-            min="0" max="2" step="0.1"
-            class="w-full"
-            value={config().temperature}
-            onInput={(e) => setConfig({ ...config(), temperature: parseFloat(e.currentTarget.value) })}
-          />
-        </div>
-        <div>
-          <label class="text-xs block mb-1" style={{ color: themeColors.textSecondary }}>Max Tokens</label>
-          <input
-            type="number"
-            class="w-full px-3 py-2 rounded-lg text-sm outline-none"
-            style={inputStyle()}
-            value={config().maxTokens}
-            onInput={(e) => setConfig({ ...config(), maxTokens: parseInt(e.currentTarget.value) })}
-            min={256} max={128000} step={256}
-          />
-        </div>
 
         {/* 操作按钮 */}
         <div class="flex gap-2 items-center flex-wrap">

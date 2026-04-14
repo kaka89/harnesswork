@@ -27,8 +27,6 @@ export interface LLMConfig {
   providerID?: string; // OpenCode 使用的 provider ID
   apiUrl: string;
   apiKey: string;
-  temperature: number;
-  maxTokens: number;
 }
 
 export interface Product {
@@ -96,8 +94,6 @@ const DEFAULT_LLM_CONFIG: LLMConfig = {
   providerID: 'openai',
   apiUrl: 'https://api.openai.com/v1',
   apiKey: '',
-  temperature: 0.7,
-  maxTokens: 4096,
 };
 
 const roleUserMap: Record<Role, string> = {
@@ -446,8 +442,6 @@ export const AppStoreProvider: ParentComponent<{
             apiKey: llmCfg.apiKey,
             modelID: model?.modelID ?? llmCfg.modelID,
             providerID: model?.providerID ?? llmCfg.providerID,
-            maxTokens: llmCfg.maxTokens,
-            temperature: llmCfg.temperature,
           },
         );
       });

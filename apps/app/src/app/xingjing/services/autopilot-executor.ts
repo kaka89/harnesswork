@@ -216,6 +216,8 @@ export async function runOrchestratedAutopilot(
   let phase1Ok = false;
 
   await new Promise<void>((resolve) => {
+    let resolved = false;
+    const safeResolve = () => { if (!resolved) { resolved = true; resolve(); } };
     invoke({
       title: `xingjing-orchestrator-${Date.now()}`,
       directory: workDir,
@@ -229,12 +231,16 @@ export async function runOrchestratedAutopilot(
       onDone: (fullText) => {
         orchestratorOutput = fullText;
         phase1Ok = true;
-        resolve();
+        safeResolve();
       },
       onError: (err) => {
         opts.onError?.(`Orchestrator 调用失败: ${err}`);
-        resolve();
+        safeResolve();
       },
+    }).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      opts.onError?.(`Orchestrator 调用异常: ${msg}`);
+      safeResolve();
     });
   });
 
@@ -266,6 +272,8 @@ export async function runOrchestratedAutopilot(
       opts.onAgentStatus?.(agentId, 'thinking');
 
       return new Promise<void>((resolve) => {
+        let resolved = false;
+        const safeResolve = () => { if (!resolved) { resolved = true; resolve(); } };
         invoke({
           title: `xingjing-agent-${agentId}-${Date.now()}`,
           directory: workDir,
@@ -279,13 +287,18 @@ export async function runOrchestratedAutopilot(
           onDone: (fullText) => {
             results[agentId] = fullText;
             opts.onAgentStatus?.(agentId, 'done');
-            resolve();
+            safeResolve();
           },
           onError: (err) => {
             results[agentId] = `执行错误: ${err}`;
             opts.onAgentStatus?.(agentId, 'error');
-            resolve();
+            safeResolve();
           },
+        }).catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          results[agentId] = `执行异常: ${msg}`;
+          opts.onAgentStatus?.(agentId, 'error');
+          safeResolve();
         });
       });
     }),
@@ -313,7 +326,9 @@ export async function runDirectAgent(
   const invoke = opts.callAgentFn ?? callAgent;
   opts.onStatus?.('thinking');
   await new Promise<void>((resolve) => {
-    void invoke({
+    let resolved = false;
+    const safeResolve = () => { if (!resolved) { resolved = true; resolve(); } };
+    invoke({
       title: `xingjing-direct-${agent.id}-${Date.now()}`,
       directory: opts.workDir,
       systemPrompt: agent.systemPrompt,
@@ -326,13 +341,18 @@ export async function runDirectAgent(
       onDone: (fullText) => {
         opts.onStatus?.('done');
         opts.onDone?.(fullText);
-        resolve();
+        safeResolve();
       },
       onError: (err) => {
         opts.onStatus?.('error');
         opts.onError?.(err);
-        resolve();
+        safeResolve();
       },
+    }).catch((err: unknown) => {
+      opts.onStatus?.('error');
+      const msg = err instanceof Error ? err.message : String(err);
+      opts.onError?.(`调用异常: ${msg}`);
+      safeResolve();
     });
   });
 }

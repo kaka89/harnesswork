@@ -589,8 +589,11 @@ async function runAgentSession(
   // 新建 session（Layer 2 或首次调用）
   if (!sid) {
     try {
+      // 传入 deny-all 权限规则，阻止 Agent 自动执行工具（双重防护：session 级 + 事件级 auto-reject）
+      const denyAllPermission = [{ permission: '*', pattern: '*', action: 'deny' }];
       const result = await client.session.create({
         body: { ...(opts.title ? { title: opts.title } : { title: `xingjing-${Date.now()}` }) },
+        permission: denyAllPermission,
         ...(opts.directory ?? _directory ? { directory: opts.directory ?? _directory } : {}),
       } as Parameters<typeof client.session.create>[0]);
       sid = (result.data as { id: string } | undefined)?.id ?? null;
@@ -717,7 +720,7 @@ async function runAgentSession(
           // ── session.idle ──
           if (evt.type === 'session.idle') {
             const evtSid = typeof p.sessionID === 'string' ? p.sessionID : null;
-            if (evtSid !== finalSid) continue;
+            if (evtSid && evtSid !== finalSid) continue; // null-safe：与 session.completed 保持一致
             cleanup();
             resolve({ status: 'done', accumulated: acc, sessionId: finalSid });
             return;
@@ -726,7 +729,7 @@ async function runAgentSession(
           // ── session.status ──
           if (evt.type === 'session.status') {
             const evtSid = typeof p.sessionID === 'string' ? p.sessionID : null;
-            if (evtSid !== finalSid) continue;
+            if (evtSid && evtSid !== finalSid) continue; // null-safe
             const statusObj = p.status;
             const statusType = typeof statusObj === 'object' && statusObj !== null
               ? String((statusObj as Record<string, unknown>).type ?? '')
@@ -738,22 +741,30 @@ async function runAgentSession(
             }
           }
 
-          // ── 工具权限请求：视为硬错误，避免 session 永久挂起 ──
+          // ── 工具权限请求：自动拒绝并继续，让 model 以文本形式完成响应 ──
+          // 原先视为 hard-error 会导致 UI 卡在 streaming 状态后进入漫长重试
           if (evt.type === 'permission.asked') {
             const evtSid = typeof p.sessionID === 'string' ? p.sessionID : null;
             if (evtSid && evtSid !== finalSid) continue;
-            cleanup();
-            resolve({ status: 'hard-error', accumulated: acc, sessionId: finalSid, error: 'Agent 请求工具权限（自动拒绝）：xingjing 虚拟 Agent 不支持工具调用' });
-            return;
+            const permId = typeof p.id === 'string' ? p.id : null;
+            if (permId) {
+              // 自动拒绝权限请求，model 收到拒绝后会继续以纯文本形式生成响应
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              void (getClient().permission as any).reply({ requestID: permId, reply: 'reject' }).catch(() => {});
+            }
+            continue; // 继续等待 session 完成
           }
 
-          // ── 澄清问题请求：视为硬错误，避免 session 永久挂起 ──
+          // ── 澄清问题请求：自动拒绝并继续 ──
           if (evt.type === 'question.asked') {
             const evtSid = typeof p.sessionID === 'string' ? p.sessionID : null;
             if (evtSid && evtSid !== finalSid) continue;
-            cleanup();
-            resolve({ status: 'hard-error', accumulated: acc, sessionId: finalSid, error: 'Agent 发起澄清问题请求（自动拒绝）：xingjing 虚拟 Agent 不支持交互式澄清' });
-            return;
+            const reqId = typeof p.id === 'string' ? p.id : (typeof p.requestID === 'string' ? p.requestID : null);
+            if (reqId) {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              void (getClient().question as any).reject({ requestID: reqId }).catch(() => {});
+            }
+            continue; // 继续等待 session 完成
           }
         }
 

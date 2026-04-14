@@ -642,7 +642,7 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
           }]);
         }
       },
-    });
+    }).catch(() => { setLoading(false); });
   };
 
   // ─── @mention 直接调用 ──────────────────────────────────────────────────────
@@ -733,6 +733,13 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
             progress: 20 + Math.round((doneCount / Math.max(prev.plan.length, 1)) * 70),
           };
         });
+      },
+      onDirectAnswer: (text) => {
+        // Orchestrator 直接回答（无调度计划）：将消息转换为普通对话气泡
+        setMessages(prev => prev.map(m =>
+          m.id === msgId ? { ...m, type: 'chat', content: text } : m
+        ));
+        setLoading(false);
       },
       onDone: () => {
         updateDispatch(prev => ({ ...prev, phase: 'done', progress: 100 }));

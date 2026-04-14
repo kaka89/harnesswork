@@ -459,7 +459,6 @@ export function buildProductFileList(
   appCode: string,
 ): ProductFileEntry[] {
   const pl = `${productCode}-pl`;
-  const domain = `${productCode}-domain`;
   const app = appCode;
 
   return [
@@ -471,7 +470,6 @@ export function buildProductFileList(
         `version: "1.0.0"`,
         `created-at: ${new Date().toISOString()}`,
         `product-line: ${pl}`,
-        `domain: ${domain}`,
         `apps:`,
         `  - ${app}`,
         '',
@@ -500,8 +498,6 @@ export function buildProductFileList(
     ...buildGovernanceStandards(),
     // §7.2 产品线层
     ...buildProductLine(pl, productName),
-    // §7.3 领域层
-    ...buildDomain(domain, productName),
     // §7.4 应用层
     ...buildApp(app, productName),
   ];

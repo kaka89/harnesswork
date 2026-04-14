@@ -877,6 +877,7 @@ export interface SoloHypothesis {
   impact: 'high' | 'medium' | 'low';
   createdAt: string;
   validatedAt?: string;
+  markdownDetail?: string;
 }
 
 export async function loadHypotheses(workDir: string): Promise<SoloHypothesis[]> {
@@ -895,11 +896,11 @@ export async function loadHypotheses(workDir: string): Promise<SoloHypothesis[]>
 }
 
 export async function saveHypothesis(workDir: string, item: SoloHypothesis): Promise<boolean> {
-  const { result, ...frontmatter } = item;
+  const { result, markdownDetail, ...rest } = item;
   return writeMarkdownWithFrontmatter(
     `${workDir}/.xingjing/solo/hypotheses/${item.id}.md`,
     {
-      frontmatter: frontmatter as unknown as Record<string, unknown>,
+      frontmatter: { ...rest, ...(markdownDetail !== undefined ? { markdownDetail } : {}) } as unknown as Record<string, unknown>,
       body: result ?? '',
     },
   );

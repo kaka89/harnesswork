@@ -39,7 +39,7 @@ interface DragHandlers {
   draggingId: () => string | null;
   dragOverStatus: () => HypothesisStatus | null;
   onDragStart: (id: string) => void;
-  onDrop: (targetStatus: HypothesisStatus) => void;
+  onDrop: (targetStatus: HypothesisStatus, transferId?: string) => void;
   onDragEnter: (status: HypothesisStatus) => void;
   onDragLeave: () => void;
 }
@@ -103,7 +103,12 @@ const HypothesisColumn: Component<{
         if ((e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)) return;
         props.drag.onDragLeave();
       }}
-      onDrop={(e) => { e.preventDefault(); props.drag.onDrop(props.status); }}
+      onDrop={(e) => {
+        e.preventDefault();
+        // 双保险：优先用信号，WebKit fallback 从 dataTransfer 读取
+        const transferId = e.dataTransfer?.getData('text/plain') ?? undefined;
+        props.drag.onDrop(props.status, transferId);
+      }}
     >
       {/* Column header – 左色条 + 标题 */}
       <div style={{
@@ -142,7 +147,12 @@ const HypothesisColumn: Component<{
             return (
               <div
                 draggable={true}
-                onDragStart={(e) => { e.stopPropagation(); props.drag.onDragStart(h.id); }}
+                onDragStart={(e) => {
+                  e.stopPropagation();
+                  // WebKit/Tauri 要求必须调用 setData，否则 drop 事件不触发
+                  e.dataTransfer.setData('text/plain', h.id);
+                  props.drag.onDragStart(h.id);
+                }}
                 style={{
                   'border-radius': '10px',
                   border: `1px solid ${isOver() ? theme().overBorder : theme().colBorder}`,
@@ -342,10 +352,9 @@ const SoloProduct: Component = () => {
     draggingId,
     dragOverStatus,
     onDragStart: (id) => setDraggingId(id),
-    onDrop: (targetStatus) => {
-      const id = draggingId();
+    onDrop: (targetStatus, transferId?) => {
+      const id = draggingId() ?? transferId ?? null;
       if (!id) return;
-      // 直接构造更新后的假设对象，避免依赖信号时序
       const original = hypotheses().find(h => h.id === id);
       if (!original) { setDraggingId(null); setDragOverStatus(null); return; }
       const updated: Hypothesis = { ...original, status: targetStatus };

@@ -557,7 +557,7 @@ const ProductPlanning: Component = () => {
           <button
             disabled={agentThinking()}
             style={{ background: chartColors.primary, color: themeColors.surface, border: 'none', padding: '8px 12px', 'border-radius': '4px', cursor: agentThinking() ? 'not-allowed' : 'pointer', display: 'flex', 'align-items': 'center', gap: '4px', opacity: agentThinking() ? '0.6' : '1' }}
-            onClick={handleAgentSend}
+            onClick={() => handleAgentSend()}
           >
             <Send size={14} /> {agentThinking() ? '思考中...' : '发送'}
           </button>

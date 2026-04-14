@@ -22,7 +22,7 @@ import { currentUser } from '../../services/auth-service';
 import ProductSwitcher from '../product/product-switcher';
 import {
   Zap, TrendingUp, FileText, Palette, Code, Timer, CheckCircle, Cloud,
-  BarChart3, BookOpen, Bot, Settings, PlayCircle, Lightbulb, Rocket, Sun, Moon, Wifi, WifiOff,
+  BarChart3, BookOpen, Bot, Settings, PlayCircle, Lightbulb, Rocket, Sun, Moon,
   ChevronLeft, ChevronRight
 } from 'lucide-solid';
 import { themeColors } from '../../utils/colors';

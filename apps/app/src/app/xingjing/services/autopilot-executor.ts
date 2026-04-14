@@ -123,7 +123,10 @@ ${list}
 <DISPATCH>[
   {"agentId": "pm-agent", "task": "针对[目标]，分析需求并拆解用户故事..."},
   {"agentId": "dev-agent", "task": "基于需求，实现[具体功能]..."}
-]</DISPATCH>`;
+]</DISPATCH>
+
+⚠️ 重要：如果用户的目标与上述所有 Agent 的职责均不相关（例如日常问答、闲聊、通用知识查询、数学计算等），
+请【不要】输出 <DISPATCH> 标签，而是直接用 Markdown 格式友好地回答用户的问题。`;
 }
 
 // ─── Dispatch Plan Parser ────────────────────────────────────────
@@ -187,6 +190,8 @@ export interface OrchestratedRunOpts {
   onAgentStatus?: (agentId: string, status: AgentExecutionStatus) => void;
   onAgentStream?: (agentId: string, text: string) => void;
   onDone?: (results: Record<string, string>) => void;
+  /** 当 Orchestrator 未生成调度计划时，以大模型直接回答用户（无 Agent 匹配时的降级路径）*/
+  onDirectAnswer?: (text: string) => void;
   onError?: (err: string) => void;
 }
 
@@ -231,7 +236,14 @@ export async function runOrchestratedAutopilot(
 
   const plan = parseDispatchPlan(orchestratorOutput);
   if (plan.length === 0) {
-    opts.onError?.('Orchestrator 未输出有效的调度计划，请检查模型是否已配置');
+    // Orchestrator 未生成有效调度计划：
+    // - 若模型已直接回答（有输出内容），走直接回答降级路径
+    // - 若输出为空，说明调用本身失败，才报错
+    if (orchestratorOutput.trim()) {
+      opts.onDirectAnswer?.(orchestratorOutput);
+    } else {
+      opts.onError?.('Orchestrator 未输出有效的调度计划，请检查模型是否已配置');
+    }
     return;
   }
 

@@ -7,7 +7,7 @@ import {
   RequirementOutput,
   reqTypeLabel,
 } from '../../../mock/solo';
-import { loadHypotheses, loadRequirementOutputs, saveHypothesis } from '../../../services/file-store';
+import { loadHypotheses, loadRequirementOutputs, saveHypothesis, saveRequirementOutput } from '../../../services/file-store';
 import { SOLO_AGENTS } from '../../../services/autopilot-executor';
 import { useAppStore } from '../../../stores/app-store';
 import { themeColors, chartColors } from '../../../utils/colors';
@@ -184,6 +184,8 @@ function extractIdeaJson(text: string): { belief: string; why: string; method: s
   }
 }
 
+const REQ_DOC_REGEX = /^\[REQ_DOC:([^\]]+)\]/;
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 const SoloProduct: Component = () => {
@@ -194,6 +196,10 @@ const SoloProduct: Component = () => {
   const [detailHypo, setDetailHypo] = createSignal<Hypothesis | null>(null);
   const [editMode, setEditMode] = createSignal<'preview' | 'edit'>('preview');
   const [editContent, setEditContent] = createSignal('');
+  // 需求详情悬浮窗
+  const [detailReq, setDetailReq] = createSignal<RequirementOutput | null>(null);
+  const [reqEditMode, setReqEditMode] = createSignal<'preview' | 'edit'>('preview');
+  const [reqEditContent, setReqEditContent] = createSignal('');
   const [newHypothesisModal, setNewHypothesisModal] = createSignal(false);
   const [newHypothesisText, setNewHypothesisText] = createSignal('');
   const [newHypothesisMethod, setNewHypothesisMethod] = createSignal('');
@@ -250,6 +256,31 @@ const SoloProduct: Component = () => {
     setEditMode('preview');
     const md = h.markdownDetail || `## 假设：${h.belief}\n\n### 因为\n\n${h.why}\n\n### 验证方式\n\n${h.method}${h.result ? `\n\n### 实际结果\n\n${h.result}` : ''}`;
     setEditContent(md);
+  };
+
+  // 打开需求详情
+  const openReqDetail = (req: RequirementOutput) => {
+    setDetailReq(req);
+    setReqEditMode('preview');
+    setReqEditContent(req.content);
+  };
+
+  // 从 AI 回复保存需求
+  const saveReqFromAI = (rawContent: string) => {
+    const match = REQ_DOC_REGEX.exec(rawContent);
+    const title = match?.[1] || '新需求文档';
+    const content = rawContent.replace(REQ_DOC_REGEX, '').trimStart();
+    const newReq: RequirementOutput = {
+      id: `req_${Date.now()}`,
+      title,
+      type: 'user-story',
+      content,
+      priority: 'P1',
+      createdAt: new Date().toISOString().slice(0, 10),
+    };
+    setRequirements(prev => [newReq, ...prev]);
+    const workDir = productStore.activeProduct()?.workDir;
+    if (workDir) void saveRequirementOutput(workDir, newReq as unknown as Parameters<typeof saveRequirementOutput>[1]);
   };
 
   // ─── Drag-and-drop handlers ───────────────────────────────────────────────
@@ -318,8 +349,40 @@ const SoloProduct: Component = () => {
     const assistantIdx = agentMessages().length - 1;
     let finalResponse = '';
 
+    // 需求模式：动态注入 workspace 上下文
+    const hypothesisSummary = hypotheses()
+      .map(h => `- [${h.status}] ${h.belief}`)
+      .join('\n') || '（暂无）';
+    const reqSummary = requirements()
+      .map(r => `- [${r.priority}] ${r.title}`)
+      .join('\n') || '（暂无）';
+    const enrichedSystemPrompt = `${productBrainAgent.systemPrompt}
+
+当前产品假设：
+${hypothesisSummary}
+
+已有需求文档：
+${reqSummary}
+
+【需求文档生成规则】当用户要求写某个模块的需求、细化需求或输出需求文档时，必须在输出内容的第一行加上标识行（格式：[REQ_DOC:模块名称]），随后按以下 Markdown 结构输出完整需求文档：
+# 需求文档 · [模块名称]
+
+## 用户故事
+**作为** [用户角色]，
+**我希望** [期望功能]，
+**以便** [达成目标]。
+
+## 验收标准
+- [ ] 具体可验证的标准1
+- [ ] 具体可验证的标准2
+
+## 非功能需求
+- 性能：...
+- 安全：...
+- 可用性：...`;
+
     void actions.callAgent({
-      systemPrompt: ideaSystemPrompt,
+      systemPrompt: ideaMode() ? ideaSystemPrompt : enrichedSystemPrompt,
       userPrompt: ideaMode() ? `[突发奇想] ${q}` : q,
       title: ideaMode() ? '产品奇想记录' : '产品搭档对话',
       onText: (accumulated) => {
@@ -395,7 +458,8 @@ const SoloProduct: Component = () => {
                 <span style={{ 'margin-left': '6px', 'font-size': '12px', padding: '1px 6px', background: themeColors.primaryBg, color: chartColors.primary, 'border-radius': '9999px' }}>{testingItems().length} 验证中</span>
               </button>
               <button style={tabStyle(activeTab() === 'requirements')} onClick={() => setActiveTab('requirements')}>
-                📄 产品需求
+                📋 产品需求
+                <span style={{ 'margin-left': '6px', 'font-size': '12px', padding: '1px 6px', background: themeColors.hover, color: themeColors.textSecondary, 'border-radius': '9999px' }}>{requirements().length}</span>
               </button>
             </div>
 
@@ -417,11 +481,21 @@ const SoloProduct: Component = () => {
               {/* Requirements Output */}
               <Show when={activeTab() === 'requirements'}>
                 <div style={{ display: 'flex', 'flex-direction': 'column', gap: '12px' }}>
+                  <Show when={requirements().length === 0}>
+                    <div style={{ 'text-align': 'center', padding: '48px 0', color: themeColors.textMuted, 'font-size': '14px' }}>
+                      <div style={{ 'font-size': '32px', 'margin-bottom': '8px' }}>📋</div>
+                      <div>暂无需求文档</div>
+                      <div style={{ 'font-size': '12px', 'margin-top': '4px' }}>向右侧 AI 产品搭档说「帮我写XX模块的需求」</div>
+                    </div>
+                  </Show>
                   <For each={requirements()}>
                     {(req) => {
                       const pStyle = priorityStyle[req.priority] || priorityStyle.P3;
                       return (
-                        <div style={{ 'border-radius': '12px', border: `1px solid ${themeColors.borderLight}`, padding: '16px' }}>
+                        <div
+                          style={{ 'border-radius': '12px', border: `1px solid ${themeColors.borderLight}`, padding: '16px', cursor: 'pointer', transition: 'box-shadow 0.15s' }}
+                          onClick={() => openReqDetail(req)}
+                        >
                           <div style={{ display: 'flex', 'align-items': 'center', gap: '8px', 'margin-bottom': '10px', 'flex-wrap': 'wrap' }}>
                             <span style={{ 'font-size': '12px', padding: '1px 8px', 'border-radius': '4px', 'font-weight': 700, background: pStyle.bg, color: 'white' }}>
                               {req.priority}
@@ -430,17 +504,17 @@ const SoloProduct: Component = () => {
                             <span style={{ 'font-size': '12px', padding: '1px 6px', background: themeColors.primaryBg, color: chartColors.primary, 'border-radius': '4px' }}>
                               {reqTypeLabel[req.type]}
                             </span>
+                            <span style={{ 'margin-left': 'auto', 'font-size': '11px', color: themeColors.textMuted }}>点击查看详情 →</span>
                           </div>
                           <Show when={req.linkedHypothesis}>
                             <div style={{ 'font-size': '12px', color: themeColors.textMuted, 'margin-bottom': '8px' }}>
                               🔗 关联假设: {req.linkedHypothesis}
                             </div>
                           </Show>
-                          <div
-                            style={{ 'font-size': '13px', 'line-height': '1.7', color: themeColors.text }}
-                            innerHTML={markdownToSafeHtml(req.content)}
-                          />
-                          <div style={{ 'margin-top': '10px', 'font-size': '12px', color: themeColors.textMuted }}>
+                          <div style={{ 'font-size': '13px', color: themeColors.textSecondary, 'white-space': 'nowrap', overflow: 'hidden', 'text-overflow': 'ellipsis' }}>
+                            {req.content.replace(/[#*`\[\]]/g, '').split('\n').filter(l => l.trim()).slice(0, 2).join(' · ')}
+                          </div>
+                          <div style={{ 'margin-top': '8px', 'font-size': '12px', color: themeColors.textMuted }}>
                             {req.createdAt}
                           </div>
                         </div>
@@ -496,20 +570,35 @@ const SoloProduct: Component = () => {
             {/* Messages */}
             <div ref={messagesRef} style={{ flex: 1, 'overflow-y': 'auto', padding: '12px', display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
               <For each={agentMessages()}>
-                {(msg) => (
-                  <div style={{ display: 'flex', 'justify-content': msg.role === 'user' ? 'flex-end' : 'flex-start' }}>
-                    <div style={{ 'max-width': '85%', padding: '8px 12px', 'font-size': '12px', 'line-height': '1.6', 'white-space': 'pre-wrap', ...(msg.role === 'user' ? { background: themeColors.purple, color: 'white', 'border-radius': '16px 16px 4px 16px' } : { background: themeColors.purpleBg, color: themeColors.text, 'border-radius': '16px 16px 16px 4px' }) }}>
-                      {msg.content}
+                {(msg) => {
+                  const isReqDoc = msg.role === 'assistant' && REQ_DOC_REGEX.test(msg.content);
+                  const reqDocTitle = isReqDoc ? REQ_DOC_REGEX.exec(msg.content)?.[1] : null;
+                  const displayContent = isReqDoc
+                    ? msg.content.replace(REQ_DOC_REGEX, '').trimStart()
+                    : msg.content;
+                  return (
+                    <div style={{ display: 'flex', 'flex-direction': 'column', 'align-items': msg.role === 'user' ? 'flex-end' : 'flex-start' }}>
+                      <div style={{ 'max-width': '85%', padding: '8px 12px', 'font-size': '12px', 'line-height': '1.6', 'white-space': 'pre-wrap', ...(msg.role === 'user' ? { background: themeColors.purple, color: 'white', 'border-radius': '16px 16px 4px 16px' } : { background: themeColors.purpleBg, color: themeColors.text, 'border-radius': '16px 16px 16px 4px' }) }}>
+                        {displayContent}
+                      </div>
+                      <Show when={isReqDoc}>
+                        <button
+                          style={{ 'margin-top': '6px', 'font-size': '12px', padding: '4px 12px', 'border-radius': '6px', border: `1px solid ${themeColors.border}`, background: themeColors.successBg, color: chartColors.success, cursor: 'pointer' }}
+                          onClick={() => saveReqFromAI(msg.content)}
+                        >
+                          📋 保存「{reqDocTitle}」到需求列表
+                        </button>
+                      </Show>
                     </div>
-                  </div>
-                )}
+                  );
+                }}
               </For>
             </div>
 
             {/* Quick suggestions */}
             <div style={{ padding: '8px 12px', 'border-top': `1px solid ${themeColors.borderLight}`, display: 'flex', 'flex-wrap': 'wrap', gap: '6px' }}>
               <Show when={!ideaMode()}>
-                <For each={['这个功能的 MVP 边界是什么？', '当前假设的优先级合理吗？', '用户最核心的痛点']}>
+                <For each={['帮我写登录模块的需求', '这个功能的 MVP 边界是什么？', '当前假设的优先级合理吗？']}>
                   {(q) => (
                     <button style={{ 'font-size': '12px', padding: '4px 10px', background: themeColors.hover, 'border-radius': '9999px', border: `1px solid ${themeColors.border}`, cursor: 'pointer', color: themeColors.textSecondary }} onClick={() => setAgentInput(q)}>
                       {q}

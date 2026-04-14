@@ -622,10 +622,25 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
         } else {
           reply = '我已加载你的产品知识库、任务列表和用户反馈。请告诉我你想了解哪方面，我来帮你分析。';
         }
+        const mockContent = `⚠️ OpenCode 未连接，使用本地知识库回复：\n\n${reply}`;
         setMessages(prev => prev.map(m =>
-          m.id === msgId ? { ...m, content: `⚠️ OpenCode 未连接，使用本地知识库回复：\n\n${reply}` } : m
+          m.id === msgId ? { ...m, content: mockContent } : m
         ));
         setLoading(false);
+        // mock 模式也要持久化历史（与 onDone 逻辑一致）
+        const snapshot = messages();
+        const userMsgs = snapshot.filter(m => m.role === 'user');
+        if (userMsgs.length > 0) {
+          const first = userMsgs[0].content;
+          const summary = first.slice(0, 30) + (first.length > 30 ? '...' : '');
+          const sid = snapshot[0]?.id === 'welcome' ? (snapshot[1]?.id ?? 'cur') : snapshot[0].id;
+          saveSessions([...loadSessions().filter(s => s.id !== sid), {
+            id: sid,
+            summary,
+            ts: nowDateTimeStr(),
+            messages: toPersistedMessages(snapshot),
+          }]);
+        }
       },
     });
   };
@@ -866,7 +881,15 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
                     ? 'bg-[var(--dls-hover)] text-[var(--dls-text-primary)]'
                     : 'text-[var(--dls-text-secondary)] hover:text-[var(--dls-text-primary)] hover:bg-[var(--dls-hover)]'
                 }`}
-                onClick={() => { setShowHistory(v => !v); setViewingSession(null); }}
+                onClick={() => {
+                  if (!showHistory()) {
+                    // 打开历史面板时，从 localStorage 读取最新数据（onDone 只写 storage 不更新信号）
+                    const persisted = loadSessions();
+                    setSessionHistory(persisted.map(fromPersistedSession));
+                  }
+                  setShowHistory(v => !v);
+                  setViewingSession(null);
+                }}
                 title="历史记录"
               >
                 <History size={15} />

@@ -1,6 +1,6 @@
-import { createSignal, Show, For, onCleanup, onMount } from 'solid-js';
+import { createSignal, Show, For, onCleanup, onMount, createEffect } from 'solid-js';
 import { useNavigate } from '@solidjs/router';
-import { FileText, PlayCircle, CheckCircle, Clock, Zap, Loader2, Settings, Maximize2, ChevronDown, ChevronUp } from 'lucide-solid';
+import { FileText, PlayCircle, CheckCircle, Clock, Zap, Loader2, Settings, Maximize2, ChevronDown, ChevronUp, ChevronLeft, ChevronRight } from 'lucide-solid';
 import CreateProductModal from '../../../components/product/new-product-modal';
 import { useAppStore } from '../../../stores/app-store';
 import { themeColors, chartColors } from '../../../utils/colors';
@@ -52,93 +52,320 @@ const SoloBrainCard = (props: {
   status: 'idle' | 'thinking' | 'working' | 'done' | 'waiting';
   currentTask?: string;
   doneToday: number;
+  artifactCount: number;
+  elapsedTime?: string;
 }) => {
-  const badge = statusBadge[props.status];
-  const isActive = props.status === 'thinking' || props.status === 'working';
-  const isDone = props.status === 'done';
+  const isActive = () => props.status === 'thinking' || props.status === 'working';
+  const isDone = () => props.status === 'done';
+
+  const statusDotColor = () => {
+    if (isActive()) return chartColors.success;
+    if (isDone()) return chartColors.success;
+    if (props.status === 'waiting') return '#fa8c16';
+    return themeColors.border;
+  };
 
   return (
-    <div
-      style={{
-        'border-radius': '8px',
-        padding: '10px 12px',
-        border: `1px solid ${isActive ? props.agent.borderColor : isDone ? themeColors.successBorder : themeColors.border}`,
-        background: isActive ? props.agent.bgColor : isDone ? themeColors.successBg : themeColors.hover,
-        transition: 'all 0.4s ease',
-        'box-shadow': isActive ? `0 0 12px ${props.agent.borderColor}88` : 'none',
-        'text-align': 'center',
-      }}
-    >
+    <div style={{
+      display: 'flex',
+      'align-items': 'flex-start',
+      gap: '10px',
+      padding: '10px 12px',
+      'border-radius': '6px',
+      background: isActive() ? themeColors.successBg : 'transparent',
+      'border-left': `3px solid ${isActive() ? chartColors.success : 'transparent'}`,
+      transition: 'all 0.3s ease',
+    }}>
+      {/* 图标 */}
       <div style={{
-        'font-size': '22px',
-        'margin-bottom': '4px',
-        filter: props.status === 'idle' ? 'grayscale(100%) opacity(0.4)' : 'none',
+        width: '32px',
+        height: '32px',
+        'border-radius': '8px',
+        background: props.agent.bgColor,
+        display: 'flex',
+        'align-items': 'center',
+        'justify-content': 'center',
+        'font-size': '16px',
+        'flex-shrink': '0',
+        filter: props.status === 'idle' ? 'grayscale(80%) opacity(0.5)' : 'none',
         transition: 'filter 0.3s',
       }}>
         {props.agent.emoji}
       </div>
 
-      <div style={{ margin: '0 0 2px', 'font-size': '13px', 'font-weight': '600', color: isActive ? props.agent.color : undefined }}>
-        {props.agent.name}
-      </div>
-      <div style={{ 'margin-bottom': '4px', 'font-size': '11px' }}>
-        {badge.text}
-      </div>
-
-      <div style={{ 'min-height': '22px', 'font-size': '11px' }}>
-        <Show when={props.currentTask && isActive}>
-          <div style={{ color: props.agent.color }}>
-            {props.currentTask}
-          </div>
-        </Show>
-        <Show when={isDone}>
-          <div style={{ color: chartColors.success }}>
-            已完成
-          </div>
-        </Show>
-        {/* 描述始终展示，在非 active/done 状态时显示 */}
-        <Show when={!isActive && !isDone}>
-          <div style={{ color: themeColors.textMuted }}>
-            {props.agent.description}
-          </div>
-        </Show>
-      </div>
-
-      <Show when={props.doneToday > 0}>
-        <div style={{ 'margin-top': '4px' }}>
-          <div style={{
-            display: 'inline-flex',
-            'align-items': 'center',
-            padding: '2px 8px',
-            'border-radius': '4px',
-            'font-size': '11px',
-            border: `1px solid ${themeColors.border}`,
-            background: props.agent.color + '20',
-            color: props.agent.color,
+      {/* 内容 */}
+      <div style={{ flex: '1', 'min-width': '0' }}>
+        <div style={{ display: 'flex', 'align-items': 'center', gap: '5px', 'margin-bottom': '2px' }}>
+          <span style={{
+            'font-size': '13px',
+            'font-weight': '600',
+            color: isActive() ? props.agent.color : themeColors.text,
           }}>
-            今日已完成 {props.doneToday}
-          </div>
+            {props.agent.name}
+          </span>
+          <span style={{
+            display: 'inline-block',
+            width: '7px',
+            height: '7px',
+            'border-radius': '50%',
+            background: statusDotColor(),
+          }} />
         </div>
-      </Show>
-
-      <div style={{ 'margin-top': '4px', display: 'flex', 'flex-wrap': 'wrap', gap: '3px', 'justify-content': 'center' }}>
-        <For each={props.agent.skills.slice(0, 2)}>
-          {(skill) => (
-            <div style={{
-              display: 'inline-flex',
-              'align-items': 'center',
-              padding: '2px 8px',
-              'border-radius': '4px',
+        <div style={{
+          'font-size': '11px',
+          color: themeColors.textMuted,
+          'margin-bottom': '6px',
+          'line-height': '1.4',
+          overflow: 'hidden',
+          'text-overflow': 'ellipsis',
+          'white-space': 'nowrap',
+        }}>
+          {isActive() && props.currentTask ? props.currentTask : props.agent.description}
+        </div>
+        <div style={{ display: 'flex', 'align-items': 'center', 'justify-content': 'space-between' }}>
+          <span style={{ 'font-size': '11px', color: themeColors.textMuted }}>
+            {props.elapsedTime ?? '—'}
+          </span>
+          <Show when={props.artifactCount > 0}>
+            <span style={{
               'font-size': '10px',
-              border: `1px solid ${themeColors.border}`,
-              margin: '0',
+              padding: '1px 7px',
+              'border-radius': '4px',
+              background: chartColors.success + '20',
+              color: chartColors.success,
+              'font-weight': '500',
             }}>
-              {skill}
-            </div>
-          )}
-        </For>
+              {props.artifactCount} 产出
+            </span>
+          </Show>
+        </div>
       </div>
     </div>
+  );
+};
+
+// ─── Agent 面板左侧栏 ──────────────────────────────────────────────────────────
+
+const AgentPanelSidebar = (props: {
+  agents: AutopilotAgent[];
+  agentStatuses: AgentStatus;
+  agentTasks: AgentTasks;
+  agentDone: AgentDone;
+  elapsedSec: number;
+  runState: RunState;
+  artifactCount: (id: string) => number;
+  stepTimes: Record<string, string>;
+}) => {
+  const [isCollapsed, setIsCollapsed] = createSignal(false);
+
+  const doneCount = () => props.agents.filter(a => props.agentStatuses[a.id] === 'done').length;
+  const runCount = () => props.agents.filter(
+    a => props.agentStatuses[a.id] === 'thinking' || props.agentStatuses[a.id] === 'working'
+  ).length;
+  const waitCount = () => props.agents.filter(
+    a => props.agentStatuses[a.id] === 'idle' || props.agentStatuses[a.id] === 'waiting'
+  ).length;
+  const progressPct = () => props.runState === 'done'
+    ? 100
+    : Math.round((doneCount() / Math.max(props.agents.length, 1)) * 100);
+  const fmtElapsed = (sec: number) =>
+    `${Math.floor(sec / 60)}m ${(sec % 60).toString().padStart(2, '0')}s`;
+
+  // 收起态：只显示一个简洁的竖向栏
+  return (
+    <Show
+      when={!isCollapsed()}
+      fallback={
+        <div style={{
+          width: '36px',
+          height: '100%',
+          display: 'flex',
+          'flex-direction': 'column',
+          'align-items': 'center',
+          border: `1px solid ${themeColors.border}`,
+          'border-radius': '8px',
+          background: themeColors.surface,
+          overflow: 'hidden',
+          'flex-shrink': '0',
+          transition: 'width 0.2s ease',
+        }}>
+          {/* 展开按鈕 */}
+          <button
+            onClick={() => setIsCollapsed(false)}
+            style={{
+              width: '100%',
+              padding: '10px 0',
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              display: 'flex',
+              'align-items': 'center',
+              'justify-content': 'center',
+              color: themeColors.textMuted,
+              'border-bottom': `1px solid ${themeColors.border}`,
+            }}
+          >
+            <ChevronRight size={16} />
+          </button>
+          {/* 小进度条 */}
+          <div style={{
+            flex: '1',
+            display: 'flex',
+            'align-items': 'flex-start',
+            padding: '8px 0',
+            'justify-content': 'center',
+          }}>
+            <div style={{
+              width: '4px',
+              'border-radius': '2px',
+              background: themeColors.border,
+              height: '100%',
+              position: 'relative',
+              overflow: 'hidden',
+            }}>
+              <div style={{
+                position: 'absolute',
+                top: '0',
+                left: '0',
+                width: '100%',
+                height: `${progressPct()}%`,
+                background: chartColors.success,
+                'border-radius': '2px',
+                transition: 'height 0.5s ease',
+              }} />
+            </div>
+          </div>
+          {/* 底部运行数 */}
+          <Show when={runCount() > 0}>
+            <div style={{
+              padding: '6px 0',
+              'font-size': '12px',
+              'font-weight': '700',
+              color: '#fa8c16',
+              'border-top': `1px solid ${themeColors.border}`,
+              width: '100%',
+              'text-align': 'center',
+            }}>
+              {runCount()}
+            </div>
+          </Show>
+        </div>
+      }
+    >
+      <div style={{
+        width: '220px',
+        height: '100%',
+        display: 'flex',
+        'flex-direction': 'column',
+        border: `1px solid ${themeColors.border}`,
+        'border-radius': '8px',
+        background: themeColors.surface,
+        overflow: 'hidden',
+        'flex-shrink': '0',
+        transition: 'width 0.2s ease',
+      }}>
+        {/* 标题栏 */}
+        <div style={{
+          display: 'flex',
+          'align-items': 'center',
+          'justify-content': 'space-between',
+          padding: '12px 14px 10px',
+          'border-bottom': `1px solid ${themeColors.border}`,
+          'flex-shrink': '0',
+        }}>
+          <span style={{ 'font-size': '13px', 'font-weight': '600' }}>Agent 面板</span>
+          <button
+            onClick={() => setIsCollapsed(true)}
+            style={{
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              padding: '2px',
+              display: 'flex',
+              'align-items': 'center',
+              color: themeColors.textMuted,
+              'border-radius': '4px',
+            }}
+          >
+            <ChevronLeft size={16} />
+          </button>
+        </div>
+
+        {/* 进度区 */}
+        <div style={{ padding: '8px 14px 10px', 'border-bottom': `1px solid ${themeColors.border}`, 'flex-shrink': '0' }}>
+          <div style={{
+            background: themeColors.border,
+            'border-radius': '2px',
+            height: '3px',
+            'margin-bottom': '6px',
+          }}>
+            <div style={{
+              background: chartColors.success,
+              height: '100%',
+              'border-radius': '2px',
+              width: `${progressPct()}%`,
+              transition: 'width 0.5s ease',
+            }} />
+          </div>
+          <div style={{ display: 'flex', 'justify-content': 'space-between', 'align-items': 'center' }}>
+            <span style={{ 'font-size': '11px', color: themeColors.textMuted }}>
+              已用时 {fmtElapsed(props.elapsedSec)}
+            </span>
+            <span style={{ 'font-size': '11px', color: themeColors.textMuted }}>
+              {doneCount()}/{props.agents.length} 完成
+            </span>
+          </div>
+        </div>
+
+        {/* Agent 列表 */}
+        <div style={{ flex: '1', 'overflow-y': 'auto', padding: '4px 0' }}>
+          <For each={props.agents}>
+            {(agent) => (
+              <SoloBrainCard
+                agent={agent}
+                status={props.agentStatuses[agent.id] as any}
+                currentTask={props.agentTasks[agent.id]}
+                doneToday={props.agentDone[agent.id]}
+                artifactCount={props.artifactCount(agent.id)}
+                elapsedTime={props.stepTimes[agent.id]}
+              />
+            )}
+          </For>
+        </div>
+
+        {/* 底部统计 */}
+        <div style={{
+          display: 'flex',
+          'border-top': `1px solid ${themeColors.border}`,
+          padding: '10px 0',
+          'flex-shrink': '0',
+        }}>
+          <div style={{ flex: '1', 'text-align': 'center' }}>
+            <div style={{ 'font-size': '20px', 'font-weight': '700', color: chartColors.success, 'line-height': '1.2' }}>
+              {doneCount()}
+            </div>
+            <div style={{ 'font-size': '11px', color: themeColors.textMuted }}>完成</div>
+          </div>
+          <div style={{
+            flex: '1',
+            'text-align': 'center',
+            'border-left': `1px solid ${themeColors.border}`,
+            'border-right': `1px solid ${themeColors.border}`,
+          }}>
+            <div style={{ 'font-size': '20px', 'font-weight': '700', color: '#fa8c16', 'line-height': '1.2' }}>
+              {runCount()}
+            </div>
+            <div style={{ 'font-size': '11px', color: themeColors.textMuted }}>运行</div>
+          </div>
+          <div style={{ flex: '1', 'text-align': 'center' }}>
+            <div style={{ 'font-size': '20px', 'font-weight': '700', color: themeColors.textSecondary, 'line-height': '1.2' }}>
+              {waitCount()}
+            </div>
+            <div style={{ 'font-size': '11px', color: themeColors.textMuted }}>等待</div>
+          </div>
+        </div>
+      </div>
+    </Show>
   );
 };
 
@@ -179,6 +406,13 @@ const SoloAutopilot = () => {
   const [stepTimes, setStepTimes] = createSignal<Record<string, string>>({});
   const [artifactFloatWidth, setArtifactFloatWidth] = createSignal(420);
   const [artifactFloatHeight, setArtifactFloatHeight] = createSignal(Math.round(window.innerHeight * 0.78));
+
+  // ─── 计时状态 ──────────────────────────────────────────────────────────────────
+  const [elapsedSec, setElapsedSec] = createSignal(0);
+  let elapsedTimerRef: ReturnType<typeof setInterval> | undefined;
+
+  const agentArtifactCount = (agentId: string) =>
+    artifactsData().filter(a => a.agentId === agentId).length;
 
   // ─── 模型选择器状态 ───────────────────────────────────────────────────────────
   // per-provider 已配置的 API Keys（从 settings.yaml 读取）
@@ -235,6 +469,8 @@ const SoloAutopilot = () => {
 
   const reset = () => {
     clearTimers();
+    if (elapsedTimerRef) { clearInterval(elapsedTimerRef); elapsedTimerRef = undefined; }
+    setElapsedSec(0);
     setRunState('idle');
     setAgentStatuses(Object.fromEntries(SOLO_AGENTS.map((a) => [a.id, 'idle' as const])));
     setAgentTasks({});
@@ -574,6 +810,7 @@ const SoloAutopilot = () => {
 
   onCleanup(() => {
     clearTimers();
+    if (elapsedTimerRef) { clearInterval(elapsedTimerRef); elapsedTimerRef = undefined; }
     document.removeEventListener('pointermove', handleResizeMove);
     document.removeEventListener('pointerup', handleResizeEnd);
     document.removeEventListener('pointermove', handleFloatResizeMove);
@@ -582,9 +819,34 @@ const SoloAutopilot = () => {
 
   const doneAgents = () => Object.values(agentStatuses()).filter((s) => s === 'done').length;
 
+  // 根据 runState 自动管理计时器
+  createEffect(() => {
+    if (runState() === 'running') {
+      if (elapsedTimerRef) clearInterval(elapsedTimerRef);
+      setElapsedSec(0);
+      elapsedTimerRef = setInterval(() => setElapsedSec(s => s + 1), 1000);
+    } else {
+      if (elapsedTimerRef) { clearInterval(elapsedTimerRef); elapsedTimerRef = undefined; }
+    }
+  });
+
   return (
-    <div style={{ display: 'flex', 'align-items': 'flex-start', width: '100%' }}>
-      {/* 左列：信息横幅 + 目标输入 + Agent卡片 + 执行流 */}
+    <div style={{ display: 'flex', 'align-items': 'stretch', width: '100%' }}>
+      {/* 左侧 Agent 面板 */}
+      <div style={{ 'flex-shrink': '0', 'padding-right': '8px' }}>
+        <AgentPanelSidebar
+          agents={SOLO_AGENTS}
+          agentStatuses={agentStatuses()}
+          agentTasks={agentTasks()}
+          agentDone={agentDone()}
+          elapsedSec={elapsedSec()}
+          runState={runState()}
+          artifactCount={agentArtifactCount}
+          stepTimes={stepTimes()}
+        />
+      </div>
+
+      {/* 中间列：信息横幅 + 目标输入 + 执行流 */}
       <div style={{ flex: '1', 'min-width': '0', display: 'flex', 'flex-direction': 'column', gap: '16px', 'padding-right': '8px' }}>
 
         {/* 空状态横幅 */}
@@ -830,20 +1092,7 @@ const SoloAutopilot = () => {
         </Show>
       </div>
 
-      <div style={{ display: 'grid', 'grid-template-columns': 'repeat(4, 1fr)', gap: '12px', 'margin-bottom': '20px' }}>
-        <For each={SOLO_AGENTS}>
-          {(agent) => (
-            <SoloBrainCard
-              agent={agent}
-              status={agentStatuses()[agent.id] as any}
-              currentTask={agentTasks()[agent.id]}
-              doneToday={agentDone()[agent.id]}
-            />
-          )}
-        </For>
-      </div>
-
-        {/* 执行流（含展开按钮） */}
+      
         <div style={{
           border: `1px solid ${themeColors.border}`,
           'border-radius': '8px',

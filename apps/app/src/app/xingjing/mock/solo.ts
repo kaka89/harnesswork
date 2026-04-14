@@ -459,6 +459,201 @@ export const adrs: ADR[] = [
   },
 ];
 
+// ─── Code Review ───────────────────────────────────────────
+export interface CodeChange {
+  file: string;
+  oldCode: string;
+  newCode: string;
+  comment: string;
+}
+
+export interface CodeReviewItem {
+  id: string;
+  taskId: string;
+  taskTitle: string;
+  reviewer: string;
+  status: 'pending' | 'approved' | 'changes-requested';
+  summary: string;
+  filesChanged: number;
+  additions: number;
+  deletions: number;
+  createdAt: string;
+  changes: CodeChange[];
+}
+
+export const codeReviews: CodeReviewItem[] = [
+  {
+    id: 'cr1',
+    taskId: 'st1',
+    taskTitle: '修复 Editor 光标丢失 bug',
+    reviewer: 'AI工程搭档',
+    status: 'changes-requested',
+    summary: '修复方向正确，但建议将 compositionstart/end 处理封装为独立 Hook，避免直接耦合到主编辑器逻辑中。另，需要补充单元测试居敏场景。',
+    filesChanged: 2,
+    additions: 34,
+    deletions: 12,
+    createdAt: '2026-04-10',
+    changes: [
+      {
+        file: 'src/editor/plugins/ime-handler.ts',
+        oldCode: `// 旧实现：内联处理
+editor.on('keydown', (e) => {
+  if (composing) return;
+  handleKey(e);
+});`,
+        newCode: `// 新实现：封装独立 Hook
+export function useImeHandler(editor: Editor) {
+  let composing = false;
+  let savedSelection: Selection | null = null;
+
+  editor.on('compositionstart', () => {
+    composing = true;
+    savedSelection = editor.getSelection();
+  });
+
+  editor.on('compositionend', () => {
+    composing = false;
+    if (savedSelection) editor.setSelection(savedSelection);
+  });
+
+  editor.on('keydown', (e) => {
+    if (composing) return;
+    handleKey(e);
+  });
+}`,
+        comment: '建议封装为独立 Hook，提高可复用性。当前内联实现与 Editor 主逻辑耦合过紧。',
+      },
+      {
+        file: 'src/editor/hooks/use-editor.ts',
+        oldCode: `// 旧：未函数化
+let composing = false;
+editor.on('compositionstart', () => { composing = true; });
+editor.on('compositionend', () => { composing = false; });`,
+        newCode: `// 新：移至 useImeHandler
+useImeHandler(editor);`,
+        comment: '清理原変量，应用新 Hook。',
+      },
+    ],
+  },
+  {
+    id: 'cr2',
+    taskId: 'st2',
+    taskTitle: '实现段落重写功能（MVP）',
+    reviewer: 'AI工程搭档',
+    status: 'approved',
+    summary: '整体实现清晰，Loading 状态处理完善，错误边界已覆盖。代码结构合理，可直接合并。',
+    filesChanged: 3,
+    additions: 87,
+    deletions: 5,
+    createdAt: '2026-04-11',
+    changes: [
+      {
+        file: 'src/components/RewriteButton.tsx',
+        oldCode: `// 旧：无 Loading 状态
+const handleRewrite = async () => {
+  const result = await callGPT(selected);
+  replaceText(result);
+};`,
+        newCode: `// 新：完善 Loading + 错误处理
+const handleRewrite = async () => {
+  setLoading(true);
+  try {
+    const result = await callGPT(selected);
+    replaceText(result);
+  } catch (err) {
+    showToast('重写失败，请重试');
+  } finally {
+    setLoading(false);
+  }
+};`,
+        comment: '错误处理和 Loading 状态完善，符合预期。',
+      },
+    ],
+  },
+];
+
+// ─── Test Report ─────────────────────────────────────────
+export interface TestCaseDetail {
+  name: string;
+  status: 'passed' | 'failed';
+  duration: string;
+  error?: string;
+}
+
+export interface TestReport {
+  id: string;
+  taskId: string;
+  taskTitle: string;
+  status: 'passed' | 'failed' | 'partial';
+  totalCases: number;
+  passedCases: number;
+  failedCases: number;
+  coverage: number;
+  createdAt: string;
+  details: TestCaseDetail[];
+}
+
+export const testReports: TestReport[] = [
+  {
+    id: 'tr1',
+    taskId: 'st1',
+    taskTitle: '修复 Editor 光标丢失 bug',
+    status: 'partial',
+    totalCases: 6,
+    passedCases: 4,
+    failedCases: 2,
+    coverage: 72,
+    createdAt: '2026-04-10',
+    details: [
+      { name: '单元测试: 普通键盘输入后光标位置正确', status: 'passed', duration: '12ms' },
+      { name: '单元测试: IME 输入中光标保持', status: 'failed', duration: '18ms', error: 'AssertionError: expected cursor at 5, got 3 (compositionend not triggered in test env)' },
+      { name: '单元测试: compositionstart 缓存 selection', status: 'passed', duration: '8ms' },
+      { name: '单元测试: compositionend 恢复 selection', status: 'failed', duration: '9ms', error: 'TypeError: savedSelection is null — mock 未正确设置初始化选区' },
+      { name: '集成测试: 连续输入 50 个中文字符', status: 'passed', duration: '145ms' },
+      { name: '集成测试: Undo/Redo 后光标定位', status: 'passed', duration: '67ms' },
+    ],
+  },
+  {
+    id: 'tr2',
+    taskId: 'st2',
+    taskTitle: '实现段落重写功能（MVP）',
+    status: 'passed',
+    totalCases: 8,
+    passedCases: 8,
+    failedCases: 0,
+    coverage: 89,
+    createdAt: '2026-04-11',
+    details: [
+      { name: '单元测试: 选中文本后显示重写按钮', status: 'passed', duration: '6ms' },
+      { name: '单元测试: 未选中时按钮不显示', status: 'passed', duration: '5ms' },
+      { name: '单元测试: 调用 GPT-4o API 并替换文本', status: 'passed', duration: '320ms' },
+      { name: '单元测试: Loading 状态正确显示', status: 'passed', duration: '15ms' },
+      { name: '单元测试: 网络错误时显示 Toast', status: 'passed', duration: '22ms' },
+      { name: '单元测试: 空选区时不触发 API', status: 'passed', duration: '4ms' },
+      { name: '集成测试: 全流程重写成功场景', status: 'passed', duration: '890ms' },
+      { name: '集成测试: 重写后 Undo 可还原', status: 'passed', duration: '240ms' },
+    ],
+  },
+  {
+    id: 'tr3',
+    taskId: 'st6',
+    taskTitle: '配置 PostHog 用户行为追踪',
+    status: 'passed',
+    totalCases: 5,
+    passedCases: 5,
+    failedCases: 0,
+    coverage: 94,
+    createdAt: '2026-04-07',
+    details: [
+      { name: '单元测试: SDK 初始化成功', status: 'passed', duration: '48ms' },
+      { name: '单元测试: 页面浏览事件上报', status: 'passed', duration: '35ms' },
+      { name: '单元测试: 用户登录事件上报', status: 'passed', duration: '28ms' },
+      { name: '单元测试: 自定义事件追踪', status: 'passed', duration: '19ms' },
+      { name: '集成测试: 数据上报 PostHog 控制台可见', status: 'passed', duration: '1240ms' },
+    ],
+  },
+];
+
 // ─── Feature Flags ───────────────────────────────────────────────────
 export interface FeatureFlag {
   id: string;

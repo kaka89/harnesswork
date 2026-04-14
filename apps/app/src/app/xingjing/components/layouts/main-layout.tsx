@@ -79,7 +79,7 @@ const soloMenuItems = [
       { key: '/solo/autopilot', iconFn: () => <PlayCircle size={15} />, label: '驾驶舱' },
       { key: '/solo/focus', iconFn: () => <Zap size={15} />, label: '今日焦点' },
       { key: '/solo/product', iconFn: () => <Lightbulb size={15} />, label: '产品洞察' },
-      { key: '/solo/build', iconFn: () => <Code size={15} />, label: '构建中' },
+      { key: '/solo/build', iconFn: () => <Code size={15} />, label: '产品研发' },
       { key: '/solo/release', iconFn: () => <Rocket size={15} />, label: '发布管理' },
       { key: '/solo/review', iconFn: () => <BarChart3 size={15} />, label: '数据复盘' },
       { key: '/solo/knowledge', iconFn: () => <BookOpen size={15} />, label: '个人知识库' },

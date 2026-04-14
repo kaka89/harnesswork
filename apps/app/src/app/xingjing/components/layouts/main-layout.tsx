@@ -105,6 +105,56 @@ const MainLayout: ParentComponent = (props) => {
   const [energyMode, setEnergyMode] = createSignal<'deep' | 'light'>('deep');
   const [sidebarCollapsed, setSidebarCollapsed] = createSignal(false);
 
+  // AI 悬浮按钮拖拽状态
+  const FLOAT_BTN_SIZE = 56;
+  const FLOAT_BTN_MARGIN = 24;
+  const [floatPos, setFloatPos] = createSignal<{ x: number; y: number } | null>(null);
+  let isDragging = false;
+  let dragStartMouse = { x: 0, y: 0 };
+  let dragStartPos = { x: 0, y: 0 };
+  let hasMoved = false;
+
+  const defaultPos = () => ({
+    x: window.innerWidth - FLOAT_BTN_SIZE - FLOAT_BTN_MARGIN,
+    y: window.innerHeight - FLOAT_BTN_SIZE - FLOAT_BTN_MARGIN,
+  });
+
+  const clampPos = (x: number, y: number) => ({
+    x: Math.max(0, Math.min(x, window.innerWidth - FLOAT_BTN_SIZE)),
+    y: Math.max(0, Math.min(y, window.innerHeight - FLOAT_BTN_SIZE)),
+  });
+
+  const handlePointerDown = (e: PointerEvent) => {
+    isDragging = true;
+    hasMoved = false;
+    dragStartMouse = { x: e.clientX, y: e.clientY };
+    const pos = floatPos()!;
+    dragStartPos = { x: pos.x, y: pos.y };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    e.preventDefault();
+  };
+
+  const handlePointerMove = (e: PointerEvent) => {
+    if (!isDragging) return;
+    const dx = e.clientX - dragStartMouse.x;
+    const dy = e.clientY - dragStartMouse.y;
+    if (Math.abs(dx) > 4 || Math.abs(dy) > 4) hasMoved = true;
+    if (hasMoved) {
+      setFloatPos(clampPos(dragStartPos.x + dx, dragStartPos.y + dy));
+    }
+  };
+
+  const handlePointerUp = (_e: PointerEvent) => {
+    if (!isDragging) return;
+    isDragging = false;
+    if (!hasMoved) {
+      setAiDrawerOpen(true);
+    } else {
+      const pos = floatPos()!;
+      localStorage.setItem('ai-float-btn-pos', JSON.stringify(pos));
+    }
+  };
+
   // 名言轮播
   onMount(() => {
     const timer = setInterval(() => {
@@ -176,6 +226,21 @@ const MainLayout: ParentComponent = (props) => {
   };
 
   // Initialize open group based on current path
+  // 初始化悬浮按钮位置（从 localStorage 恢复或使用右下角默认值）
+  onMount(() => {
+    const saved = localStorage.getItem('ai-float-btn-pos');
+    if (saved) {
+      try {
+        const pos = JSON.parse(saved);
+        setFloatPos(clampPos(pos.x, pos.y));
+      } catch {
+        setFloatPos(defaultPos());
+      }
+    } else {
+      setFloatPos(defaultPos());
+    }
+  });
+
   onMount(() => {
     const p = normPath();
     if (p.startsWith('/solo')) {
@@ -547,18 +612,28 @@ const MainLayout: ParentComponent = (props) => {
         </main>
       </div>
 
-      {/* AI Float Button */}
-      <button
-        class={`fixed bottom-6 right-6 w-14 h-14 rounded-full text-white shadow-lg flex items-center justify-center transition-transform hover:scale-110 ${isSoloMode() ? 'bg-[var(--green-9)] hover:bg-[var(--green-11)]' : 'bg-[var(--purple-9)] hover:bg-[var(--purple-10)]'}`}
-        style={{
-          "box-shadow": isSoloMode()
-            ? "0 4px 16px rgba(82, 196, 26, 0.4)"
-            : "0 4px 16px rgba(139, 92, 246, 0.4)"
-        }}
-        onClick={() => setAiDrawerOpen(true)}
-      >
-        <Bot size={24} />
-      </button>
+      {/* AI Float Button — 可拖拽 */}
+      <Show when={floatPos() !== null}>
+        <button
+          class={`fixed w-14 h-14 rounded-full text-white shadow-lg flex items-center justify-center select-none touch-none
+            ${isSoloMode() ? 'bg-[var(--green-9)]' : 'bg-[var(--purple-9)]'}`}
+          style={{
+            left: `${floatPos()!.x}px`,
+            top: `${floatPos()!.y}px`,
+            "box-shadow": isSoloMode()
+              ? "0 4px 16px rgba(82, 196, 26, 0.4)"
+              : "0 4px 16px rgba(139, 92, 246, 0.4)",
+            transition: isDragging ? 'none' : 'transform 0.2s',
+            "z-index": 9999,
+            cursor: isDragging ? 'grabbing' : 'grab',
+          }}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+        >
+          <Bot size={24} />
+        </button>
+      </Show>
 
       {/* AI Chat Drawer */}
       <AiChatDrawer

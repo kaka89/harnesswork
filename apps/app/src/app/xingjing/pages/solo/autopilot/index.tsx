@@ -147,7 +147,7 @@ type RunState = 'idle' | 'running' | 'done';
 const SoloAutopilot = () => {
   const { state, productStore, actions } = useAppStore();
   const navigate = useNavigate();
-  const soloProducts = () => state.products.filter((p: { mode: string }) => p.mode === 'solo');
+  const soloProducts = () => productStore.products().filter(p => (p.productType ?? 'solo') === 'solo');
 
   const [createModalOpen, setCreateModalOpen] = createSignal(false);
   const [goal, setGoal] = createSignal('');
@@ -170,6 +170,9 @@ const SoloAutopilot = () => {
   const [artifactsData, setArtifactsData] = createSignal<ArtifactItem[]>([]);
   const [showExpandOverlay, setShowExpandOverlay] = createSignal(false);
   const [directAnswer, setDirectAnswer] = createSignal<string | null>(null);
+  const [artifactWidth, setArtifactWidth] = createSignal(420);
+  const [artifactFloat, setArtifactFloat] = createSignal(false);
+  const [artifactFloatPos, setArtifactFloatPos] = createSignal({ x: 0, y: 64 });
 
   // ─── 模型选择器状态 ───────────────────────────────────────────────────────────
   // per-provider 已配置的 API Keys（从 settings.yaml 读取）
@@ -459,14 +462,65 @@ const SoloAutopilot = () => {
     });
   };
 
-  onCleanup(() => clearTimers());
+  // ─── 产出物区域 resize / 悬浮面板拖拽 ──────────────────────────────────────
+  let isResizing = false;
+  let resizeStartX = 0;
+  let resizeStartW = 420;
+
+  const handleResizeMove = (e: PointerEvent) => {
+    if (!isResizing) return;
+    const dx = resizeStartX - e.clientX;
+    setArtifactWidth(Math.max(280, Math.min(700, resizeStartW + dx)));
+  };
+  const handleResizeEnd = () => {
+    isResizing = false;
+    document.removeEventListener('pointermove', handleResizeMove);
+    document.removeEventListener('pointerup', handleResizeEnd);
+  };
+  const handleResizeStart = (e: PointerEvent) => {
+    isResizing = true;
+    resizeStartX = e.clientX;
+    resizeStartW = artifactWidth();
+    document.addEventListener('pointermove', handleResizeMove);
+    document.addEventListener('pointerup', handleResizeEnd);
+    e.preventDefault();
+  };
+
+  let isFloatDragging = false;
+  let floatDragStart = { x: 0, y: 0 };
+  let floatPosStart = { x: 0, y: 0 };
+
+  const handleFloatDragStart = (e: PointerEvent) => {
+    if ((e.target as HTMLElement).closest('button')) return;
+    isFloatDragging = true;
+    floatDragStart = { x: e.clientX, y: e.clientY };
+    floatPosStart = { ...artifactFloatPos() };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    e.preventDefault();
+  };
+  const handleFloatDragMove = (e: PointerEvent) => {
+    if (!isFloatDragging) return;
+    const dx = e.clientX - floatDragStart.x;
+    const dy = e.clientY - floatDragStart.y;
+    setArtifactFloatPos({
+      x: Math.max(0, Math.min(floatPosStart.x + dx, window.innerWidth - artifactWidth())),
+      y: Math.max(0, floatPosStart.y + dy),
+    });
+  };
+  const handleFloatDragEnd = () => { isFloatDragging = false; };
+
+  onCleanup(() => {
+    clearTimers();
+    document.removeEventListener('pointermove', handleResizeMove);
+    document.removeEventListener('pointerup', handleResizeEnd);
+  });
 
   const doneAgents = () => Object.values(agentStatuses()).filter((s) => s === 'done').length;
 
   return (
-    <div style={{ display: 'grid', 'grid-template-columns': '1fr 420px', gap: '16px', 'align-items': 'start', 'max-width': '1400px', margin: '0 auto' }}>
+    <div style={{ display: 'flex', 'align-items': 'flex-start', 'max-width': '1400px', margin: '0 auto' }}>
       {/* 左列：信息横幅 + 目标输入 + Agent卡片 + 执行流 */}
-      <div style={{ display: 'flex', 'flex-direction': 'column', gap: '16px' }}>
+      <div style={{ flex: '1', 'min-width': '0', display: 'flex', 'flex-direction': 'column', gap: '16px', 'padding-right': '8px' }}>
 
         {/* 空状态横幅 */}
         <Show when={soloProducts().length === 0}>
@@ -974,10 +1028,63 @@ const SoloAutopilot = () => {
 
       </div>
 
-      {/* 右列：产出物工作区 */}
-      <div style={{ position: 'sticky', top: '0' }}>
-        <ArtifactWorkspace artifacts={artifactsData()} />
-      </div>
+      {/* 拖拽调整宽度手柄 */}
+      <Show when={!artifactFloat()}>
+        <div
+          style={{
+            width: '6px',
+            cursor: 'col-resize',
+            'flex-shrink': '0',
+            background: themeColors.border,
+            'border-radius': '3px',
+            'align-self': 'stretch',
+            transition: 'background 0.15s',
+          }}
+          onPointerDown={handleResizeStart}
+          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = chartColors.success + '80'; }}
+          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = themeColors.border; }}
+        />
+      </Show>
+
+      {/* 右列：产出物工作区（嵌入模式） */}
+      <Show when={!artifactFloat()}>
+        <div style={{ width: `${artifactWidth()}px`, 'flex-shrink': '0', position: 'sticky', top: '0', height: '100vh', overflow: 'hidden' }}>
+          <ArtifactWorkspace
+            artifacts={artifactsData()}
+            isFloating={false}
+            onToggleFloat={() => {
+              setArtifactFloatPos({ x: Math.max(0, window.innerWidth - artifactWidth() - 20), y: 64 });
+              setArtifactFloat(true);
+            }}
+          />
+        </div>
+      </Show>
+
+      {/* 产出物工作区（悬浮面板模式） */}
+      <Show when={artifactFloat()}>
+        <div
+          style={{
+            position: 'fixed',
+            left: `${artifactFloatPos().x}px`,
+            top: `${artifactFloatPos().y}px`,
+            width: `${artifactWidth()}px`,
+            height: '80vh',
+            'z-index': 200,
+            'border-radius': '10px',
+            overflow: 'hidden',
+            'box-shadow': '0 8px 40px rgba(0,0,0,0.22)',
+          }}
+        >
+          <ArtifactWorkspace
+            artifacts={artifactsData()}
+            isFloating={true}
+            onToggleFloat={() => setArtifactFloat(false)}
+            onDragStart={handleFloatDragStart}
+            onDragMove={handleFloatDragMove}
+            onDragEnd={handleFloatDragEnd}
+          />
+        </div>
+      </Show>
 
       {/* 展开浮层 */}
       <Show when={showExpandOverlay()}>

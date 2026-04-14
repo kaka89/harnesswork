@@ -1,6 +1,7 @@
 import { createSignal, createMemo, Show, For } from 'solid-js';
 import {
-  FileText, Edit3, Code2, Eye, Bold, Italic, Type, List, Link, Quote
+  FileText, Edit3, Code2, Eye, Bold, Italic, Type, List, Link, Quote,
+  ExternalLink, Minimize2,
 } from 'lucide-solid';
 import { themeColors, chartColors } from '../../utils/colors';
 
@@ -17,6 +18,11 @@ export interface ArtifactItem {
 interface ArtifactWorkspaceProps {
   artifacts: ArtifactItem[];
   onContentChange?: (id: string, content: string) => void;
+  isFloating?: boolean;
+  onToggleFloat?: () => void;
+  onDragStart?: (e: PointerEvent) => void;
+  onDragMove?: (e: PointerEvent) => void;
+  onDragEnd?: (e: PointerEvent) => void;
 }
 
 type ViewMode = 'edit' | 'source' | 'review';
@@ -111,13 +117,10 @@ const ArtifactWorkspace = (props: ArtifactWorkspaceProps) => {
         display: 'flex',
         'flex-direction': 'column',
         height: '100%',
-        'min-height': '400px',
-        position: 'sticky',
-        top: '0',
         overflow: 'hidden',
       }}
     >
-      {/* ── 顶部：标题 + 文件数量 ── */}
+      {/* ── 顶部：标题 + 文件数量 + 悬浮切换 ── */}
       <div
         style={{
           display: 'flex',
@@ -126,7 +129,12 @@ const ArtifactWorkspace = (props: ArtifactWorkspaceProps) => {
           padding: '10px 14px 8px',
           'border-bottom': `1px solid ${themeColors.border}`,
           'flex-shrink': '0',
+          cursor: props.isFloating ? 'grab' : 'default',
+          'user-select': 'none',
         }}
+        onPointerDown={props.isFloating ? props.onDragStart : undefined}
+        onPointerMove={props.isFloating ? props.onDragMove : undefined}
+        onPointerUp={props.isFloating ? props.onDragEnd : undefined}
       >
         <FileText size={15} style={{ color: themeColors.textMuted }} />
         <span style={{ 'font-weight': '600', 'font-size': '13px', color: themeColors.text }}>
@@ -144,6 +152,31 @@ const ArtifactWorkspace = (props: ArtifactWorkspaceProps) => {
           >
             {props.artifacts.length} 个文件
           </span>
+        </Show>
+        <div style={{ flex: '1' }} />
+        <Show when={props.onToggleFloat !== undefined}>
+          <button
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={props.onToggleFloat}
+            title={props.isFloating ? '收起到侧边栏' : '悬浮显示'}
+            style={{
+              display: 'inline-flex',
+              'align-items': 'center',
+              'justify-content': 'center',
+              width: '22px',
+              height: '22px',
+              'border-radius': '4px',
+              cursor: 'pointer',
+              border: `1px solid ${themeColors.border}`,
+              background: 'transparent',
+              color: themeColors.textMuted,
+              'flex-shrink': '0',
+            }}
+          >
+            <Show when={props.isFloating} fallback={<ExternalLink size={12} />}>
+              <Minimize2 size={12} />
+            </Show>
+          </button>
         </Show>
       </div>
 

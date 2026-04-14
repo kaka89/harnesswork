@@ -46,6 +46,34 @@ interface DragHandlers {
 
 // ─── HypothesisColumn ───────────────────────────────────────────────────────
 
+/** 每列的颜色主题（普通态 / drag-over 态） */
+const columnTheme: Record<HypothesisStatus, {
+  colBg: string; colBorder: string; accentColor: string;
+  overBg: string; overBorder: string;
+}> = {
+  testing: {
+    colBg: themeColors.primaryBg,
+    colBorder: themeColors.primaryBorder,
+    accentColor: chartColors.primary,
+    overBg: 'var(--blue-3)',
+    overBorder: chartColors.primary,
+  },
+  validated: {
+    colBg: themeColors.successBg,
+    colBorder: themeColors.successBorder,
+    accentColor: chartColors.success,
+    overBg: 'var(--green-3)',
+    overBorder: chartColors.success,
+  },
+  invalidated: {
+    colBg: '#fff2f0',
+    colBorder: '#ffccc7',
+    accentColor: chartColors.error,
+    overBg: '#ffe2e0',
+    overBorder: chartColors.error,
+  },
+};
+
 const HypothesisColumn: Component<{
   title: string;
   status: HypothesisStatus;
@@ -55,43 +83,58 @@ const HypothesisColumn: Component<{
   drag: DragHandlers;
 }> = (props) => {
   const cfg = () => statusConfig[props.status];
+  const theme = () => columnTheme[props.status];
   const isOver = () => props.drag.dragOverStatus() === props.status;
 
   return (
     <div
-      style={{ flex: 1, 'min-width': 0 }}
+      style={{
+        flex: 1, 'min-width': 0,
+        'border-radius': '12px',
+        border: `1px solid ${isOver() ? theme().overBorder : theme().colBorder}`,
+        background: isOver() ? theme().overBg : theme().colBg,
+        transition: 'background 0.18s, border-color 0.18s',
+        overflow: 'hidden',
+      }}
       onDragOver={(e) => { e.preventDefault(); }}
-      onDragEnter={() => props.drag.onDragEnter(props.status)}
-      onDragLeave={() => props.drag.onDragLeave()}
+      onDragEnter={(e) => { e.preventDefault(); props.drag.onDragEnter(props.status); }}
+      onDragLeave={(e) => {
+        // 只有真正离开整个列容器时才清除高亮（忽略移入子元素的假 leave）
+        if ((e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)) return;
+        props.drag.onDragLeave();
+      }}
       onDrop={(e) => { e.preventDefault(); props.drag.onDrop(props.status); }}
     >
-      {/* Column header */}
+      {/* Column header – 左色条 + 标题 */}
       <div style={{
-        display: 'flex', 'align-items': 'center', gap: '8px', 'margin-bottom': '12px',
-        padding: '8px 12px', 'border-radius': '8px',
-        background: isOver() ? cfg().border : cfg().bg,
-        border: `2px solid ${isOver() ? cfg().border : cfg().border}`,
-        transition: 'background 0.15s',
+        display: 'flex', 'align-items': 'center', gap: '8px',
+        padding: '10px 14px',
+        'border-bottom': `1px solid ${isOver() ? theme().overBorder : theme().colBorder}`,
+        background: isOver() ? theme().overBg : theme().colBg,
+        transition: 'background 0.18s',
       }}>
-        <span>{cfg().icon}</span>
-        <span style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text }}>{props.title}</span>
-        <span style={{ 'margin-left': 'auto', 'font-size': '12px', padding: '1px 6px', background: themeColors.surface, 'border-radius': '9999px', color: themeColors.textSecondary, border: `1px solid ${themeColors.border}` }}>
+        <span style={{ 'font-size': '15px' }}>{cfg().icon}</span>
+        <span style={{ 'font-weight': 700, 'font-size': '13px', color: theme().accentColor }}>{props.title}</span>
+        <span style={{
+          'margin-left': 'auto', 'font-size': '11px', padding: '1px 7px',
+          background: themeColors.surface, 'border-radius': '9999px',
+          color: theme().accentColor, border: `1px solid ${theme().colBorder}`,
+          'font-weight': 600,
+        }}>
           {props.items.length}
         </span>
       </div>
 
-      {/* Drop zone container */}
+      {/* Cards area */}
       <div style={{
-        display: 'flex', 'flex-direction': 'column', gap: '10px',
-        'min-height': '80px',
-        padding: '4px',
-        'border-radius': '8px',
-        border: isOver() ? `2px dashed ${cfg().border}` : '2px dashed transparent',
-        transition: 'border 0.15s',
+        display: 'flex', 'flex-direction': 'column', gap: '8px',
+        'min-height': '120px',
+        padding: '10px',
       }}>
         <Show when={props.items.length === 0 && !isOver()}>
-          <div style={{ 'text-align': 'center', padding: '32px 0', color: themeColors.textMuted, 'font-size': '14px' }}>暂无</div>
+          <div style={{ 'text-align': 'center', padding: '28px 0', color: themeColors.textMuted, 'font-size': '13px' }}>暂无</div>
         </Show>
+
         <For each={props.items}>
           {(h) => {
             const impact = impactConfig[h.impact] || impactConfig.low;
@@ -99,36 +142,37 @@ const HypothesisColumn: Component<{
             return (
               <div
                 draggable={true}
-                onDragStart={() => props.drag.onDragStart(h.id)}
+                onDragStart={(e) => { e.stopPropagation(); props.drag.onDragStart(h.id); }}
                 style={{
-                  'border-radius': '12px',
-                  border: `1px solid ${cfg().cardBorder}`,
+                  'border-radius': '10px',
+                  border: `1px solid ${isOver() ? theme().overBorder : theme().colBorder}`,
                   background: themeColors.surface,
-                  padding: '14px',
-                  cursor: 'grab',
-                  transition: 'opacity 0.2s, box-shadow 0.2s',
-                  opacity: isDragging() ? 0.4 : 1,
-                  'box-shadow': isDragging() ? 'none' : '0 1px 4px rgba(0,0,0,0.06)',
+                  padding: '12px 14px',
+                  cursor: isDragging() ? 'grabbing' : 'grab',
+                  transition: 'opacity 0.18s, box-shadow 0.18s, transform 0.18s',
+                  opacity: isDragging() ? 0.35 : 1,
+                  transform: isDragging() ? 'scale(0.97)' : 'scale(1)',
+                  'box-shadow': isDragging() ? 'none' : '0 1px 3px rgba(0,0,0,0.07)',
                   'user-select': 'none',
                 }}
                 onClick={() => !props.drag.draggingId() && props.onDetail(h)}
               >
-                <div style={{ 'margin-bottom': '8px' }}>
-                  <span style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text }}>「{h.belief}」</span>
+                <div style={{ 'margin-bottom': '6px' }}>
+                  <span style={{ 'font-weight': 600, 'font-size': '13px', color: themeColors.text }}>「{h.belief}」</span>
                 </div>
-                <div style={{ 'font-size': '12px', color: themeColors.textMuted, 'margin-bottom': '8px' }}>
+                <div style={{ 'font-size': '12px', color: themeColors.textMuted, 'margin-bottom': '8px', 'line-height': '1.4' }}>
                   ❓ {h.method}
                 </div>
                 <Show when={h.result}>
-                  <div style={{ 'margin-bottom': '8px', padding: '6px 10px', 'border-radius': '8px', 'font-size': '12px', background: props.status === 'validated' ? themeColors.successBg : themeColors.errorBg, color: props.status === 'validated' ? chartColors.success : chartColors.error }}>
+                  <div style={{ 'margin-bottom': '8px', padding: '5px 8px', 'border-radius': '6px', 'font-size': '12px', background: props.status === 'validated' ? themeColors.successBg : themeColors.errorBg, color: props.status === 'validated' ? chartColors.success : chartColors.error }}>
                     {h.result}
                   </div>
                 </Show>
-                <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
-                  <span style={{ 'font-size': '12px', padding: '1px 6px', 'border-radius': '4px', background: impact.bg, color: impact.color }}>
+                <div style={{ display: 'flex', 'align-items': 'center', gap: '6px' }}>
+                  <span style={{ 'font-size': '11px', padding: '1px 6px', 'border-radius': '4px', background: impact.bg, color: impact.color }}>
                     {impact.label}
                   </span>
-                  <span style={{ 'font-size': '12px', color: themeColors.textMuted, 'margin-left': 'auto' }}>{h.createdAt}</span>
+                  <span style={{ 'font-size': '11px', color: themeColors.textMuted, 'margin-left': 'auto' }}>{h.createdAt}</span>
                 </div>
               </div>
             );
@@ -137,14 +181,23 @@ const HypothesisColumn: Component<{
 
         {/* Drop hint */}
         <Show when={isOver()}>
-          <div style={{ 'text-align': 'center', padding: '16px 0', color: cfg().border, 'font-size': '13px', 'font-weight': 500 }}>
-            放开移入 {cfg().label}
+          <div style={{
+            'text-align': 'center', padding: '14px 0',
+            color: theme().accentColor, 'font-size': '13px', 'font-weight': 600,
+            border: `2px dashed ${theme().overBorder}`, 'border-radius': '8px',
+            background: themeColors.surface,
+          }}>
+            ↓ 放开移入「{cfg().label}」
           </div>
         </Show>
 
         <Show when={props.status === 'testing'}>
           <button
-            style={{ width: '100%', padding: '8px', border: `2px dashed ${themeColors.border}`, 'border-radius': '8px', 'font-size': '14px', color: themeColors.textMuted, background: 'transparent', cursor: 'pointer' }}
+            style={{
+              width: '100%', padding: '7px',
+              border: `1px dashed ${theme().colBorder}`, 'border-radius': '8px',
+              'font-size': '13px', color: theme().accentColor, background: 'transparent', cursor: 'pointer',
+            }}
             onClick={() => props.onAddNew?.()}
           >
             + 新增假设
@@ -292,21 +345,19 @@ const SoloProduct: Component = () => {
     onDrop: (targetStatus) => {
       const id = draggingId();
       if (!id) return;
-      setHypotheses(prev => prev.map(h => h.id === id ? { ...h, status: targetStatus } : h));
-      // Persist to workspace
-      const workDir = productStore.activeProduct()?.workDir;
-      if (workDir) {
-        const updated = hypotheses().find(h => h.id === id);
-        if (updated) void saveHypothesis(workDir, updated as unknown as Parameters<typeof saveHypothesis>[1]);
-      }
+      // 直接构造更新后的假设对象，避免依赖信号时序
+      const original = hypotheses().find(h => h.id === id);
+      if (!original) { setDraggingId(null); setDragOverStatus(null); return; }
+      const updated: Hypothesis = { ...original, status: targetStatus };
+      setHypotheses(prev => prev.map(h => h.id === id ? updated : h));
       setDraggingId(null);
       setDragOverStatus(null);
+      // 持久化到 workspace
+      const workDir = productStore.activeProduct()?.workDir;
+      if (workDir) void saveHypothesis(workDir, updated as unknown as Parameters<typeof saveHypothesis>[1]);
     },
     onDragEnter: (status) => setDragOverStatus(status),
-    onDragLeave: () => {
-      // Small delay to prevent flicker when moving between child elements
-      setTimeout(() => setDragOverStatus(null), 50);
-    },
+    onDragLeave: () => setDragOverStatus(null),
   };
 
   // ─── AI 搭档 send ─────────────────────────────────────────────────────────
@@ -469,7 +520,7 @@ ${reqSummary}
                 <div style={{ padding: '10px 12px', background: themeColors.primaryBg, border: `1px solid ${themeColors.primaryBorder}`, 'border-radius': '8px', 'margin-bottom': '14px', 'font-size': '12px', color: chartColors.primary }}>
                   💡 在右侧切换「奇想」模式，随手记录突发奇想，AI 自动补全后即出现在「验证中」列。拖拽卡片可流转假设状态。
                 </div>
-                <div style={{ display: 'flex', gap: '12px' }}
+                <div style={{ display: 'flex', gap: '14px' }}
                   onDragEnd={() => { setDraggingId(null); setDragOverStatus(null); }}
                 >
                   <HypothesisColumn title="验证中" status="testing" items={testingItems()} onDetail={openHypoDetail} onAddNew={() => setNewHypothesisModal(true)} drag={drag} />

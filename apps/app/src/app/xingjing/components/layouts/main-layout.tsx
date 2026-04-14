@@ -20,6 +20,7 @@ export const BackNavigationContext = createContext<() => void>(() => {
 import { useAppStore, type Role } from '../../stores/app-store';
 import { currentUser } from '../../services/auth-service';
 import ProductSwitcher from '../product/product-switcher';
+import AiChatDrawer from '../ai/ai-chat-drawer';
 import {
   Zap, TrendingUp, FileText, Palette, Code, Timer, CheckCircle, Cloud,
   BarChart3, BookOpen, Bot, Settings, PlayCircle, Lightbulb, Rocket, Sun, Moon,
@@ -88,16 +89,8 @@ const soloMenuItems = [
   { key: '/solo/settings', iconFn: () => <Settings size={16} />, label: '设置' },
 ];
 
-// AI Chat state for the drawer
-const [aiMessages, setAiMessages] = createSignal<{ role: string; content: string }[]>([
-  {
-    role: 'assistant',
-    content: '你好！我是你的 AI 虚拟团队。我了解你的产品所有决策、技术笔记和用户洞察。\n\n你可以问我：\n· 「当前最高优先级任务是什么？」\n· 「段落重写功能的用户假设验证结果如何？」\n· 「今天应该先做哪件事？」',
-  },
-]);
-const [aiInput, setAiInput] = createSignal('');
+// aiDrawerOpen: 控制 AiChatDrawer 显示，状态保留在模块级以跨实例共享
 const [aiDrawerOpen, setAiDrawerOpen] = createSignal(false);
-const [aiLoading, setAiLoading] = createSignal(false);
 
 const MainLayout: ParentComponent = (props) => {
   const navigate = useNavigate();
@@ -199,63 +192,11 @@ const MainLayout: ParentComponent = (props) => {
     }
   });
 
-  const soloProducts = () => state.products.filter(p => p.mode === 'solo');
-  const teamProducts = () => state.products.filter(p => p.mode === 'team');
+  const soloProducts = () => state.products.filter((p: { mode: string }) => p.mode === 'solo');
+  const teamProducts = () => state.products.filter((p: { mode: string }) => p.mode === 'team');
   const currentProducts = () => isSoloMode() ? soloProducts() : teamProducts();
-
-  const handleAiSend = () => {
-    if (!aiInput().trim() || aiLoading()) return;
-    const q = aiInput().trim();
-    setAiMessages(prev => [...prev, { role: 'user', content: q }]);
-    setAiInput('');
-    setAiLoading(true);
-
-    // 添加空的 assistant 消息用于流式填充
-    const assistantIdx = aiMessages().length; // user 刚加入后的下一个位置
-    setAiMessages(prev => [...prev, { role: 'assistant', content: '正在思考中...' }]);
-
-    // 构造上下文提示词
-    const modeLabel = isSoloMode() ? '独立开发者' : '企业团队';
-    const roleLabel = roleOptions.find(r => r.value === state.currentRole)?.label || state.currentRole;
-    const product = currentProducts().length > 0 ? currentProducts()[0] : null;
-    const productName = product?.name || '未选择产品';
-    const systemPrompt = `你是「星静」智能研发平台的 AI 虚拟团队助手。\n当前模式：${modeLabel}\n当前角色：${roleLabel}\n当前产品：${productName}\n\n请根据用户的问题提供专业、简洁的回答。如果涉及任务管理、产品规划、技术建议等，请结合当前角色给出具体可执行的建议。`;
-
-    const llmCfg = state.llmConfig;
-    void actions.callAgent({
-      systemPrompt,
-      userPrompt: q,
-      title: `星静对话-${productName}`,
-      model: llmCfg.providerID && llmCfg.modelID && llmCfg.providerID !== 'custom'
-        ? { providerID: llmCfg.providerID, modelID: llmCfg.modelID }
-        : undefined,
-      onText: (text) => {
-        setAiMessages(prev => prev.map((m, i) =>
-          i === assistantIdx ? { ...m, content: text } : m
-        ));
-      },
-      onDone: () => {
-        setAiLoading(false);
-      },
-      onError: () => {
-        // 降级到 mock 回复
-        let reply = '';
-        if (q.includes('优先') || q.includes('今天')) {
-          reply = '根据你的任务列表和商业指标，今天最优先的 3 件事是：\n\n1. 🔴 修复 Editor 光标丢失 bug（5 位用户反馈，已拖 2 天）\n2. 🟡 回复 Product Hunt 8 条评论（趁热度在，及时转化）\n3. 🟡 开始邀请用户内测段落重写（本周最高优先级假设验证）';
-        } else if (q.includes('重写') || q.includes('假设')) {
-          reply = '段落重写功能假设（h1）当前状态：验证中\n\n验证方式：邀请 5 位活跃用户内测 Beta，观察 3 天使用频率。\n\n相关任务：st2（实现 MVP）和 st3（邀请内测）均在待办状态，建议今天优先推进 st3（只需 1h）。';
-        } else if (q.includes('用户') || q.includes('留存')) {
-          reply = '根据知识库中的用户洞察：\n\n· 78% 的用户活跃时间在 20:00-23:00（推送策略可优化）\n· Onboarding 第 3 步骤流失率 42%（选项过多）\n· 最新反馈：4 条正面 / 1 条负面（延迟问题）\n\n当前 7 日留存 68%，相对稳定但有提升空间。';
-        } else {
-          reply = '我已加载你的产品知识库、任务列表和用户反馈。请告诉我你想了解哪方面，我来帮你分析。';
-        }
-        setAiMessages(prev => prev.map((m, i) =>
-          i === assistantIdx ? { ...m, content: `⚠️ OpenCode 未连接，使用本地知识库回复：\n\n${reply}` } : m
-        ));
-        setAiLoading(false);
-      },
-    });
-  };
+  const currentProductName = () => currentProducts().length > 0 ? currentProducts()[0].name : undefined;
+  const activeWorkDir = () => currentProducts()[0]?.workDir;
 
   // 优先使用外层 Router 的 navigate（由 XingjingNativePage 通过 Context 提供）
   const backToModeSelect = useContext(BackNavigationContext);
@@ -619,106 +560,17 @@ const MainLayout: ParentComponent = (props) => {
         <Bot size={24} />
       </button>
 
-      {/* AI Drawer */}
-      <Show when={aiDrawerOpen()}>
-        <div class="fixed inset-0 z-50 flex justify-end">
-          {/* Backdrop */}
-          <div class="absolute inset-0 bg-black/20" onClick={() => setAiDrawerOpen(false)} />
-          {/* Drawer */}
-          <div class="relative w-[400px] bg-[var(--dls-surface)] shadow-xl flex flex-col h-full">
-            {/* Header */}
-            <div class="flex items-center justify-between px-4 py-3 border-b border-[var(--dls-border)]">
-              <div class="flex items-center gap-2">
-                <div class={isSoloMode() ? 'text-[var(--green-9)]' : 'text-[var(--purple-9)]'}>
-                  <Bot size={16} />
-                </div>
-                <span class="font-semibold text-sm text-[var(--dls-text-primary)]">AI 虚拟团队</span>
-                <span class="text-xs px-2 py-0.5 bg-[var(--dls-success-bg)] text-[var(--green-9)] rounded-full border border-[var(--dls-success-border)]">已加载知识库</span>
-                {/* OpenWork 连接状态徽章 */}
-                <Show
-                  when={openworkStatus() === 'connected' || openworkStatus() === 'limited'}
-                  fallback={
-                    <span class="text-xs px-2 py-0.5 rounded-full flex items-center gap-1"
-                      style={{ background: 'var(--dls-error-bg, rgba(239,68,68,0.08))', color: 'var(--red-9, #dc2626)', border: '1px solid var(--dls-error-border, rgba(239,68,68,0.2))' }}
-                    >
-                      <WifiOff size={10} class="inline" />
-                      OpenWork 断开
-                    </span>
-                  }
-                >
-                  <span class="text-xs px-2 py-0.5 rounded-full flex items-center gap-1"
-                    style={{ background: openworkStatus() === 'connected' ? 'var(--dls-success-bg)' : 'var(--amber-3, #fef3c7)', color: openworkStatus() === 'connected' ? 'var(--green-9)' : 'var(--amber-11, #92400e)', border: openworkStatus() === 'connected' ? '1px solid var(--dls-success-border)' : '1px solid var(--amber-6, #fcd34d)' }}
-                  >
-                    <Wifi size={10} class="inline" />
-                    {openworkStatus() === 'connected' ? 'OpenWork 已连接' : 'OpenWork 限制模式'}
-                  </span>
-                </Show>
-              </div>
-              <button
-                class="text-[var(--dls-text-secondary)] hover:text-[var(--dls-text-primary)] text-lg"
-                onClick={() => setAiDrawerOpen(false)}
-              >
-                ✕
-              </button>
-            </div>
-
-            {/* Messages */}
-            <div class="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
-              <For each={aiMessages()}>
-                {(msg) => (
-                  <div class={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                    <div
-                      class={`max-w-[85%] px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
-                        msg.role === 'user'
-                          ? (isSoloMode() ? 'bg-[var(--green-9)]' : 'bg-[var(--purple-9)]') + ' text-white rounded-2xl rounded-br-sm'
-                          : 'bg-[var(--dls-chat-assist-bg)] text-[var(--dls-chat-assist-text)] rounded-2xl rounded-bl-sm'
-                      }`}
-                    >
-                      {msg.content}
-                    </div>
-                  </div>
-                )}
-              </For>
-            </div>
-
-            {/* Quick Questions */}
-            <div class="px-4 py-2 border-t border-[var(--dls-border-light)] flex flex-wrap gap-2">
-              <For each={['今天先做什么？', '假设验证进展', '用户留存分析']}>
-                {(q) => (
-                  <button
-                    class="text-xs px-3 py-1 bg-[var(--dls-hover)] hover:bg-[var(--dls-border-light)] rounded-full border border-[var(--dls-border)] transition-colors text-[var(--dls-text-secondary)]"
-                    onClick={() => setAiInput(q)}
-                  >
-                    {q}
-                  </button>
-                )}
-              </For>
-            </div>
-
-            {/* Input */}
-            <div class="p-3 flex gap-2">
-              <input
-                value={aiInput()}
-                onInput={(e) => setAiInput(e.currentTarget.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter' && !aiLoading()) handleAiSend(); }}
-                placeholder={aiLoading() ? 'AI 正在回复中...' : '问我任何关于产品的问题...'}
-                class={`flex-1 border rounded-lg px-3 py-2 text-sm outline-none bg-[var(--dls-surface)] text-[var(--dls-text-primary)] border-[var(--dls-border)] focus:border-[${isSoloMode() ? 'var(--green-9)' : 'var(--purple-9)'}]`}
-              />
-              <button
-                onClick={handleAiSend}
-                disabled={aiLoading()}
-                class={`rounded-lg px-3 py-2 text-sm transition-colors text-white ${
-                  isSoloMode()
-                    ? 'bg-[var(--green-9)] hover:bg-[var(--green-11)]'
-                    : 'bg-[var(--purple-9)] hover:bg-[var(--purple-10)]'
-                }`}
-              >
-                →
-              </button>
-            </div>
-          </div>
-        </div>
-      </Show>
+      {/* AI Chat Drawer */}
+      <AiChatDrawer
+        open={aiDrawerOpen()}
+        onClose={() => setAiDrawerOpen(false)}
+        isSoloMode={isSoloMode()}
+        callAgentFn={(opts) => actions.callAgent(opts)}
+        openworkStatus={openworkStatus()}
+        llmConfig={state.llmConfig}
+        currentProductName={currentProductName()}
+        workDir={activeWorkDir()}
+      />
     </div>
   );
 };

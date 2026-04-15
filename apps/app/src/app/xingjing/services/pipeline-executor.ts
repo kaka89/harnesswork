@@ -1,0 +1,221 @@
+/**
+ * Pipeline DAG 执行器
+ *
+ * 基于 pipeline-config.ts 解析的 PipelineConfig 执行多阶段长流程。
+ * 支持：
+ * - 拓扑排序分层执行（同层可并行）
+ * - 门控审批（await-approval 暂停等待用户决策）
+ * - 单阶段失败重试（maxRetries）
+ * - Agent 动态发现与 OpenCode Session 指定
+ */
+
+import type { PipelineConfig, PipelineStage } from './pipeline-config';
+import { topologicalSort } from './pipeline-config';
+import { discoverAgents } from './agent-registry';
+import type { CallAgentOptions } from './opencode-client';
+import { callAgent } from './opencode-client';
+
+// ─── 执行选项 ─────────────────────────────────────────────────
+
+export interface PipelineRunOpts {
+  /** Pipeline 配置 */
+  config: PipelineConfig;
+  /** 用户目标（会作为上下文传递给每个 Stage Agent） */
+  goal: string;
+  /** 工作目录 */
+  workDir?: string;
+  /** 使用的模型 */
+  model?: { providerID: string; modelID: string };
+  /** 注入 callAgent 实现（复用 store.actions.callAgent） */
+  callAgentFn?: (opts: CallAgentOptions) => Promise<void>;
+  /** 工具权限请求回调 */
+  onPermissionAsked?: CallAgentOptions['onPermissionAsked'];
+
+  // ── 回调 ──
+  /** 阶段开始执行 */
+  onStageStart?: (stageId: string, stage: PipelineStage) => void;
+  /** 阶段流式文本输出 */
+  onStageStream?: (stageId: string, text: string) => void;
+  /** 阶段执行完成 */
+  onStageComplete?: (stageId: string, result: string) => void;
+  /** 阶段执行失败 */
+  onStageFailed?: (stageId: string, error: string) => void;
+  /** 门控等待审批（返回 approve 继续，reject 跳过） */
+  onGateWaiting?: (stageId: string, stageName: string) => Promise<'approve' | 'reject'>;
+  /** 全部完成 */
+  onDone?: (results: Record<string, string>) => void;
+  /** 整体失败 */
+  onError?: (err: string) => void;
+}
+
+// ─── 执行器 ───────────────────────────────────────────────────
+
+/**
+ * 执行 Pipeline 长流程。
+ *
+ * 流程：
+ * 1. 拓扑排序获取执行层级
+ * 2. 逐层执行：同层 stage 可并行（如 parallel=true）
+ * 3. gate='await-approval' 时暂停等待用户审批
+ * 4. gate='auto' 时自动进入下一阶段
+ * 5. 单阶段失败重试（最多 maxRetries 次）
+ * 6. 聚合全部 stage 结果返回
+ */
+export async function runPipeline(opts: PipelineRunOpts): Promise<void> {
+  const { config, goal, workDir, model } = opts;
+  const invoke = opts.callAgentFn ?? callAgent;
+  const maxRetries = config.maxRetries ?? 2;
+
+  // 拓扑排序分层
+  const layers = topologicalSort(config.stages);
+  if (layers.length === 0 && config.stages.length > 0) {
+    opts.onError?.('Pipeline 配置存在循环依赖，无法执行');
+    return;
+  }
+
+  // 发现可用 Agent（用于 stage.agent → Agent 定义映射）
+  const agents = await discoverAgents('solo', workDir);
+  const agentMap = new Map(agents.map((a) => [a.id, a]));
+
+  // 聚合结果
+  const results: Record<string, string> = {};
+
+  // 逐层执行
+  for (const layer of layers) {
+    // 同层内：parallel=true 的并发，否则顺序
+    const parallelStages = layer.filter((s) => s.parallel);
+    const sequentialStages = layer.filter((s) => !s.parallel);
+
+    // 并行执行
+    if (parallelStages.length > 0) {
+      await Promise.all(
+        parallelStages.map((stage) =>
+          executeStage(stage, {
+            goal, workDir, model, invoke, maxRetries, agents: agentMap,
+            results, opts,
+          }),
+        ),
+      );
+    }
+
+    // 顺序执行
+    for (const stage of sequentialStages) {
+      await executeStage(stage, {
+        goal, workDir, model, invoke, maxRetries, agents: agentMap,
+        results, opts,
+      });
+    }
+  }
+
+  opts.onDone?.(results);
+}
+
+// ─── 单阶段执行 ──────────────────────────────────────────────
+
+interface StageExecContext {
+  goal: string;
+  workDir?: string;
+  model?: { providerID: string; modelID: string };
+  invoke: (opts: CallAgentOptions) => Promise<void>;
+  maxRetries: number;
+  agents: Map<string, { id: string; systemPrompt: string; opencodeAgentId?: string }>;
+  results: Record<string, string>;
+  opts: PipelineRunOpts;
+}
+
+async function executeStage(
+  stage: PipelineStage,
+  ctx: StageExecContext,
+): Promise<void> {
+  const { goal, workDir, model, invoke, maxRetries, agents, results, opts } = ctx;
+
+  // 1. 门控检查（supervised 模式下 await-approval 暂停）
+  if (stage.gate === 'await-approval') {
+    if (opts.onGateWaiting) {
+      const decision = await opts.onGateWaiting(stage.id, stage.name);
+      if (decision === 'reject') {
+        stage.outputStatus = 'skipped';
+        results[stage.id] = `[已跳过] ${stage.name}`;
+        return;
+      }
+    }
+    // 无回调时自动通过（autonomous 降级行为）
+  }
+
+  // 2. 查找 Agent 定义
+  const agentDef = agents.get(stage.agent);
+  const systemPrompt = agentDef?.systemPrompt ?? '';
+  const agentId = agentDef?.opencodeAgentId;
+
+  // 3. 构建上下文 prompt（包含前置阶段产出）
+  const contextParts: string[] = [`## 用户目标\n${goal}`];
+  if (stage.description) {
+    contextParts.push(`## 当前阶段任务\n${stage.description}`);
+  }
+
+  // 注入前置阶段的产出作为上下文
+  if (stage.dependsOn.length > 0) {
+    const depOutputs = stage.dependsOn
+      .filter((depId) => results[depId])
+      .map((depId) => `### ${depId} 产出\n${results[depId]}`);
+    if (depOutputs.length > 0) {
+      contextParts.push(`## 前置阶段产出\n${depOutputs.join('\n\n')}`);
+    }
+  }
+
+  const userPrompt = contextParts.join('\n\n');
+
+  // 4. 带重试执行
+  let lastError = '';
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      opts.onStageStart?.(stage.id, stage);
+      stage.outputStatus = 'running';
+
+      const stageResult = await new Promise<string>((resolve, reject) => {
+        let resolved = false;
+        const safeResolve = (v: string) => { if (!resolved) { resolved = true; resolve(v); } };
+        const safeReject = (e: string) => { if (!resolved) { resolved = true; reject(new Error(e)); } };
+
+        invoke({
+          title: `xingjing-pipeline-${stage.id}-${Date.now()}`,
+          directory: workDir,
+          systemPrompt,
+          userPrompt,
+          model,
+          agentId,
+          onPermissionAsked: opts.onPermissionAsked,
+          onText: (accumulated) => {
+            opts.onStageStream?.(stage.id, accumulated);
+          },
+          onDone: (fullText) => {
+            safeResolve(fullText);
+          },
+          onError: (err) => {
+            safeReject(err);
+          },
+        }).catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          safeReject(msg);
+        });
+      });
+
+      // 成功
+      stage.outputStatus = 'success';
+      results[stage.id] = stageResult;
+      opts.onStageComplete?.(stage.id, stageResult);
+      return;
+    } catch (e) {
+      lastError = e instanceof Error ? e.message : String(e);
+      if (attempt < maxRetries) {
+        // 等待后重试
+        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+      }
+    }
+  }
+
+  // 重试耗尽
+  stage.outputStatus = 'failed';
+  results[stage.id] = `[失败] ${lastError}`;
+  opts.onStageFailed?.(stage.id, lastError);
+}

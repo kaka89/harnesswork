@@ -18,7 +18,7 @@ import {
   type AgentExecutionStatus,
 } from '../../../services/autopilot-executor';
 import MentionInput from '../../../components/autopilot/mention-input';
-import ArtifactWorkspace, { type ArtifactItem } from '../../../components/autopilot/artifact-workspace';
+import ArtifactWorkspace, { type ArtifactItem, detectArtifactFormat } from '../../../components/autopilot/artifact-workspace';
 import ExpandableOverlay from '../../../components/autopilot/expandable-overlay';
 import PermissionDialog, { type PermissionRequest } from '../../../components/autopilot/permission-dialog';
 
@@ -675,14 +675,16 @@ const SoloAutopilot = () => {
       const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
       setArtifactsData(artSteps.map(s => {
         const ag = SOLO_AGENTS.find(a => a.id === s.agentId);
+        const content = s.artifact!.content;
         return {
           id: `artifact-${s.agentId}-stream`,
           agentId: s.agentId,
           agentName: ag?.name ?? s.agentName,
           agentEmoji: ag?.emoji ?? '',
           title: s.artifact!.title,
-          content: s.artifact!.content,
+          content,
           createdAt: timeStr,
+          format: detectArtifactFormat(content),
         };
       }));
       const statuses: Record<string, string> = {};
@@ -874,6 +876,7 @@ const SoloAutopilot = () => {
                 title: artTitle,
                 content: artContent,
                 createdAt: timeStr,
+                format: detectArtifactFormat(artContent),
               });
             }
           }
@@ -942,7 +945,8 @@ const SoloAutopilot = () => {
         .replace(/^-|-$/g, '')
         .slice(0, 60);
       const timestamp = new Date().toISOString().slice(0, 10);
-      const fileName = `${safeName}-${timestamp}.md`;
+      const ext = artifact.format === 'html' ? '.html' : '.md';
+      const fileName = `${safeName}-${timestamp}${ext}`;
 
       // 4. 通过 Tauri 原生命令写入文件（自动创建父目录）
       const relativePath = `${subDir}/${fileName}`;

@@ -1,9 +1,16 @@
-import { createSignal, createMemo, Show, For } from 'solid-js';
+import { createSignal, createMemo, createEffect, onMount, onCleanup, Show, For } from 'solid-js';
 import {
   FileText, Edit3, Code2, Eye, Bold, Italic, Type, List, Link, Quote,
   ExternalLink, Minimize2, Save, Loader2,
 } from 'lucide-solid';
+import { EditorState } from '@codemirror/state';
+import { EditorView, keymap } from '@codemirror/view';
+import { history, defaultKeymap, historyKeymap, indentWithTab } from '@codemirror/commands';
+import { html } from '@codemirror/lang-html';
 import { themeColors, chartColors } from '../../utils/colors';
+
+// ─── 产出物格式 ────────────────────────────────────────────────────────────────
+export type ArtifactFormat = 'markdown' | 'html';
 
 export interface ArtifactItem {
   id: string;
@@ -13,6 +20,17 @@ export interface ArtifactItem {
   title: string;
   content: string;
   createdAt: string; // "HH:mm" 格式
+  format?: ArtifactFormat;
+}
+
+/** 自动检测产出物内容的格式 */
+export function detectArtifactFormat(content: string): ArtifactFormat {
+  const trimmed = content.trimStart().toLowerCase();
+  if (trimmed.startsWith('<!doctype html') || trimmed.startsWith('<html')) return 'html';
+  if (/<head[\s>]/i.test(trimmed) && /<body[\s>]/i.test(trimmed)) return 'html';
+  const blockTags = (trimmed.match(/<(div|section|table|style|header|footer|nav|main|article|form)\b/gi) || []).length;
+  if (blockTags >= 3) return 'html';
+  return 'markdown';
 }
 
 interface ArtifactWorkspaceProps {
@@ -28,7 +46,7 @@ interface ArtifactWorkspaceProps {
   onResizeEdge?: (e: PointerEvent, direction: string) => void;
 }
 
-type ViewMode = 'edit' | 'source' | 'review';
+type ViewMode = 'edit' | 'preview';
 
 // 简单 Markdown 渲染（无额外依赖）
 function renderMarkdown(text: string): string {
@@ -47,9 +65,68 @@ function renderMarkdown(text: string): string {
     .replace(/\n/g, '<br/>');
 }
 
+// ─── CodeMirror HTML 编辑器主题 ─────────────────────────────────────────────
+const htmlEditorTheme = EditorView.theme({
+  '&': { fontSize: '13px' },
+  '.cm-scroller': {
+    fontFamily: '"JetBrains Mono", "Fira Code", monospace',
+  },
+  '.cm-content': { padding: '12px 14px', caretColor: 'var(--dls-text-primary)' },
+  '.cm-line': { padding: '0 2px' },
+  '.cm-focused': { outline: 'none' },
+  '.cm-selectionBackground': { backgroundColor: 'rgba(var(--dls-accent-rgb) / 0.18)' },
+  '.cm-focused .cm-selectionBackground': { backgroundColor: 'rgba(var(--dls-accent-rgb) / 0.22)' },
+  '.cm-cursor': { borderLeftColor: 'var(--dls-text-primary)' },
+});
+
+// ─── CodeMirror HTML 编辑器子组件 ────────────────────────────────────────────
+function HtmlCodeEditor(props: { value: string; onChange: (v: string) => void }) {
+  let hostEl: HTMLDivElement | undefined;
+  let view: EditorView | undefined;
+
+  const createState = (doc: string) =>
+    EditorState.create({
+      doc,
+      extensions: [
+        history(),
+        keymap.of([indentWithTab, ...defaultKeymap, ...historyKeymap]),
+        html(),
+        EditorView.lineWrapping,
+        htmlEditorTheme,
+        EditorView.updateListener.of((update) => {
+          if (!update.docChanged) return;
+          props.onChange(update.state.doc.toString());
+        }),
+      ],
+    });
+
+  onMount(() => {
+    if (!hostEl) return;
+    view = new EditorView({ state: createState(props.value ?? ''), parent: hostEl });
+    queueMicrotask(() => view?.focus());
+  });
+
+  createEffect(() => {
+    if (!view) return;
+    const next = props.value ?? '';
+    const current = view.state.doc.toString();
+    if (next === current) return;
+    view.dispatch({ changes: { from: 0, to: current.length, insert: next } });
+  });
+
+  onCleanup(() => { view?.destroy(); view = undefined; });
+
+  return (
+    <div
+      ref={(el) => (hostEl = el)}
+      style={{ flex: '1', overflow: 'auto', background: themeColors.hover }}
+    />
+  );
+}
+
 const ArtifactWorkspace = (props: ArtifactWorkspaceProps) => {
   const [activeTabId, setActiveTabId] = createSignal<string | null>(null);
-  const [viewMode, setViewMode] = createSignal<ViewMode>('review');
+  const [viewMode, setViewMode] = createSignal<ViewMode>('preview');
   const [editContents, setEditContents] = createSignal<Record<string, string>>({});
 
   const activeArtifact = createMemo(() => {
@@ -69,6 +146,15 @@ const ArtifactWorkspace = (props: ArtifactWorkspaceProps) => {
   });
 
   const charCount = createMemo(() => currentContent().length);
+
+  // 当前产出物的格式（优先使用显式设置的 format，否则自动检测）
+  const currentFormat = createMemo<ArtifactFormat>(() => {
+    const art = activeArtifact();
+    if (!art) return 'markdown';
+    return art.format ?? detectArtifactFormat(art.content);
+  });
+
+  const formatLabel = createMemo(() => currentFormat() === 'html' ? 'HTML' : 'Markdown');
 
   const handleContentChange = (val: string) => {
     const art = activeArtifact();
@@ -96,11 +182,19 @@ const ArtifactWorkspace = (props: ArtifactWorkspaceProps) => {
     });
   };
 
-  const modeButtons: { mode: ViewMode; icon: any; label: string }[] = [
-    { mode: 'edit', icon: Edit3, label: '编辑' },
-    { mode: 'source', icon: Code2, label: '源码' },
-    { mode: 'review', icon: Eye, label: '审查' },
-  ];
+  // 模式按钮根据格式动态决定
+  const modeButtons = createMemo(() => {
+    if (currentFormat() === 'html') {
+      return [
+        { mode: 'edit' as ViewMode, icon: Code2, label: '源码' },
+        { mode: 'preview' as ViewMode, icon: Eye, label: '预览' },
+      ];
+    }
+    return [
+      { mode: 'edit' as ViewMode, icon: Edit3, label: '编辑' },
+      { mode: 'preview' as ViewMode, icon: Eye, label: '预览' },
+    ];
+  });
 
   const toolbarButtons = [
     { icon: Bold, action: () => insertMd('**', '**'), title: '加粗' },
@@ -259,7 +353,7 @@ const ArtifactWorkspace = (props: ArtifactWorkspaceProps) => {
           }}
         >
           {/* 模式按钮 */}
-          <For each={modeButtons}>
+          <For each={modeButtons()}>
             {({ mode, icon: Icon, label }) => (
               <button
                 onClick={() => setViewMode(mode)}
@@ -283,8 +377,8 @@ const ArtifactWorkspace = (props: ArtifactWorkspaceProps) => {
             )}
           </For>
 
-          {/* 编辑模式：格式工具栏 */}
-          <Show when={viewMode() === 'edit'}>
+          {/* Markdown 编辑模式：格式工具栏 */}
+          <Show when={viewMode() === 'edit' && currentFormat() === 'markdown'}>
             <div style={{ width: '1px', height: '16px', background: themeColors.border, margin: '0 4px' }} />
             <For each={toolbarButtons}>
               {({ icon: Icon, action, title }) => (
@@ -316,8 +410,8 @@ const ArtifactWorkspace = (props: ArtifactWorkspaceProps) => {
           <Show when={activeArtifact()}>
             {(art) => (
               <>
-                {/* 编辑模式 */}
-                <Show when={viewMode() === 'edit'}>
+                {/* ── Markdown 编辑模式 ── */}
+                <Show when={viewMode() === 'edit' && currentFormat() === 'markdown'}>
                   <textarea
                     id={`artifact-textarea-${art().id}`}
                     value={currentContent()}
@@ -342,29 +436,16 @@ const ArtifactWorkspace = (props: ArtifactWorkspaceProps) => {
                   />
                 </Show>
 
-                {/* 源码模式（只读等宽字体） */}
-                <Show when={viewMode() === 'source'}>
-                  <pre
-                    style={{
-                      flex: '1',
-                      margin: '0',
-                      padding: '12px 14px',
-                      'font-size': '12px',
-                      'line-height': '1.7',
-                      'font-family': '"JetBrains Mono", "Fira Code", monospace',
-                      background: themeColors.hover,
-                      color: themeColors.textSecondary,
-                      'overflow-y': 'auto',
-                      'white-space': 'pre-wrap',
-                      'word-break': 'break-word',
-                    }}
-                  >
-                    {currentContent()}
-                  </pre>
+                {/* ── HTML 源码编辑模式（CodeMirror） ── */}
+                <Show when={viewMode() === 'edit' && currentFormat() === 'html'}>
+                  <HtmlCodeEditor
+                    value={currentContent()}
+                    onChange={handleContentChange}
+                  />
                 </Show>
 
-                {/* 审查模式（渲染 Markdown） */}
-                <Show when={viewMode() === 'review'}>
+                {/* ── Markdown 预览模式 ── */}
+                <Show when={viewMode() === 'preview' && currentFormat() === 'markdown'}>
                   <div
                     style={{
                       flex: '1',
@@ -376,6 +457,21 @@ const ArtifactWorkspace = (props: ArtifactWorkspaceProps) => {
                     }}
                     // eslint-disable-next-line solid/no-innerhtml
                     innerHTML={`<p style="margin:6px 0">${renderMarkdown(currentContent())}</p>`}
+                  />
+                </Show>
+
+                {/* ── HTML 预览模式（iframe 沙盒） ── */}
+                <Show when={viewMode() === 'preview' && currentFormat() === 'html'}>
+                  <iframe
+                    srcdoc={currentContent()}
+                    sandbox="allow-scripts"
+                    style={{
+                      flex: '1',
+                      width: '100%',
+                      border: 'none',
+                      background: '#fff',
+                    }}
+                    title="HTML 预览"
                   />
                 </Show>
               </>
@@ -399,7 +495,7 @@ const ArtifactWorkspace = (props: ArtifactWorkspaceProps) => {
                 background: themeColors.hover,
               }}
             >
-              <span>Markdown · {charCount()} 字符</span>
+              <span>{formatLabel()} · {charCount()} 字符</span>
               <Show when={props.onSave !== undefined}>
                 <button
                   onClick={() => { const a = activeArtifact(); if (a) props.onSave?.(a); }}

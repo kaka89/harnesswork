@@ -1,5 +1,5 @@
 
-> @openwork/ui@ build /Users/umasuo_m3pro/Desktop/startup/xingjing/worktrees/feature/TASK-memory-phase1/packages/ui
+> @openwork/ui@ build /Users/umasuo_m3pro/Desktop/startup/xingjing/worktrees/feature/TASK-memory-phase2/packages/ui
 > tsup
 
 CLI Building entry: {"react/index":"src/react/index.ts"}
@@ -7,21 +7,21 @@ CLI Using tsconfig: tsconfig.react.json
 CLI Building entry: {"solid/index":"src/solid/index.ts"}
 CLI Using tsconfig: tsconfig.solid.json
 CLI tsup v8.5.1
-CLI Using tsup config: /Users/umasuo_m3pro/Desktop/startup/xingjing/worktrees/feature/TASK-memory-phase1/packages/ui/tsup.config.ts
+CLI Using tsup config: /Users/umasuo_m3pro/Desktop/startup/xingjing/worktrees/feature/TASK-memory-phase2/packages/ui/tsup.config.ts
 CLI tsup v8.5.1
-CLI Using tsup config: /Users/umasuo_m3pro/Desktop/startup/xingjing/worktrees/feature/TASK-memory-phase1/packages/ui/tsup.config.ts
+CLI Using tsup config: /Users/umasuo_m3pro/Desktop/startup/xingjing/worktrees/feature/TASK-memory-phase2/packages/ui/tsup.config.ts
 CLI Target: es2022
 CLI Target: es2022
 ESM Build start
 CLI Cleaning output folder
 ESM Build start
 ESM dist/react/index.js 14.41 KB
-ESM ⚡️ Build success in 144ms
+ESM ⚡️ Build success in 92ms
 ESM dist/solid/index.js 17.76 KB
-ESM ⚡️ Build success in 214ms
+ESM ⚡️ Build success in 93ms
 DTS Build start
 DTS Build start
-DTS ⚡️ Build success in 1869ms
+DTS ⚡️ Build success in 534ms
 DTS dist/react/index.d.ts 2.84 KB
-DTS ⚡️ Build success in 2011ms
+DTS ⚡️ Build success in 654ms
 DTS dist/solid/index.d.ts 3.65 KB

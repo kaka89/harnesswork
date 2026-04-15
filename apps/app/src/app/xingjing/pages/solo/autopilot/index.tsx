@@ -8,6 +8,8 @@ import { soloWorkflowSteps, soloSampleGoals } from '../../../mock/autopilot';
 import { modelOptions } from '../../../mock/settings';
 import { loadProjectSettings, readYaml } from '../../../services/file-store';
 import { initProductDir } from '../../../../lib/tauri';
+import { getHealthScore } from '../../../services/knowledge-health';
+import { buildKnowledgeIndex } from '../../../services/knowledge-index';
 import {
   SOLO_AGENTS,
   runOrchestratedAutopilot,
@@ -447,6 +449,7 @@ const SoloAutopilot = () => {
   const { state, productStore, actions } = useAppStore();
   const navigate = useNavigate();
   const soloProducts = () => productStore.products().filter(p => (p.productType ?? 'solo') === 'solo');
+  const [knowledgeHealthScore, setKnowledgeHealthScore] = createSignal<number | null>(null);
 
   const [createModalOpen, setCreateModalOpen] = createSignal(false);
   const [goal, setGoal] = createSignal('');
@@ -549,6 +552,14 @@ const SoloAutopilot = () => {
           setSessionModelId(configured[0].modelID);
         }
       } catch { /* 静默降级 */ }
+
+      // 异步加载知识健康度分数
+      buildKnowledgeIndex(workDir, null).then(idx => {
+        if (idx) return getHealthScore(workDir, idx);
+        return null;
+      }).then(score => {
+        if (score !== null) setKnowledgeHealthScore(score);
+      }).catch(() => { /* 知识健康度加载失败：静默降级 */ });
     }
   });
 
@@ -1143,6 +1154,15 @@ const SoloAutopilot = () => {
           'flex-shrink': '0',
         }}>
           <strong style={{ color: chartColors.primary }}>独立版 · 自动驾驶</strong>
+          <Show when={knowledgeHealthScore() !== null}>
+            <span style={{
+              'font-size': '11px', padding: '1px 6px', 'border-radius': '9999px', 'margin-left': '8px',
+              background: knowledgeHealthScore()! >= 80 ? chartColors.success : knowledgeHealthScore()! >= 50 ? chartColors.warning : chartColors.error,
+              color: 'white', 'font-weight': 600,
+            }}>
+              🧠 {knowledgeHealthScore()}分
+            </span>
+          </Show>
           <span style={{ color: themeColors.textSecondary, 'margin-left': '8px' }}>
             你就是所有角色，AI 直接替你执行，4 个虚拟角色脑并行调度，无审批流程，适合快速验证和迭代
           </span>

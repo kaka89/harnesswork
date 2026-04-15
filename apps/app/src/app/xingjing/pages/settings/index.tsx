@@ -16,6 +16,14 @@ import { deleteProductDir } from '../../../lib/tauri';
 import { isTauriRuntime } from '../../../utils';
 import AddDomainAppModal from '../../components/product/add-domain-app-modal';
 import EditProductModal from '../../components/product/edit-product-modal';
+import {
+  listScheduledTasks,
+  createScheduledTask,
+  toggleScheduledTask,
+  deleteScheduledTask,
+  getAvailableAgentsForScheduler,
+  type XingjingScheduledTask,
+} from '../../services/scheduler-client';
 import { currentUser, updateProfile, changePassword, deleteAccount } from '../../services/auth-service';
 
 const inputStyle = () => ({
@@ -1189,49 +1197,55 @@ const GitTab: Component = () => {
 // ===================== Tab4: Cron tasks =====================
 const CronTab: Component = () => {
   const { productStore } = useAppStore();
-  const [tasks, setTasks] = createSignal<ScheduledTask[]>([...defaultScheduledTasks]);
+  const [tasks, setTasks] = createSignal<XingjingScheduledTask[]>([]);
+  const [agentOptions, setAgentOptions] = createSignal<Array<{ id: string; name: string; emoji: string }>>([]);
   const [modalOpen, setModalOpen] = createSignal(false);
-  const [form, setForm] = createSignal({ name: '', cron: '', agentName: '', description: '' });
+  const [form, setForm] = createSignal({ name: '', cron: '', agentId: '', agentName: '', prompt: '', description: '' });
+  const [loading, setLoading] = createSignal(true);
 
   onMount(async () => {
     const workDir = productStore.activeProduct()?.workDir;
-    if (!workDir) return;
+    if (!workDir) { setLoading(false); return; }
     try {
-      const settings = await loadProjectSettings(workDir);
-      if (settings.scheduledTasks && settings.scheduledTasks.length > 0) {
-        setTasks(settings.scheduledTasks as ScheduledTask[]);
-      }
+      const [loaded, agents] = await Promise.all([
+        listScheduledTasks(workDir),
+        getAvailableAgentsForScheduler(workDir),
+      ]);
+      if (loaded.length > 0) setTasks(loaded);
+      else setTasks(defaultScheduledTasks.map((t) => ({
+        id: t.id, name: t.name, cron: t.cron, agentId: '', agentName: t.agentName,
+        prompt: t.description, description: t.description, enabled: t.enabled,
+        lastRunAt: t.lastRun !== '-' ? t.lastRun : undefined, source: 'file' as const,
+      })));
+      if (agents.length > 0) setAgentOptions(agents);
     } catch { /* keep defaults */ }
+    setLoading(false);
   });
 
-  const persistTasks = async (updated: ScheduledTask[]) => {
+  const handleToggle = async (id: string, val: boolean) => {
+    setTasks((prev) => prev.map((t) => t.id === id ? { ...t, enabled: val } : t));
+    const workDir = productStore.activeProduct()?.workDir;
+    if (workDir) await toggleScheduledTask(workDir, id, val);
+  };
+
+  const handleDelete = async (task: XingjingScheduledTask) => {
+    setTasks((prev) => prev.filter((t) => t.id !== task.id));
+    const workDir = productStore.activeProduct()?.workDir;
+    if (workDir) await deleteScheduledTask(workDir, task.id, task.name);
+  };
+
+  const handleAdd = async () => {
+    const f = form();
+    if (!f.name || !f.cron || !f.agentId) return;
     const workDir = productStore.activeProduct()?.workDir;
     if (!workDir) return;
-    try {
-      const settings = await loadProjectSettings(workDir);
-      await saveProjectSettings(workDir, { ...settings, scheduledTasks: updated as unknown as typeof settings.scheduledTasks });
-    } catch { /* ignore */ }
-  };
-
-  const toggleTask = (id: string, val: boolean) => {
-    const updated = tasks().map((t) => t.id === id ? { ...t, enabled: val } : t);
-    setTasks(updated);
-    persistTasks(updated);
-  };
-
-  const handleAdd = () => {
-    const f = form();
-    if (!f.name || !f.cron || !f.agentName) return;
-    const updated = [...tasks(), {
-      id: `cron-${Date.now()}`,
-      ...f,
-      enabled: true,
-      lastRun: '-',
-    }];
-    setTasks(updated);
-    persistTasks(updated);
+    const { task } = await createScheduledTask(workDir, {
+      name: f.name, cron: f.cron, agentId: f.agentId,
+      agentName: f.agentName || f.agentId, prompt: f.prompt, description: f.description,
+    });
+    setTasks((prev) => [...prev, task]);
     setModalOpen(false);
-    setForm({ name: '', cron: '', agentName: '', description: '' });
+    setForm({ name: '', cron: '', agentId: '', agentName: '', prompt: '', description: '' });
   };
 
   return (
@@ -1240,12 +1254,15 @@ const CronTab: Component = () => {
         <table class="w-full text-xs">
           <thead>
             <tr style={{ background: themeColors.bgSubtle }}>
-              <For each={['任务名称', 'Cron 表达式', '关联 Agent', '描述', '状态', '上次执行']}>
+              <For each={['任务名称', 'Cron 表达式', '关联 Agent', '描述', '状态', '上次执行', '操作']}>
                 {(h) => <th class="text-left py-3 px-3 font-medium" style={{ color: themeColors.textMuted }}>{h}</th>}
               </For>
             </tr>
           </thead>
           <tbody>
+            <Show when={loading()}>
+              <tr><td colspan="7" class="py-6 text-center" style={{ color: themeColors.textMuted }}><Loader size={14} class="inline-block animate-spin" /> 加载中...</td></tr>
+            </Show>
             <For each={tasks()}>
               {(task) => (
                 <tr style={{ 'border-top': `1px solid ${themeColors.borderLight}` }}>
@@ -1261,7 +1278,7 @@ const CronTab: Component = () => {
                     <button
                       class="w-8 h-4 rounded-full transition-colors relative"
                       style={{ background: task.enabled ? chartColors.primary : themeColors.border }}
-                      onClick={() => toggleTask(task.id, !task.enabled)}
+                      onClick={() => handleToggle(task.id, !task.enabled)}
                     >
                       <div
                         class="w-3.5 h-3.5 rounded-full absolute top-0.5 transition-all"
@@ -1272,7 +1289,17 @@ const CronTab: Component = () => {
                       />
                     </button>
                   </td>
-                  <td class="py-3 px-3" style={{ color: themeColors.textMuted }}>{task.lastRun}</td>
+                  <td class="py-3 px-3" style={{ color: themeColors.textMuted }}>{task.lastRunAt ?? '-'}</td>
+                  <td class="py-3 px-3">
+                    <button
+                      class="p-1 rounded hover:bg-red-50 transition-colors"
+                      style={{ color: themeColors.textMuted }}
+                      onClick={() => handleDelete(task)}
+                      title="删除任务"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </td>
                 </tr>
               )}
             </For>
@@ -1318,14 +1345,34 @@ const CronTab: Component = () => {
                 <select
                   class="w-full px-3 py-2 rounded-lg text-sm outline-none"
                   style={inputStyle()}
-                  value={form().agentName}
-                  onChange={(e) => setForm({ ...form(), agentName: e.currentTarget.value })}
+                  value={form().agentId}
+                  onChange={(e) => {
+                    const selected = agentOptions().find((a) => a.id === e.currentTarget.value);
+                    setForm({ ...form(), agentId: e.currentTarget.value, agentName: selected?.name ?? e.currentTarget.value });
+                  }}
                 >
                   <option value="">选择执行 Agent</option>
-                  <For each={['编码 Agent', '效能分析 Agent', '质量守护 Agent', '需求分析 Agent', '架构设计 Agent']}>
-                    {(opt) => <option value={opt}>{opt}</option>}
-                  </For>
+                  <Show when={agentOptions().length > 0} fallback={
+                    <For each={['编码 Agent', '效能分析 Agent', '质量守护 Agent', '需求分析 Agent', '架构设计 Agent']}>
+                      {(opt) => <option value={opt}>{opt}</option>}
+                    </For>
+                  }>
+                    <For each={agentOptions()}>
+                      {(ag) => <option value={ag.id}>{ag.emoji} {ag.name}</option>}
+                    </For>
+                  </Show>
                 </select>
+              </div>
+              <div>
+                <label class="text-xs block mb-1" style={{ color: themeColors.textMuted }}>执行 Prompt</label>
+                <textarea
+                  class="w-full px-3 py-2 rounded-lg text-sm outline-none resize-none"
+                  style={inputStyle()}
+                  rows={2}
+                  value={form().prompt}
+                  onInput={(e) => setForm({ ...form(), prompt: e.currentTarget.value })}
+                  placeholder="Agent 执行时的提示词..."
+                />
               </div>
               <div>
                 <label class="text-xs block mb-1" style={{ color: themeColors.textMuted }}>描述</label>

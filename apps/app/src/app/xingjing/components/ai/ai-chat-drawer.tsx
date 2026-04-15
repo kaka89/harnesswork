@@ -15,12 +15,23 @@ import { Bot, Wifi, WifiOff, Loader2, ChevronDown, ChevronUp, Zap, MessageSquare
 import type { CallAgentOptions } from '../../services/opencode-client';
 import {
   type SessionRecord as PersistedSessionRecord,
-  loadSessions,
-  appendSession,
+  loadSessions as loadLegacySessions,
+  appendSession as appendLegacySession,
   saveSessions,
   nowTimeStr,
   nowDateTimeStr,
 } from '../../services/chat-session-store';
+import {
+  type MemorySession,
+  type MemoryMessage,
+  saveSession as saveMemorySession,
+  loadMemoryIndex,
+  generateSessionSummary,
+  genSessionId,
+  nowISO,
+  type CallAgentFn as MemoryCallAgentFn,
+} from '../../services/memory-store';
+import { recallRelevantContext } from '../../services/memory-recall';
 import {
   SOLO_AGENTS,
   TEAM_AGENTS,
@@ -525,9 +536,25 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
   const [historyExpanded, setHistoryExpanded] = createSignal(false);
   const [viewingSession, setViewingSession] = createSignal<SessionRecord | null>(null);
 
-  // 加载持久化的历史会话
-  onMount(() => {
-    const persisted = loadSessions();
+  // 加载持久化的历史会话（优先从 memory-store 加载，降级到 localStorage）
+  onMount(async () => {
+    const workDir = props.workDir;
+    if (workDir) {
+      try {
+        const memIndex = await loadMemoryIndex(workDir);
+        if (memIndex.sessions.length > 0) {
+          setSessionHistory(memIndex.sessions.map(entry => ({
+            id: entry.id,
+            summary: entry.summary,
+            messages: [], // 详情按需加载
+            ts: entry.createdAt,
+          })));
+          return;
+        }
+      } catch { /* 降级到 localStorage */ }
+    }
+    // 降级：从 localStorage 加载（兼容旧数据）
+    const persisted = loadLegacySessions();
     if (persisted.length > 0) {
       setSessionHistory(persisted.map(fromPersistedSession));
     }
@@ -552,18 +579,60 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
     const userMsgs = msgs.filter(m => m.role === 'user');
     if (userMsgs.length === 0) return;
     const first = userMsgs[0].content;
-    const summary = first.slice(0, 30) + (first.length > 30 ? '...' : '');
-    const sessionId = Date.now().toString();
+    const fallbackSummary = first.slice(0, 30) + (first.length > 30 ? '...' : '');
+    const sessionId = genSessionId();
     const sessionTs = nowDateTimeStr();
-    const session: SessionRecord = { id: sessionId, summary, messages: msgs, ts: sessionTs };
+    const session: SessionRecord = { id: sessionId, summary: fallbackSummary, messages: msgs, ts: sessionTs };
     setSessionHistory(prev => [session, ...prev]);
-    // 持久化到本地存储
-    appendSession({
+
+    // 持久化到 localStorage（降级兜底）
+    appendLegacySession({
       id: session.id,
       summary: session.summary,
       ts: session.ts,
       messages: toPersistedMessages(session.messages),
     });
+
+    // 异步持久化到 memory-store（新的统一存储）
+    const workDir = props.workDir;
+    if (workDir) {
+      const memMessages: MemoryMessage[] = msgs.map(m => ({
+        id: m.id,
+        role: m.role,
+        content: m.content,
+        msgType: m.type,
+        agentName: m.agentName,
+        ts: m.ts ?? '',
+      }));
+      const memSession: MemorySession = {
+        id: sessionId,
+        type: 'chat',
+        summary: fallbackSummary,
+        tags: [],
+        messages: memMessages,
+        createdAt: nowISO(),
+        updatedAt: nowISO(),
+      };
+      // 先存 fallback 摘要，再异步生成 AI 摘要更新
+      void saveMemorySession(workDir, memSession).then(() => {
+        // 异步生成 AI 摘要（不阻塞 UI）
+        void generateSessionSummary(
+          memMessages,
+          props.callAgentFn as unknown as MemoryCallAgentFn,
+        ).then(result => {
+          if (result.summary) {
+            memSession.summary = result.summary;
+            memSession.tags = result.tags;
+            memSession.updatedAt = nowISO();
+            void saveMemorySession(workDir, memSession);
+            // 更新 UI 中的摘要
+            setSessionHistory(prev => prev.map(s =>
+              s.id === sessionId ? { ...s, summary: result.summary } : s,
+            ));
+          }
+        });
+      });
+    }
   };
 
   const startNewSession = () => {
@@ -602,7 +671,7 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
           const first = userMsgs[0].content;
           const summary = first.slice(0, 30) + (first.length > 30 ? '...' : '');
           const sid = snapshot[0]?.id === 'welcome' ? (snapshot[1]?.id ?? 'cur') : snapshot[0].id;
-          saveSessions([...loadSessions().filter(s => s.id !== sid), {
+          saveSessions([...loadLegacySessions().filter(s => s.id !== sid), {
             id: sid,
             summary,
             ts: nowDateTimeStr(),
@@ -634,7 +703,7 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
           const first = userMsgs[0].content;
           const summary = first.slice(0, 30) + (first.length > 30 ? '...' : '');
           const sid = snapshot[0]?.id === 'welcome' ? (snapshot[1]?.id ?? 'cur') : snapshot[0].id;
-          saveSessions([...loadSessions().filter(s => s.id !== sid), {
+          saveSessions([...loadLegacySessions().filter(s => s.id !== sid), {
             id: sid,
             summary,
             ts: nowDateTimeStr(),
@@ -891,7 +960,7 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
                 onClick={() => {
                   if (!showHistory()) {
                     // 打开历史面板时，从 localStorage 读取最新数据（onDone 只写 storage 不更新信号）
-                    const persisted = loadSessions();
+                    const persisted = loadLegacySessions();
                     setSessionHistory(persisted.map(fromPersistedSession));
                   }
                   setShowHistory(v => !v);

@@ -31,6 +31,15 @@ import {
   saveAutopilotHistory,
   type AutopilotChatMessage,
 } from '../../services/file-store';
+import {
+  type MemorySession,
+  type MemoryMessage,
+  saveSession as saveMemorySession,
+  loadMemoryIndex,
+  loadSession as loadMemorySession,
+  genSessionId,
+  nowISO,
+} from '../../services/memory-store';
 import { loadPipelineConfig, type PipelineConfig, type PipelineStage } from '../../services/pipeline-config';
 import { runPipeline } from '../../services/pipeline-executor';
 
@@ -378,19 +387,39 @@ const EnterpriseAutopilot = () => {
         const config = await loadPipelineConfig(workDir);
         if (config) setPipelineConfig(config);
       } catch { /* silent */ }
-      // Load history
+      // Load history——优先从 memory-store 加载，降级到旧的 autopilot-history.json
       try {
-        const history = await loadAutopilotHistory(workDir);
-        if (history.sessions.length > 0) {
-          const last = history.sessions[0];
-          setChatMessages(last.messages.map((m) => ({ ...m, isStreaming: false })));
-          setSessionId(last.id);
+        const memIndex = await loadMemoryIndex(workDir);
+        const autopilotEntries = memIndex.sessions.filter(s => s.type === 'autopilot');
+        if (autopilotEntries.length > 0) {
+          const lastEntry = autopilotEntries[0];
+          const lastSession = await loadMemorySession(workDir, lastEntry.id);
+          if (lastSession && lastSession.messages.length > 0) {
+            setChatMessages(lastSession.messages.map(m => ({
+              id: m.id,
+              type: m.role === 'user' ? 'user' : m.role === 'system' ? 'system' : 'ai',
+              text: m.content,
+              time: m.ts,
+              isStreaming: false,
+              agentId: m.agentId,
+              agentName: m.agentName,
+            })));
+            setSessionId(lastSession.id);
+          }
+        } else {
+          // 降级：加载旧的 autopilot-history.json
+          const history = await loadAutopilotHistory(workDir);
+          if (history.sessions.length > 0) {
+            const last = history.sessions[0];
+            setChatMessages(last.messages.map((m) => ({ ...m, isStreaming: false })));
+            setSessionId(last.id);
+          }
         }
       } catch { /* silent */ }
     }
   });
 
-  // Auto-save history
+  // Auto-save history——同时保存到 memory-store 和旧的 autopilot-history.json
   createEffect(() => {
     const msgs = chatMessages();
     if (msgs.length === 0) return;
@@ -398,9 +427,32 @@ const EnterpriseAutopilot = () => {
     saveTimeout = setTimeout(() => {
       const workDir = store.productStore.activeProduct()?.workDir;
       if (!workDir) return;
+
+      // 旧的持久化（降级兜底）
       saveAutopilotHistory(workDir, {
         sessions: [{ id: sessionId(), goal: msgs.find((m) => m.type === 'user')?.text ?? '', startedAt: new Date().toISOString(), messages: msgs.map(({ isStreaming, ...rest }) => rest) }],
       }).catch(() => {});
+
+      // 新的统一存储
+      const memMessages: MemoryMessage[] = msgs.map(m => ({
+        id: m.id,
+        role: m.type === 'user' ? 'user' as const : m.type === 'system' ? 'system' as const : 'assistant' as const,
+        content: m.text,
+        agentId: m.agentId,
+        agentName: m.agentName,
+        ts: m.time ?? '',
+      }));
+      const memSession: MemorySession = {
+        id: sessionId(),
+        type: 'autopilot',
+        summary: msgs.find((m) => m.type === 'user')?.text?.slice(0, 80) ?? '',
+        goal: msgs.find((m) => m.type === 'user')?.text ?? '',
+        tags: [],
+        messages: memMessages,
+        createdAt: nowISO(),
+        updatedAt: nowISO(),
+      };
+      void saveMemorySession(workDir, memSession);
     }, 500);
   });
 

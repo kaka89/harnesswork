@@ -1,7 +1,7 @@
 import { createSignal, createMemo, createEffect, onMount, onCleanup, Show, For } from 'solid-js';
 import {
   FileText, Edit3, Code2, Eye, Bold, Italic, Type, List, Link, Quote,
-  ExternalLink, Minimize2, Save, Loader2,
+  ExternalLink, Minimize2, Save, Loader2, PanelRightClose,
 } from 'lucide-solid';
 import { EditorState } from '@codemirror/state';
 import { EditorView, keymap } from '@codemirror/view';
@@ -44,6 +44,7 @@ interface ArtifactWorkspaceProps {
   onDragMove?: (e: PointerEvent) => void;
   onDragEnd?: (e: PointerEvent) => void;
   onResizeEdge?: (e: PointerEvent, direction: string) => void;
+  onCollapse?: () => void;
 }
 
 type ViewMode = 'edit' | 'preview';
@@ -252,6 +253,28 @@ const ArtifactWorkspace = (props: ArtifactWorkspaceProps) => {
           </span>
         </Show>
         <div style={{ flex: '1' }} />
+        <Show when={!props.isFloating && props.onCollapse !== undefined}>
+          <button
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={props.onCollapse}
+            title="收起产出物面板"
+            style={{
+              display: 'inline-flex',
+              'align-items': 'center',
+              'justify-content': 'center',
+              width: '22px',
+              height: '22px',
+              'border-radius': '4px',
+              cursor: 'pointer',
+              border: `1px solid ${themeColors.border}`,
+              background: 'transparent',
+              color: themeColors.textMuted,
+              'flex-shrink': '0',
+            }}
+          >
+            <PanelRightClose size={12} />
+          </button>
+        </Show>
         <Show when={props.onToggleFloat !== undefined}>
           <button
             onPointerDown={(e) => e.stopPropagation()}

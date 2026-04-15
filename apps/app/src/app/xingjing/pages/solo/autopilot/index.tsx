@@ -175,7 +175,7 @@ const AgentPanelSidebar = (props: {
   stepTimes: Record<string, string>;
   progress: number;
 }) => {
-  const [isCollapsed, setIsCollapsed] = createSignal(false);
+  const [isCollapsed, setIsCollapsed] = createSignal(true);
 
   const doneCount = () => props.agents.filter(a => props.agentStatuses[a.id] === 'done').length;
   const runCount = () => props.agents.filter(
@@ -492,6 +492,7 @@ const SoloAutopilot = () => {
   };
   const [artifactWidth, setArtifactWidth] = createSignal(420);
   const [artifactFloat, setArtifactFloat] = createSignal(false);
+  const [artifactCollapsed, setArtifactCollapsed] = createSignal(true);
   const [artifactFloatPos, setArtifactFloatPos] = createSignal({ x: 0, y: 64 });
   // 展开/折叠状态：key = step.id 或 agentId
   const [expandedSteps, setExpandedSteps] = createSignal<Record<string, boolean>>({});
@@ -502,6 +503,13 @@ const SoloAutopilot = () => {
   const [activeTab, setActiveTab] = createSignal<'chat' | 'flow'>('chat');
   const [artifactFloatWidth, setArtifactFloatWidth] = createSignal(420);
   const [artifactFloatHeight, setArtifactFloatHeight] = createSignal(Math.round(window.innerHeight * 0.78));
+
+  // 产出物有内容时自动展开
+  createEffect(() => {
+    if (artifactsData().length > 0) {
+      setArtifactCollapsed(false);
+    }
+  });
 
   // ─── 计时状态 ──────────────────────────────────────────────────────────────────
   const [elapsedSec, setElapsedSec] = createSignal(0);
@@ -581,6 +589,7 @@ const SoloAutopilot = () => {
     setVisibleSteps([]);
     setArtifacts([]);
     setArtifactsData([]);
+    setArtifactCollapsed(true);
     setProgress(0);
     setOrchestratorText('');
     setDispatchPlan([]);
@@ -1763,8 +1772,8 @@ const SoloAutopilot = () => {
         </Show>
       </div>
 
-      {/* 拖拽调整宽度手柄 */}
-      <Show when={!artifactFloat()}>
+      {/* 拖拽调整宽度手柄 — 仅在展开且非悬浮时显示 */}
+      <Show when={!artifactFloat() && !artifactCollapsed()}>
         <div
           style={{
             width: '6px',
@@ -1781,8 +1790,8 @@ const SoloAutopilot = () => {
         />
       </Show>
 
-      {/* 右列：产出物工作区（嵌入模式） */}
-      <Show when={!artifactFloat()}>
+      {/* 右列：产出物工作区（嵌入展开模式） */}
+      <Show when={!artifactFloat() && !artifactCollapsed()}>
         <div style={{ width: `${artifactWidth()}px`, 'flex-shrink': '0', display: 'flex', 'flex-direction': 'column', overflow: 'hidden' }}>
           <ArtifactWorkspace
             artifacts={artifactsData()}
@@ -1795,7 +1804,52 @@ const SoloAutopilot = () => {
               setArtifactFloatPos({ x: Math.max(0, window.innerWidth - artifactWidth() - 20), y: 64 });
               setArtifactFloat(true);
             }}
+            onCollapse={() => setArtifactCollapsed(true)}
           />
+        </div>
+      </Show>
+
+      {/* 右列：产出物收起态 */}
+      <Show when={!artifactFloat() && artifactCollapsed()}>
+        <div
+          onClick={() => setArtifactCollapsed(false)}
+          title="展开产出物面板"
+          style={{
+            width: '36px',
+            'flex-shrink': '0',
+            display: 'flex',
+            'flex-direction': 'column',
+            'align-items': 'center',
+            padding: '10px 0',
+            gap: '8px',
+            cursor: 'pointer',
+            border: `1px solid ${themeColors.border}`,
+            'border-radius': '8px',
+            background: themeColors.surface,
+            'user-select': 'none',
+          }}
+        >
+          <FileText size={15} style={{ color: themeColors.textMuted }} />
+          <span style={{
+            'writing-mode': 'vertical-rl',
+            'font-size': '11px',
+            color: themeColors.textMuted,
+            'letter-spacing': '2px',
+          }}>
+            产出物
+          </span>
+          <Show when={artifactsData().length > 0}>
+            <span style={{
+              'font-size': '10px',
+              background: chartColors.success,
+              color: 'white',
+              'border-radius': '9999px',
+              padding: '1px 5px',
+              'font-weight': '600',
+            }}>
+              {artifactsData().length}
+            </span>
+          </Show>
         </div>
       </Show>
 

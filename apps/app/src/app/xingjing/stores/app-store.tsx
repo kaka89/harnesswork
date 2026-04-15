@@ -89,10 +89,10 @@ interface AppState {
 }
 
 const DEFAULT_LLM_CONFIG: LLMConfig = {
-  modelName: 'GPT-4o',
-  modelID: 'gpt-4o',
-  providerID: 'openai',
-  apiUrl: 'https://api.openai.com/v1',
+  modelName: 'DeepSeek-V3',
+  modelID: 'deepseek-chat',
+  providerID: 'deepseek',
+  apiUrl: 'https://api.deepseek.com/v1',
   apiKey: '',
 };
 

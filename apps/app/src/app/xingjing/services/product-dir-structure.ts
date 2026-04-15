@@ -78,6 +78,262 @@ function readmeFile(title: string, description: string): string {
   return `# ${title}\n\n${description}\n`;
 }
 
+// ─── 知识规约内容生成 ─────────────────────────────────────────────────────────
+
+type ProductMode = 'solo' | 'team';
+interface PathCtx { mode: ProductMode; pl: string; domain: string; app: string; }
+function appPfx(ctx: PathCtx): string { return `apps/${ctx.app}`; }
+
+/** 生成产品根目录 AGENTS.md（角色-目录映射、文档链路、命名规范） */
+function buildAgentsMd(ctx: PathCtx): string {
+  const a = appPfx(ctx);
+  const { pl, domain, mode } = ctx;
+  const tree = mode === 'solo' ? [
+    `├── governance-standards/    平台层`,
+    `├── ${pl}/                   产品线层`,
+    `├── ${domain}/               领域层`,
+    `├── ${a}/                    应用层`,
+    `├── .opencode/               Agent + Skill`,
+    `└── AGENTS.md`,
+  ] : [
+    `├── ${pl}/                   产品线仓库`,
+    `├── ${domain}/               领域仓库`,
+    `├── ${a}/                    应用仓库`,
+    `├── .opencode/               Agent + Skill`,
+    `└── AGENTS.md`,
+  ];
+  return [
+    `# AGENTS.md — 知识管理规约`,
+    ``,
+    `> 所有 Agent 在生成任何文档前 **MUST** 遵循此规约。`,
+    ``,
+    `## 目录结构（${mode === 'solo' ? 'Solo Monorepo' : 'Team 多仓库'}）`,
+    ``,
+    '```',
+    ...tree,
+    '```',
+    ``,
+    `## 角色-目录所有权`,
+    ``,
+    `| Agent | 输出目录 | 产出类型 |`,
+    `|-------|---------|---------|`,
+    `| product-brain | \`${pl}/strategy/prd/\` \`${a}/docs/product/prd/\` \`${pl}/docs/journeys/\` \`${pl}/knowledge/scenarios/\` \`${pl}/docs/help-center/guides/\` | PRD, 战略PRD, JOURNEY, SCENARIO, GUIDE, Roadmap |`,
+    `| eng-brain | \`${a}/docs/product/architecture/\` \`${a}/docs/product/contracts/\` \`${a}/docs/features/\` \`${a}/docs/delivery/plan/\` \`${a}/docs/delivery/task/\` | SDD, MODULE, OpenAPI, FORM, PLAN, TASK, Helm |`,
+    `| growth-brain | \`${pl}/strategy/research/\` \`${pl}/docs/help-center/\` | BENCHMARK, MARKET, CUSTOMER, FAQ, RN |`,
+    `| ops-brain | \`${a}/docs/ops/runbook/\` \`${a}/docs/delivery/releases/\` \`${domain}/docs/qa/reports/\` | Runbook, RELEASE, TR |`,
+    ``,
+    `## 文档链路约束`,
+    ``,
+    '```',
+    `PRD (approved) → SDD (approved) → MODULE (approved) → PLAN → TASK → Code`,
+    '```',
+    ``,
+    `## 命名规范`,
+    ``,
+    `| 类别 | 格式 | 示例 |`,
+    `|------|------|------|`,
+    `| 基线 | \`{TYPE}-{NNN}-{name}.md\` | PRD-001-user-login.md |`,
+    `| 交付 | \`{TYPE}-{VER}-{NNN}-{name}.md\` | PLAN-v1.0-001-mvp.md |`,
+    `| 研究 | \`{TYPE}-{YYYYQN}-{NNN}-{name}.md\` | BENCHMARK-2026Q2-001-x.md |`,
+    ``,
+    `## 台账规则`,
+    ``,
+    `生成文档后 **MUST** 更新同目录 \`_index.yaml\`。`,
+    `所有 Agent 生成文档前 **MUST** 调用 \`knowledge-conventions\` skill。`,
+    ``,
+  ].join('\n');
+}
+
+/** 生成增强版 Agent 定义（含知识产出目录映射表） */
+function enhancedAgentContent(
+  id: string, name: string, emoji: string,
+  color: string, bgColor: string, borderColor: string,
+  skills: string[], desc: string, outputTable: string,
+): string {
+  return [
+    '---', `id: ${id}`, `name: ${name}`, `role: ${name}`,
+    `emoji: "${emoji}"`, `color: "${color}"`, `bgColor: "${bgColor}"`, `borderColor: "${borderColor}"`,
+    'skills:', ...skills.map(s => `  - ${s}`),
+    '---', '', desc, '',
+    '## 知识产出规则（CRITICAL）', '',
+    '在生成任何文档之前，**MUST** 先调用 `knowledge-conventions` skill。', '',
+    '### 我的输出目录', '',
+    '| 文档类型 | 输出路径 | 命名格式 |',
+    '|---------|---------|---------|',
+    outputTable, '',
+    '### 生成后检查清单', '',
+    '- [ ] 文件在正确目录',
+    '- [ ] 命名符合规范',
+    '- [ ] 已更新 _index.yaml 台账',
+    '- [ ] 上游文档状态满足要求',
+    '',
+  ].join('\n');
+}
+
+function productBrainTable(ctx: PathCtx): string {
+  const a = appPfx(ctx); const { pl } = ctx;
+  return [
+    `| PRD | \`${a}/docs/product/prd/\` | PRD-{NNN}-{name}.md |`,
+    `| 战略PRD | \`${pl}/strategy/prd/\` | SPRD-{NNN}-{name}.md |`,
+    `| JOURNEY | \`${a}/docs/journeys/\` 或 \`${pl}/docs/journeys/\` | JOURNEY-{NNN}-{name}.md |`,
+    `| SCENARIO | \`${pl}/knowledge/scenarios/\` | SCENARIO-{NNN}-{name}.md |`,
+    `| GUIDE | \`${pl}/docs/help-center/guides/\` | GUIDE-{NNN}-{name}.md |`,
+    `| Roadmap | \`${a}/docs/delivery/roadmap.md\` | 原地更新 |`,
+  ].join('\n');
+}
+
+function engBrainTable(ctx: PathCtx): string {
+  const a = appPfx(ctx);
+  return [
+    `| SDD | \`${a}/docs/product/architecture/\` | SDD-{NNN}-{name}.md |`,
+    `| MODULE | \`${a}/docs/product/contracts/\` | MODULE-{NNN}-{name}.md |`,
+    `| OpenAPI | \`${a}/docs/product/contracts/openapi/\` | {service}-{ver}.yaml |`,
+    `| FORM | \`${a}/docs/features/{feat}/forms/{form}/\` | FORM-{NNN}-{name}.md |`,
+    `| schema | \`${a}/docs/features/{feat}/forms/{form}/\` | schema.yaml |`,
+    `| PLAN | \`${a}/docs/delivery/plan/\` | PLAN-{VER}-{NNN}-{name}.md |`,
+    `| TASK | \`${a}/docs/delivery/task/\` | TASK-{VER}-{NNN}-{NN}-{name}.md |`,
+    `| Helm | \`${a}/helm/values/\` | {env}.yaml |`,
+  ].join('\n');
+}
+
+function growthBrainTable(ctx: PathCtx): string {
+  const { pl } = ctx;
+  return [
+    `| BENCHMARK | \`${pl}/strategy/research/\` | BENCHMARK-{YYYYQN}-{NNN}-{name}.md |`,
+    `| MARKET | \`${pl}/strategy/research/\` | MARKET-{YYYYQN}-{NNN}-{name}.md |`,
+    `| CUSTOMER | \`${pl}/strategy/research/\` | CUSTOMER-{YYYYQN}-{NNN}-{name}.md |`,
+    `| GUIDE | \`${pl}/docs/help-center/guides/\` | GUIDE-{NNN}-{name}.md |`,
+    `| FAQ | \`${pl}/docs/help-center/faq/\` | FAQ-{topic}.md |`,
+    `| RN | \`${pl}/docs/help-center/release-notes/\` | RN-{version}.md |`,
+    `| GAP | \`${pl}/strategy/gap-analysis/\` | GAP-{YYYYQN}-{NNN}-{name}.md |`,
+  ].join('\n');
+}
+
+function opsBrainTable(ctx: PathCtx): string {
+  const a = appPfx(ctx); const { domain } = ctx;
+  return [
+    `| Runbook | \`${a}/docs/ops/runbook/\` | deployment.md / incident-response.md / monitoring.md |`,
+    `| RELEASE | \`${a}/docs/delivery/releases/\` | RELEASE-{version}.md |`,
+    `| TR | \`${domain}/docs/qa/reports/\` | TR-{VER}-{NNN}-{name}.md |`,
+    `| 风险登记 | \`${a}/docs/delivery/risk-register.md\` | 原地更新 |`,
+  ].join('\n');
+}
+
+/** 生成 knowledge-conventions Skill 完整内容 */
+function buildKnowledgeSkill(ctx: PathCtx): string {
+  const a = appPfx(ctx);
+  const { pl, domain, mode } = ctx;
+  return [
+    '---',
+    'name: knowledge-conventions',
+    'description: 知识管理规约 — 在生成任何文档前调用此 Skill 获取正确的放置路径和命名格式',
+    '---', '',
+    '# 知识管理规约', '',
+    '> **调用时机**：在生成任何文档前 MUST 调用本 Skill 确认放置路径、命名格式、上游状态和台账更新。', '',
+    `## 六层路径速查（${mode === 'solo' ? 'Solo' : 'Team'}）`, '',
+    '| 层级 | 路径 | 职责 |',
+    '|------|------|------|',
+    '| 平台层 | `governance-standards/` | Schema、模板、质量门禁 |',
+    `| 产品线层 | \`${pl}/\` | 跨域知识、战略PRD、帮助中心 |`,
+    `| 领域层 | \`${domain}/\` | 域内知识、测试资产 |`,
+    `| 应用层 | \`${a}/docs/\` | PRD/SDD/MODULE/PLAN/TASK |`,
+    `| 特性层 | \`${a}/docs/features/{feature}/\` | 特性聚合 |`,
+    `| 表单层 | \`${a}/docs/features/{feature}/forms/{form}/\` | DDD 最小颗粒度 |`,
+    '',
+    '## 基线文档放置（原地更新）', '',
+    '| 类型 | 路径 | 命名 | 台账 |',
+    '|------|------|------|------|',
+    `| PRD | \`${a}/docs/product/prd/\` | PRD-{NNN}-{name}.md | _index.yaml |`,
+    `| SDD | \`${a}/docs/product/architecture/\` | SDD-{NNN}-{name}.md | _index.yaml |`,
+    `| MODULE | \`${a}/docs/product/contracts/\` | MODULE-{NNN}-{name}.md | _index.yaml |`,
+    `| OpenAPI | \`${a}/docs/product/contracts/openapi/\` | {service}-{ver}.yaml | — |`,
+    `| FORM | \`${a}/docs/features/{feat}/forms/{form}/\` | FORM-{NNN}-{name}.md | — |`,
+    `| schema | \`${a}/docs/features/{feat}/forms/{form}/\` | schema.yaml | — |`,
+    `| JOURNEY | \`${a}/docs/journeys/\` 或 \`${pl}/docs/journeys/\` | JOURNEY-{NNN}-{name}.md | — |`,
+    `| SCENARIO | \`${pl}/knowledge/scenarios/\` | SCENARIO-{NNN}-{name}.md | — |`,
+    `| GLOSSARY | \`${pl}/knowledge/GLOSSARY.md\` 或 \`${domain}/knowledge/GLOSSARY.md\` | 原地更新 | — |`,
+    `| Runbook | \`${a}/docs/ops/runbook/\` | {type}.md（原地更新） | — |`,
+    `| GUIDE | \`${pl}/docs/help-center/guides/\` | GUIDE-{NNN}-{name}.md | — |`,
+    `| FAQ | \`${pl}/docs/help-center/faq/\` | FAQ-{topic}.md | — |`,
+    `| TS | \`${pl}/docs/help-center/troubleshooting/\` | TS-{NNN}-{name}.md | — |`,
+    '',
+    '## 过程文档 — 交付类（按版本归档）', '',
+    '| 类型 | 路径 | 命名 | 台账 |',
+    '|------|------|------|------|',
+    `| PLAN | \`${a}/docs/delivery/plan/\` | PLAN-{VER}-{NNN}-{name}.md | _index.yaml |`,
+    `| TASK | \`${a}/docs/delivery/task/\` | TASK-{VER}-{NNN}-{NN}-{name}.md | _index.yaml |`,
+    `| RELEASE | \`${a}/docs/delivery/releases/\` | RELEASE-{version}.md | _index.yaml |`,
+    `| TR | \`${domain}/docs/qa/reports/\` | TR-{VER}-{NNN}-{name}.md | _index.yaml |`,
+    `| TC | \`${domain}/docs/qa/test-cases/\` | TC-{NNN}-{name}.md | _index.yaml |`,
+    `| TP | \`${domain}/docs/qa/test-plans/\` | TP-{NNN}-{name}.md | — |`,
+    '',
+    '## 过程文档 — 研究类（按季度归档）', '',
+    '| 类型 | 路径 | 命名 | 台账 |',
+    '|------|------|------|------|',
+    `| BENCHMARK | \`${pl}/strategy/research/\` | BENCHMARK-{YYYYQN}-{NNN}-{name}.md | _index.yaml |`,
+    `| MARKET | \`${pl}/strategy/research/\` | MARKET-{YYYYQN}-{NNN}-{name}.md | _index.yaml |`,
+    `| CUSTOMER | \`${pl}/strategy/research/\` | CUSTOMER-{YYYYQN}-{NNN}-{name}.md | _index.yaml |`,
+    `| GAP | \`${pl}/strategy/gap-analysis/\` | GAP-{YYYYQN}-{NNN}-{name}.md | — |`,
+    `| RN | \`${pl}/docs/help-center/release-notes/\` | RN-{version}.md | — |`,
+    '',
+    '## 文档链路约束', '',
+    '```',
+    'PRD (approved) → SDD (approved) → MODULE (approved) → PLAN → TASK → Code',
+    '```', '',
+    '变更已有功能：直接更新活文档，递增 revision，记录 change_history。', '',
+    '## 台账 _index.yaml 结构', '',
+    '```yaml',
+    'items:',
+    '  - id: PRD-001',
+    '    title: 用户登录',
+    '    status: draft    # draft | in-review | approved | deprecated',
+    '    owner: product-brain',
+    '    refs: []',
+    '    updated: 2026-04-15',
+    '```', '',
+    '## knowledge/ lifecycle 管理', '',
+    '```yaml',
+    '---',
+    'lifecycle: living    # living | stable',
+    'last_updated: 2026-04-15',
+    'confirmed_by: null   # stable 时填写',
+    '---',
+    '```', '',
+  ].join('\n');
+}
+
+/** 生成产品工作区的全部知识规约文件（AGENTS.md + 4 Agent + Skill） */
+function buildKnowledgeAgentFiles(ctx: PathCtx): ProductFileEntry[] {
+  return [
+    { path: 'AGENTS.md', content: buildAgentsMd(ctx) },
+    { path: '.opencode/agents/product-brain.md', content: enhancedAgentContent(
+      'product-brain', 'AI产品搭档', '🧠', '#1264e5', '#e6f0ff', '#91c5ff',
+      ['需求分析', '假设拆解', '用户洞察', '功能优先级', 'knowledge-conventions'],
+      '以产品经理视角分析目标，拆解为可验证的假设和功能点。',
+      productBrainTable(ctx),
+    ) },
+    { path: '.opencode/agents/eng-brain.md', content: enhancedAgentContent(
+      'eng-brain', 'AI工程搭档', '⚙️', '#08979c', '#e6fffb', '#87e8de',
+      ['技术方案', '代码实现', 'Bug 修复', '部署执行', 'knowledge-conventions'],
+      '选择最简技术方案，直接生成可运行代码，无需评审。',
+      engBrainTable(ctx),
+    ) },
+    { path: '.opencode/agents/growth-brain.md', content: enhancedAgentContent(
+      'growth-brain', 'AI增长搭档', '📈', '#d46b08', '#fff7e6', '#ffd591',
+      ['用户获取', '留存策略', '文案生成', '社区运营', 'knowledge-conventions'],
+      '制定增长策略，生成营销文案，规划用户触达方案。',
+      growthBrainTable(ctx),
+    ) },
+    { path: '.opencode/agents/ops-brain.md', content: enhancedAgentContent(
+      'ops-brain', 'AI运营搭档', '🔧', '#389e0d', '#f6ffed', '#b7eb8f',
+      ['数据监控', '发布管理', '客服回复', '故障处理', 'knowledge-conventions'],
+      '监控生产环境，处理用户反馈，执行日常运营任务。',
+      opsBrainTable(ctx),
+    ) },
+    { path: '.opencode/skills/knowledge-conventions/SKILL.md', content: buildKnowledgeSkill(ctx) },
+  ];
+}
+
 // ─── §7.1 平台层 governance-standards/ ─────────────────────────────────────
 
 function buildGovernanceStandards(): ProductFileEntry[] {
@@ -439,6 +695,8 @@ export function buildTeamRootConfig(
         '',
       ].join('\n'),
     },
+    // 知识规约文件（AGENTS.md + Agent + Skill）
+    ...buildKnowledgeAgentFiles({ mode: 'team', pl: plSlug, domain: domainSlugs[0] ?? 'default-domain', app: appSlugs[0] ?? 'default-app' }),
   ];
 }
 
@@ -487,11 +745,8 @@ export function buildProductFileList(
     { path: '.xingjing/solo/knowledge/.gitkeep', content: EMPTY },
     { path: '.xingjing/solo/feedbacks/.gitkeep', content: EMPTY },
     { path: '.xingjing/solo/tasks/.gitkeep', content: EMPTY },
-    // .opencode/agents/ — Solo Agent 定义文件
-    { path: '.opencode/agents/product-brain.md', content: agentMdContent('product-brain', 'AI产品搭档', '🧠', '#1264e5', '#e6f0ff', '#91c5ff', ['需求分析', '假设拆解', '用户洞察', '功能优先级'], '以产品经理视角分析目标，拆解为可验证的假设和功能点') },
-    { path: '.opencode/agents/eng-brain.md', content: agentMdContent('eng-brain', 'AI工程搭档', '⚙️', '#08979c', '#e6fffb', '#87e8de', ['技术方案', '代码实现', 'Bug 修复', '部署执行'], '选择最简技术方案，直接生成可运行代码，无需评审') },
-    { path: '.opencode/agents/growth-brain.md', content: agentMdContent('growth-brain', 'AI增长搭档', '📈', '#d46b08', '#fff7e6', '#ffd591', ['用户获取', '留存策略', '文案生成', '社区运营'], '制定增长策略，生成营销文案，规划用户触达方案') },
-    { path: '.opencode/agents/ops-brain.md', content: agentMdContent('ops-brain', 'AI运营搭档', '🔧', '#389e0d', '#f6ffed', '#b7eb8f', ['数据监控', '发布管理', '客服回复', '故障处理'], '监控生产环境，处理用户反馈，执行日常运营任务') },
+    // .opencode/agents/ + .opencode/skills/ + AGENTS.md — 知识规约文件
+    ...buildKnowledgeAgentFiles({ mode: 'solo', pl, domain: `${productCode}-domain`, app }),
     // §8.3 根目录
     ...buildMonorepoRoot(productName),
     // §7.1 平台层

@@ -10,6 +10,10 @@
  */
 import { callAgent, type CallAgentOptions } from './opencode-client';
 import { discoverAgents, type RegisteredAgent } from './agent-registry';
+import { retrieveKnowledge } from './knowledge-retrieval';
+import { recallRelevantContext } from './memory-recall';
+import type { SkillApiAdapter } from './knowledge-behavior';
+import { sinkAgentOutput } from './knowledge-sink';
 
 // ─── Agent 定义 ─────────────────────────────────────────────────
 
@@ -199,6 +203,8 @@ export interface OrchestratedRunOpts {
   model?: { providerID: string; modelID: string };
   /** 注入 callAgent 实现，优先使用 store.actions.callAgent（复用 OpenWork client）*/
   callAgentFn?: (opts: CallAgentOptions) => Promise<void>;
+  /** OpenWork Skill API 适配器（用于知识检索） */
+  skillApi?: SkillApiAdapter | null;
   /** 工具权限请求回调，透传给各 Agent 的 callAgent 调用 */
   onPermissionAsked?: CallAgentOptions['onPermissionAsked'];
   onOrchestrating?: (text: string) => void;
@@ -220,6 +226,29 @@ export async function runOrchestratedAutopilot(
   const { workDir, model } = opts;
   const invoke = opts.callAgentFn ?? callAgent;
 
+  // ── 知识检索与回忆（异步并行，不阻塞主流程）──
+  let knowledgeContext = '';
+  let recallContext = '';
+  try {
+    const [knowledgeResult, recallResult] = await Promise.all([
+      workDir
+        ? retrieveKnowledge({
+            workDir,
+            skillApi: opts.skillApi ?? null,
+            query: goal,
+            scene: 'autopilot',
+          })
+        : Promise.resolve(''),
+      workDir
+        ? recallRelevantContext(workDir, goal).then(r => r.contextText)
+        : Promise.resolve(''),
+    ]);
+    knowledgeContext = knowledgeResult;
+    recallContext = recallResult;
+  } catch (e) {
+    console.warn('[autopilot-executor] knowledge/recall retrieval failed:', e);
+  }
+
   // Agent 动态发现：如果调用方已提供 Agent 列表则直接使用，否则从文件 + 内置兜底动态发现
   const availableAgents: AutopilotAgent[] = opts.availableAgents.length > 0
     ? opts.availableAgents
@@ -240,6 +269,8 @@ export async function runOrchestratedAutopilot(
       systemPrompt: orchestratorSystemPrompt,
       userPrompt: goal,
       model,
+      knowledgeContext,
+      recallContext,
       onPermissionAsked: opts.onPermissionAsked,
       onText: (accumulated) => {
         orchestratorOutput = accumulated;
@@ -299,6 +330,8 @@ export async function runOrchestratedAutopilot(
           systemPrompt: agentDef.systemPrompt,
           userPrompt: task,
           model,
+          knowledgeContext,
+          // 子 Agent 不重复注入回忆上下文（已在 Orchestrator 层使用）
           // 传递 OpenCode Agent ID（若来自文件发现则有值，否则 undefined）
           agentId: (agentDef as RegisteredAgent).opencodeAgentId,
           onPermissionAsked: opts.onPermissionAsked,
@@ -310,6 +343,15 @@ export async function runOrchestratedAutopilot(
             try {
               results[agentId] = fullText;
               opts.onAgentStatus?.(agentId, 'done');
+              // 异步沉淀 Agent 产出
+              void sinkAgentOutput({
+                output: fullText,
+                agentId,
+                sessionId: `autopilot-${Date.now()}`,
+                workDir: workDir ?? '',
+                skillApi: opts.skillApi ?? null,
+                goal,
+              });
             } finally {
               safeResolve();
             }

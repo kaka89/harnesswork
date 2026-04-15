@@ -544,6 +544,10 @@ export interface CallAgentOptions {
   onDone?: (fullText: string) => void;
   /** 错误回调 */
   onError?: (errMsg: string) => void;
+  /** 三源知识上下文（由 knowledge-retrieval 检索后注入，Markdown 格式） */
+  knowledgeContext?: string;
+  /** 历史会话回忆上下文（由 memory-recall 检索后注入，Markdown 格式） */
+  recallContext?: string;
   /** 工具权限请求回调（用户决定是否授权）。
    *  不提供时沿用自动拒绝兜底行为。
    *  提供时 SSE 循环将暂停等待 resolve 后继续。*/
@@ -835,9 +839,13 @@ async function runAgentSession(
 
     // ── 发送 prompt（仅首次调用或 Layer 2 重试时）──
     if (sendPrompt) {
-      const fullPrompt = opts.systemPrompt
-        ? `${opts.systemPrompt}\n\n---\n\n${opts.userPrompt}`
-        : opts.userPrompt;
+      // 合成 prompt：system + 知识上下文 + 回忆上下文 + 用户输入
+      const promptParts: string[] = [];
+      if (opts.systemPrompt) promptParts.push(opts.systemPrompt);
+      if (opts.knowledgeContext) promptParts.push(`## 相关知识上下文\n${opts.knowledgeContext}`);
+      if (opts.recallContext) promptParts.push(`## 相关历史上下文\n${opts.recallContext}`);
+      promptParts.push(opts.userPrompt);
+      const fullPrompt = promptParts.join('\n\n---\n\n');
 
       void (async () => {
         try {
@@ -1025,9 +1033,13 @@ export async function callAgentDirect(
   const modelId = llmConfig.modelID || 'deepseek-chat';
   const isAnthropic = llmConfig.providerID === 'anthropic';
 
-  // 构建消息列表
+  // 构建消息列表（注入知识上下文和回忆上下文）
   const systemContent = opts.systemPrompt ?? '';
-  const userContent = opts.userPrompt;
+  const userParts: string[] = [];
+  if (opts.knowledgeContext) userParts.push(`## 相关知识上下文\n${opts.knowledgeContext}`);
+  if (opts.recallContext) userParts.push(`## 相关历史上下文\n${opts.recallContext}`);
+  userParts.push(opts.userPrompt);
+  const userContent = userParts.join('\n\n---\n\n');
   const messages: Array<{ role: string; content: string }> = [];
   if (!isAnthropic && systemContent) {
     messages.push({ role: 'system', content: systemContent });

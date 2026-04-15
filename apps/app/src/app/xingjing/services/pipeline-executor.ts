@@ -14,6 +14,10 @@ import { topologicalSort } from './pipeline-config';
 import { discoverAgents } from './agent-registry';
 import type { CallAgentOptions } from './opencode-client';
 import { callAgent } from './opencode-client';
+import { retrieveKnowledge } from './knowledge-retrieval';
+import { recallRelevantContext } from './memory-recall';
+import type { SkillApiAdapter } from './knowledge-behavior';
+import { sinkAgentOutput } from './knowledge-sink';
 
 // ─── 执行选项 ─────────────────────────────────────────────────
 
@@ -28,6 +32,8 @@ export interface PipelineRunOpts {
   model?: { providerID: string; modelID: string };
   /** 注入 callAgent 实现（复用 store.actions.callAgent） */
   callAgentFn?: (opts: CallAgentOptions) => Promise<void>;
+  /** OpenWork Skill API 适配器（用于知识检索） */
+  skillApi?: SkillApiAdapter | null;
   /** 工具权限请求回调 */
   onPermissionAsked?: CallAgentOptions['onPermissionAsked'];
 
@@ -66,6 +72,29 @@ export async function runPipeline(opts: PipelineRunOpts): Promise<void> {
   const invoke = opts.callAgentFn ?? callAgent;
   const maxRetries = config.maxRetries ?? 2;
 
+  // ── 知识检索与回忆（Pipeline 级别，仅执行一次，注入所有 Stage）──
+  let knowledgeContext = '';
+  let recallContext = '';
+  try {
+    const [knowledgeResult, recallResult] = await Promise.all([
+      workDir
+        ? retrieveKnowledge({
+            workDir,
+            skillApi: opts.skillApi ?? null,
+            query: goal,
+            scene: 'pipeline',
+          })
+        : Promise.resolve(''),
+      workDir
+        ? recallRelevantContext(workDir, goal).then(r => r.contextText)
+        : Promise.resolve(''),
+    ]);
+    knowledgeContext = knowledgeResult;
+    recallContext = recallResult;
+  } catch (e) {
+    console.warn('[pipeline-executor] knowledge/recall retrieval failed:', e);
+  }
+
   // 拓扑排序分层
   const layers = topologicalSort(config.stages);
   if (layers.length === 0 && config.stages.length > 0) {
@@ -92,7 +121,7 @@ export async function runPipeline(opts: PipelineRunOpts): Promise<void> {
         parallelStages.map((stage) =>
           executeStage(stage, {
             goal, workDir, model, invoke, maxRetries, agents: agentMap,
-            results, opts,
+            results, opts, knowledgeContext, recallContext,
           }),
         ),
       );
@@ -102,7 +131,7 @@ export async function runPipeline(opts: PipelineRunOpts): Promise<void> {
     for (const stage of sequentialStages) {
       await executeStage(stage, {
         goal, workDir, model, invoke, maxRetries, agents: agentMap,
-        results, opts,
+        results, opts, knowledgeContext, recallContext,
       });
     }
   }
@@ -121,13 +150,17 @@ interface StageExecContext {
   agents: Map<string, { id: string; systemPrompt: string; opencodeAgentId?: string }>;
   results: Record<string, string>;
   opts: PipelineRunOpts;
+  /** 知识上下文（Pipeline 级别统一检索） */
+  knowledgeContext: string;
+  /** 回忆上下文（Pipeline 级别统一检索） */
+  recallContext: string;
 }
 
 async function executeStage(
   stage: PipelineStage,
   ctx: StageExecContext,
 ): Promise<void> {
-  const { goal, workDir, model, invoke, maxRetries, agents, results, opts } = ctx;
+  const { goal, workDir, model, invoke, maxRetries, agents, results, opts, knowledgeContext, recallContext } = ctx;
 
   // 1. 门控检查（supervised 模式下 await-approval 暂停）
   if (stage.gate === 'await-approval') {
@@ -184,6 +217,8 @@ async function executeStage(
           userPrompt,
           model,
           agentId,
+          knowledgeContext,
+          recallContext,
           onPermissionAsked: opts.onPermissionAsked,
           onText: (accumulated) => {
             opts.onStageStream?.(stage.id, accumulated);
@@ -204,6 +239,17 @@ async function executeStage(
       stage.outputStatus = 'success';
       results[stage.id] = stageResult;
       opts.onStageComplete?.(stage.id, stageResult);
+
+      // 异步沉淀 Agent 产出
+      void sinkAgentOutput({
+        output: stageResult,
+        agentId: stage.agent,
+        sessionId: `pipeline-${stage.id}-${Date.now()}`,
+        workDir: workDir ?? '',
+        skillApi: opts.skillApi ?? null,
+        goal,
+      });
+
       return;
     } catch (e) {
       lastError = e instanceof Error ? e.message : String(e);

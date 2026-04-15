@@ -9,7 +9,7 @@
  * - 通过 agent-registry.ts 统一管理
  */
 import { callAgent, type CallAgentOptions } from './opencode-client';
-import { discoverAgents } from './agent-registry';
+import { discoverAgents, type RegisteredAgent } from './agent-registry';
 
 // ─── Agent 定义 ─────────────────────────────────────────────────
 
@@ -299,6 +299,8 @@ export async function runOrchestratedAutopilot(
           systemPrompt: agentDef.systemPrompt,
           userPrompt: task,
           model,
+          // 传递 OpenCode Agent ID（若来自文件发现则有值，否则 undefined）
+          agentId: (agentDef as RegisteredAgent).opencodeAgentId,
           onPermissionAsked: opts.onPermissionAsked,
           onText: (accumulated) => {
             opts.onAgentStatus?.(agentId, 'working');
@@ -365,6 +367,8 @@ export async function runDirectAgent(
       systemPrompt: agent.systemPrompt,
       userPrompt: prompt,
       model: opts.model,
+      // 传递 OpenCode Agent ID（若来自文件发现则有值）
+      agentId: (agent as RegisteredAgent).opencodeAgentId,
       onPermissionAsked: opts.onPermissionAsked,
       onText: (accumulated) => {
         opts.onStatus?.('working');

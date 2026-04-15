@@ -510,6 +510,8 @@ export interface GlobalSettings {
     apiKey: string;
   };
   llmProviderKeys?: Record<string, string>; // per-provider API Keys
+  /** 允许 AI 自动调用的工具名称列表（不在列表中的工具将被拒绝） */
+  allowedTools?: string[];
 }
 
 /**

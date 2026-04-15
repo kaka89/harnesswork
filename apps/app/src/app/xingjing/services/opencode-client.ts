@@ -549,7 +549,7 @@ export interface CallAgentOptions {
   /** 历史会话回忆上下文（由 memory-recall 检索后注入，Markdown 格式） */
   recallContext?: string;
   /** 工具权限请求回调（用户决定是否授权）。
-   *  不提供时沿用自动拒绝兜底行为。
+   *  不提供时沿用自动拒绝兖底行为。
    *  提供时 SSE 循环将暂停等待 resolve 后继续。*/
   onPermissionAsked?: (params: {
     permissionId: string;
@@ -559,6 +559,10 @@ export interface CallAgentOptions {
     input?: string;
     resolve: (action: 'once' | 'always' | 'reject') => void;
   }) => void;
+  /** 自动授权的工具名称列表。
+   *  设置后，session 创建时为每个工具生成 allow 规则，
+   *  permission.asked 中自动 reply 'always'。*/
+  autoApproveTools?: string[];
 }
 
 /**
@@ -613,10 +617,18 @@ async function runAgentSession(
   // 新建 session（Layer 2 或首次调用）
   if (!sid) {
     try {
-      // 权限策略：默认 deny-all 防止工具调用卡死 SSE；enableTools=true 时放开使用 Agent 默认权限
-      const sessionPermission = opts.enableTools
-        ? undefined
-        : [{ permission: '*', pattern: '*', action: 'deny' }];
+      // 权限策略优先级：autoApproveTools > enableTools > deny-all
+      const sessionPermission = (() => {
+        if (opts.autoApproveTools?.length) {
+          // 指定工具自动授权 + 其余拒绝
+          return [
+            ...opts.autoApproveTools.map(t => ({ permission: t, pattern: '*', action: 'allow' })),
+            { permission: '*', pattern: '*', action: 'deny' },
+          ];
+        }
+        if (opts.enableTools) return undefined; // 全部放开
+        return [{ permission: '*', pattern: '*', action: 'deny' }]; // 全部拒绝
+      })();
       const result = await client.session.create({
         body: {
           ...(opts.title ? { title: opts.title } : { title: `xingjing-${Date.now()}` }),
@@ -783,6 +795,24 @@ async function runAgentSession(
             const evtSid = typeof p.sessionID === 'string' ? p.sessionID : null;
             if (evtSid && evtSid !== finalSid) continue;
             const permId = typeof p.id === 'string' ? p.id : null;
+            const toolName = typeof p.tool === 'string' ? p.tool : '';
+          
+            // 自动授权：工具名在白名单中 → 静默 reply 'always'
+            if (permId && opts.autoApproveTools?.length) {
+              const approved = opts.autoApproveTools.includes(toolName);
+              if (approved) {
+                console.log(`[xingjing-diag] permission.asked auto-approved: tool=${toolName}, sid=${finalSid}`);
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                void (getClient().permission as any).reply({ requestID: permId, reply: 'always' }).catch(() => {});
+                continue;
+              }
+              // 不在白名单：自动拒绝
+              console.log(`[xingjing-diag] permission.asked auto-rejected: tool=${toolName}, sid=${finalSid}`);
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              void (getClient().permission as any).reply({ requestID: permId, reply: 'reject' }).catch(() => {});
+              continue;
+            }
+          
             if (permId && opts.onPermissionAsked) {
               // 有回调：暂停 SSE 循环，等待用户在 UI 上做决策
               const action = await new Promise<'once' | 'always' | 'reject'>((res) => {
@@ -798,7 +828,7 @@ async function runAgentSession(
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               void (getClient().permission as any).reply({ requestID: permId, reply: action }).catch(() => {});
             } else if (permId) {
-              // 无回调兜底：自动拒绝，model 继续以纯文本生成响应
+              // 无回调兖底：自动拒绝，model 继续以纯文本生成响应
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               void (getClient().permission as any).reply({ requestID: permId, reply: 'reject' }).catch(() => {});
             }
@@ -854,7 +884,8 @@ async function runAgentSession(
             sessionID: finalSid,
             directory: opts.directory ?? (_directory || undefined),
             ...(opts.model ? { model: opts.model } : {}),
-            tools: {},  // 禁用所有工具，xingjing 虚拟 Agent 只需文本输出
+            // 不传 tools 参数：工具调用由 session 级权限规则控制。
+            // 传 tools:{} 会导致 OpenCode 状态机无法从 busy 转为 idle，session 永远不完成。
             parts: [{ type: 'text', text: fullPrompt }],
           });
         } catch {

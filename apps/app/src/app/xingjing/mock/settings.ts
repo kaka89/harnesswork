@@ -94,6 +94,22 @@ export const modelOptions: ModelOption[] = [
   },
 ];
 
+// ==================== MCP 工具定义 ====================
+
+export interface BuiltinToolDef {
+  name: string;       // OpenCode 工具名称
+  label: string;      // 展示名称
+  description: string; // 功能描述
+  category: 'builtin'; // 固定分类
+}
+
+export const builtinTools: BuiltinToolDef[] = [
+  { name: 'bash',  label: 'Shell 命令', description: '执行终端命令（如 git、npm、ls 等）', category: 'builtin' },
+  { name: 'read',  label: '读取文件',   description: '读取项目中的文件内容',              category: 'builtin' },
+  { name: 'write', label: '写入文件',   description: '创建或覆盖文件',                  category: 'builtin' },
+  { name: 'edit',  label: '编辑文件',   description: '对已有文件进行局部修改',            category: 'builtin' },
+];
+
 // ==================== Git 仓库配置 ====================
 
 export interface GitRepoConfig {

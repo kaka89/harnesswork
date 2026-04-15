@@ -99,6 +99,9 @@ export default function XingjingNativePage(props: XingjingNativePageProps) {
               ?? list?.workspaces?.find((w) => w.path === productDir);
             return match?.id ?? null;
           },
+          listMcp: (workspaceId) =>
+            props.openworkServerClient!.listMcp(workspaceId)
+              .then((r) => r.items.map((i) => ({ name: i.name, config: i.config }))).catch(() => []),
         }
       : undefined
   );

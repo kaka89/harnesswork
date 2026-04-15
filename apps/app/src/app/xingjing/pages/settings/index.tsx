@@ -1,6 +1,6 @@
 import { Component, createSignal, For, Show, createEffect, onMount } from 'solid-js';
 import { useSearchParams } from '@solidjs/router';
-import { Palette, Bot, Github, Clock, ShieldCheck, Sun, Moon, Save, FlaskConical, Zap, CheckCircle, AlertCircle, MessageSquare, X, Send, Loader, Package, Trash2, ChevronDown, ChevronUp, FolderOpen, User, Lock, AlertTriangle, Eye, EyeOff, Pencil } from 'lucide-solid';
+import { Palette, Bot, Github, Clock, ShieldCheck, Sun, Moon, Save, FlaskConical, Zap, CheckCircle, AlertCircle, MessageSquare, X, Send, Loader, Package, Trash2, ChevronDown, ChevronUp, FolderOpen, User, Lock, AlertTriangle, Eye, EyeOff, Pencil, Wrench, RefreshCw, PlugZap } from 'lucide-solid';
 import { useAppStore } from '../../stores/app-store';
 import { themeColors, chartColors } from '../../utils/colors';
 import { callAgent, setProviderAuth, gitSync } from '../../services/opencode-client';
@@ -10,6 +10,7 @@ import {
   defaultGitRepos, GitRepoConfig,
   defaultScheduledTasks, ScheduledTask,
   defaultGateNodes, GateNode,
+  builtinTools, type BuiltinToolDef,
 } from '../../mock/settings';
 import { getAllGitTokens, setGitToken, clearGitToken, type XingjingProduct } from '../../services/product-store';
 import { deleteProductDir } from '../../../lib/tauri';
@@ -2351,9 +2352,269 @@ const ProfileTab: Component = () => {
 };
 
 // ===================== Main page =====================
+
+// ==================== MCP 工具 Tab ====================
+const McpToolsTab: Component = () => {
+  const { state, actions, openworkStatus } = useAppStore();
+  const [enabledTools, setEnabledTools] = createSignal<string[]>([...state.allowedTools]);
+  const [mcpServers, setMcpServers] = createSignal<Array<{ name: string; config: Record<string, unknown> }>>([]);
+  const [mcpLoading, setMcpLoading] = createSignal(false);
+  const [saving, setSaving] = createSignal(false);
+  const [saveResult, setSaveResult] = createSignal('');
+
+  // 同步 store 变化
+  createEffect(() => {
+    setEnabledTools([...state.allowedTools]);
+  });
+
+  const loadMcpServers = async () => {
+    setMcpLoading(true);
+    try {
+      const servers = await actions.listMcp();
+      setMcpServers(servers);
+    } catch {
+      setMcpServers([]);
+    } finally {
+      setMcpLoading(false);
+    }
+  };
+
+  onMount(() => {
+    if (openworkStatus() !== 'disconnected') {
+      loadMcpServers();
+    }
+  });
+
+  const toggleTool = (name: string) => {
+    setEnabledTools((prev) =>
+      prev.includes(name) ? prev.filter((t) => t !== name) : [...prev, name]
+    );
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    setSaveResult('');
+    try {
+      actions.setAllowedTools(enabledTools());
+      setSaveResult(`\u2705 \u5df2\u4fdd\u5b58 ${enabledTools().length} \u4e2a\u5de5\u5177\u6388\u6743\u914d\u7f6e`);
+    } catch {
+      setSaveResult('\u274c \u4fdd\u5b58\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const ToggleSwitch = (props: { checked: boolean; onChange: () => void }) => (
+    <button
+      onClick={props.onChange}
+      style={{
+        width: '40px',
+        height: '22px',
+        'border-radius': '11px',
+        border: 'none',
+        background: props.checked ? chartColors.primary : themeColors.border,
+        cursor: 'pointer',
+        position: 'relative',
+        transition: 'background 0.2s',
+        'flex-shrink': '0',
+      }}
+    >
+      <span
+        style={{
+          position: 'absolute',
+          top: '2px',
+          left: props.checked ? '20px' : '2px',
+          width: '18px',
+          height: '18px',
+          'border-radius': '50%',
+          background: '#fff',
+          transition: 'left 0.2s',
+          'box-shadow': '0 1px 3px rgba(0,0,0,0.2)',
+        }}
+      />
+    </button>
+  );
+
+  const ToolRow = (props: { name: string; label: string; description: string; badge?: string }) => (
+    <div
+      style={{
+        display: 'flex',
+        'align-items': 'center',
+        gap: '12px',
+        padding: '10px 14px',
+        'border-radius': '8px',
+        background: enabledTools().includes(props.name) ? themeColors.bgSubtle : 'transparent',
+        transition: 'background 0.15s',
+      }}
+    >
+      <div style={{ flex: '1', 'min-width': '0' }}>
+        <div style={{ display: 'flex', 'align-items': 'center', gap: '6px' }}>
+          <span style={{ 'font-size': '13px', 'font-weight': '500', color: themeColors.text }}>{props.label}</span>
+          <span style={{
+            'font-size': '10px',
+            padding: '1px 6px',
+            'border-radius': '4px',
+            background: themeColors.bgSubtle,
+            color: themeColors.textMuted,
+            'font-family': 'monospace',
+          }}>{props.name}</span>
+          <Show when={props.badge}>
+            <span style={{
+              'font-size': '10px',
+              padding: '1px 6px',
+              'border-radius': '4px',
+              background: themeColors.bgSubtle,
+              color: chartColors.primary,
+            }}>{props.badge}</span>
+          </Show>
+        </div>
+        <p style={{ margin: '2px 0 0', 'font-size': '12px', color: themeColors.textMuted }}>{props.description}</p>
+      </div>
+      <ToggleSwitch
+        checked={enabledTools().includes(props.name)}
+        onChange={() => toggleTool(props.name)}
+      />
+    </div>
+  );
+
+  return (
+    <div style={{ 'max-width': '640px' }}>
+      {/* 内置工具 */}
+      <div style={{
+        background: themeColors.surface,
+        border: `1px solid ${themeColors.border}`,
+        'border-radius': '10px',
+        padding: '16px',
+        'margin-bottom': '16px',
+      }}>
+        <h3 style={{ margin: '0 0 12px', 'font-size': '14px', 'font-weight': '600', color: themeColors.text }}>
+          <Wrench size={14} class="inline mr-1" style={{ 'vertical-align': '-2px' }} />
+          内置工具
+        </h3>
+        <p style={{ margin: '0 0 12px', 'font-size': '12px', color: themeColors.textMuted }}>
+          OpenCode 原生工具，启用后 AI 会话中将自动授权调用，无需每次确认
+        </p>
+        <div style={{ display: 'flex', 'flex-direction': 'column', gap: '2px' }}>
+          <For each={builtinTools}>
+            {(tool) => (
+              <ToolRow name={tool.name} label={tool.label} description={tool.description} />
+            )}
+          </For>
+        </div>
+      </div>
+
+      {/* MCP 服务器 */}
+      <div style={{
+        background: themeColors.surface,
+        border: `1px solid ${themeColors.border}`,
+        'border-radius': '10px',
+        padding: '16px',
+        'margin-bottom': '16px',
+      }}>
+        <div style={{ display: 'flex', 'align-items': 'center', 'justify-content': 'space-between', 'margin-bottom': '12px' }}>
+          <h3 style={{ margin: '0', 'font-size': '14px', 'font-weight': '600', color: themeColors.text }}>
+            <PlugZap size={14} class="inline mr-1" style={{ 'vertical-align': '-2px' }} />
+            MCP 服务器
+          </h3>
+          <button
+            onClick={loadMcpServers}
+            disabled={openworkStatus() === 'disconnected' || mcpLoading()}
+            style={{
+              display: 'flex',
+              'align-items': 'center',
+              gap: '4px',
+              padding: '4px 10px',
+              'border-radius': '6px',
+              border: `1px solid ${themeColors.border}`,
+              background: 'transparent',
+              color: themeColors.textMuted,
+              'font-size': '12px',
+              cursor: openworkStatus() === 'disconnected' ? 'not-allowed' : 'pointer',
+              opacity: openworkStatus() === 'disconnected' ? '0.5' : '1',
+            }}
+          >
+            <RefreshCw size={12} class={mcpLoading() ? 'animate-spin' : ''} />
+            刷新
+          </button>
+        </div>
+
+        <Show when={openworkStatus() === 'disconnected'}>
+          <div style={{
+            padding: '12px',
+            'border-radius': '8px',
+            background: themeColors.bgSubtle,
+            'text-align': 'center',
+          }}>
+            <AlertTriangle size={16} style={{ color: chartColors.warning, 'margin-bottom': '4px' }} />
+            <p style={{ margin: '0', 'font-size': '12px', color: themeColors.textMuted }}>
+              OpenWork 未连接，MCP 服务器列表不可用
+            </p>
+          </div>
+        </Show>
+
+        <Show when={openworkStatus() !== 'disconnected'}>
+          <Show when={mcpServers().length > 0} fallback={
+            <p style={{ margin: '0', 'font-size': '12px', color: themeColors.textMuted, 'text-align': 'center', padding: '12px 0' }}>
+              {mcpLoading() ? '加载中...' : '未配置 MCP 服务器'}
+            </p>
+          }>
+            <div style={{ display: 'flex', 'flex-direction': 'column', gap: '2px' }}>
+              <For each={mcpServers()}>
+                {(server) => {
+                  const cfgType = typeof server.config?.type === 'string' ? server.config.type : 'unknown';
+                  return (
+                    <ToolRow
+                      name={server.name}
+                      label={server.name}
+                      description={`类型: ${cfgType}`}
+                      badge="MCP"
+                    />
+                  );
+                }}
+              </For>
+            </div>
+          </Show>
+        </Show>
+      </div>
+
+      {/* 当前状态摘要 + 保存 */}
+      <div style={{ display: 'flex', 'align-items': 'center', gap: '12px' }}>
+        <button
+          onClick={handleSave}
+          disabled={saving()}
+          style={{
+            display: 'flex',
+            'align-items': 'center',
+            gap: '6px',
+            padding: '8px 20px',
+            'border-radius': '8px',
+            border: 'none',
+            background: chartColors.primary,
+            color: '#fff',
+            'font-size': '13px',
+            'font-weight': '500',
+            cursor: saving() ? 'not-allowed' : 'pointer',
+            opacity: saving() ? '0.7' : '1',
+          }}
+        >
+          <Save size={14} />
+          {saving() ? '保存中...' : '保存配置'}
+        </button>
+        <span style={{ 'font-size': '12px', color: themeColors.textMuted }}>
+          已启用 {enabledTools().length} 个工具
+        </span>
+      </div>
+      <Show when={saveResult()}>
+        <p style={{ margin: '8px 0 0', 'font-size': '12px', color: saveResult()!.startsWith('\u2705') ? chartColors.success : chartColors.error }}>
+          {saveResult()}
+        </p>
+      </Show>
+    </div>
+  );
+};
 const renderTabIcon = (key: string) => {
   const map: Record<string, any> = {
-    theme: Palette, llm: Bot, git: Github, cron: Clock, gate: ShieldCheck, products: Package, profile: User,
+    theme: Palette, llm: Bot, git: Github, cron: Clock, gate: ShieldCheck, products: Package, profile: User, tools: Wrench,
   };
   const I = map[key];
   return I ? <I size={14} class="inline mr-1" /> : null;
@@ -2361,6 +2622,7 @@ const renderTabIcon = (key: string) => {
 const TABS = [
   { key: 'theme', label: '主题外观' },
   { key: 'llm',   label: '大模型配置' },
+  { key: 'tools',  label: 'MCP 工具' },
   { key: 'git',   label: 'Git 仓库' },
   { key: 'cron',  label: '定时任务' },
   { key: 'gate',  label: '节点门控' },
@@ -2402,6 +2664,7 @@ const Settings: Component = () => {
       {/* Tab content */}
       <Show when={activeTab() === 'theme'}><ThemeTab /></Show>
       <Show when={activeTab() === 'llm'}><LLMTab /></Show>
+      <Show when={activeTab() === 'tools'}><McpToolsTab /></Show>
       <Show when={activeTab() === 'git'}><GitTab /></Show>
       <Show when={activeTab() === 'cron'}><CronTab /></Show>
       <Show when={activeTab() === 'gate'}><GateTab /></Show>

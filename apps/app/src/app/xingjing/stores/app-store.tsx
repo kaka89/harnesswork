@@ -72,6 +72,8 @@ export interface XingjingOpenworkContext {
    * 成功时返回新建的 workspace ID，失败返回 null。
    */
   createWorkspaceByDir: (productDir: string, productName: string) => Promise<string | null>;
+  /** 列出指定工作区的 MCP 服务器 */
+  listMcp: (workspaceId: string) => Promise<Array<{ name: string; config: Record<string, unknown> }>>;
 }
 
 interface AppState {
@@ -86,6 +88,8 @@ interface AppState {
   themeMode: 'light' | 'dark';
   products: Product[];
   llmConfig: LLMConfig;
+  /** 允许 AI 自动调用的工具名称列表 */
+  allowedTools: string[];
 }
 
 const DEFAULT_LLM_CONFIG: LLMConfig = {
@@ -124,6 +128,8 @@ const AppStoreContext = createContext<{
     addProduct: (product: Product) => void;
     removeProduct: (id: string) => void;
     setLlmConfig: (config: LLMConfig) => void;
+    setAllowedTools: (tools: string[]) => void;
+    listMcp: () => Promise<Array<{ name: string; config: Record<string, unknown> }>>;
     callAgent: (opts: CallAgentOptions) => Promise<void>;
     // OpenWork Skill/Config API
     listOpenworkSkills: () => Promise<OpenworkSkillItem[]>;
@@ -159,6 +165,7 @@ export const AppStoreProvider: ParentComponent<{
     themeMode: 'light',
     products: [],
     llmConfig: { ...DEFAULT_LLM_CONFIG },
+    allowedTools: [],
   });
 
   // ── OpenWork workspace 解析 ──
@@ -239,6 +246,9 @@ export const AppStoreProvider: ParentComponent<{
     loadGlobalSettings().then((g) => {
       if (g.llm) {
         setState('llmConfig', { ...DEFAULT_LLM_CONFIG, ...g.llm });
+      }
+      if (g.allowedTools?.length) {
+        setState('allowedTools', g.allowedTools);
       }
     }).catch(() => {/* silent */});
   });
@@ -327,6 +337,20 @@ export const AppStoreProvider: ParentComponent<{
       saveGlobalSettings({ llm: config }).catch(() => {});
     },
 
+    setAllowedTools: (tools: string[]) => {
+      setState('allowedTools', tools);
+      // 持久化：读取现有全局配置后合并写回
+      loadGlobalSettings().then((g) => {
+        saveGlobalSettings({ ...g, allowedTools: tools }).catch(() => {});
+      }).catch(() => {});
+    },
+
+    listMcp: async (): Promise<Array<{ name: string; config: Record<string, unknown> }>> => {
+      const wsId = resolvedWorkspaceId();
+      if (!wsId || !props.openworkCtx?.listMcp) return [];
+      return props.openworkCtx.listMcp(wsId);
+    },
+
     callAgent: (opts: CallAgentOptions) => {
       const workDir = getWorkDir();
       const owClient = props.openworkCtx?.opencodeClient?.() ?? null;
@@ -363,6 +387,8 @@ export const AppStoreProvider: ParentComponent<{
         ...opts,
         directory: dir,
         model,
+        // 注入全局工具白名单（如果调用方未显式指定）
+        autoApproveTools: opts.autoApproveTools ?? (state.allowedTools.length ? state.allowedTools : undefined),
         onDone: (text: string) => {
           void appendAgentLog({
             ...logBase,

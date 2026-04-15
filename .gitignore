@@ -12,6 +12,9 @@ ee/apps/*/dist/
 ee/packages/*/dist/
 tmp/
 
+# Turbo cache
+.turbo/
+
 # Local git worktrees
 _worktrees/
 

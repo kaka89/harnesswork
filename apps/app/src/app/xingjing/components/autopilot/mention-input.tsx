@@ -16,7 +16,7 @@ const MentionInput = (props: MentionInputProps) => {
   const [showDropdown, setShowDropdown] = createSignal(false);
   const [mentionQuery, setMentionQuery] = createSignal('');
   const [hoveredId, setHoveredId] = createSignal<string | null>(null);
-  const [dropdownPos, setDropdownPos] = createSignal<{ top: number; left: number; width: number } | null>(null);
+  const [dropdownPos, setDropdownPos] = createSignal<{ top: number; left: number; width: number; direction: 'up' | 'down' } | null>(null);
   let textareaRef: HTMLTextAreaElement | undefined;
 
   const filteredAgents = () => {
@@ -28,14 +28,29 @@ const MentionInput = (props: MentionInputProps) => {
     );
   };
 
+  const DROPDOWN_MAX_HEIGHT = 280;
+  const DROPDOWN_GAP = 6;
+  const HEADER_HEIGHT = 30;
+  const ITEM_HEIGHT = 40;
+
+  const estimateDropdownHeight = () => {
+    const itemCount = filteredAgents().length;
+    const raw = HEADER_HEIGHT + ITEM_HEIGHT * itemCount;
+    return Math.min(raw, DROPDOWN_MAX_HEIGHT);
+  };
+
   const updateDropdownPos = () => {
     if (textareaRef) {
       const rect = textareaRef.getBoundingClientRect();
-      setDropdownPos({
-        top: rect.bottom,
-        left: rect.left,
-        width: rect.width,
-      });
+      const estHeight = estimateDropdownHeight();
+      const spaceBelow = window.innerHeight - rect.bottom - DROPDOWN_GAP;
+      const spaceAbove = rect.top - DROPDOWN_GAP;
+      // Prefer below; flip to above only when below is insufficient and above has more room
+      const direction: 'up' | 'down' = spaceBelow >= estHeight || spaceBelow >= spaceAbove ? 'down' : 'up';
+      const top = direction === 'down'
+        ? rect.bottom + DROPDOWN_GAP
+        : rect.top - estHeight - DROPDOWN_GAP;
+      setDropdownPos({ top, left: rect.left, width: rect.width, direction });
     }
   };
 
@@ -91,14 +106,17 @@ const MentionInput = (props: MentionInputProps) => {
           <div
             style={{
               position: 'fixed',
-              top: `${dropdownPos()!.top + 6}px`,
+              top: `${dropdownPos()!.top}px`,
               left: `${dropdownPos()!.left}px`,
-              background: '#ffffff',
+              background: themeColors.surface,
               border: `1px solid ${themeColors.border}`,
-              'border-radius': '8px',
+              'border-radius': dropdownPos()!.direction === 'up' ? '8px 8px 4px 4px' : '4px 4px 8px 8px',
               'box-shadow': '0 4px 16px rgba(0,0,0,0.12)',
               'z-index': '9999',
               'min-width': `${Math.max(dropdownPos()!.width, 220)}px`,
+              'max-height': `${DROPDOWN_MAX_HEIGHT}px`,
+              display: 'flex',
+              'flex-direction': dropdownPos()!.direction === 'up' ? 'column-reverse' : 'column',
               overflow: 'hidden',
             }}
           >
@@ -106,48 +124,52 @@ const MentionInput = (props: MentionInputProps) => {
               style={{
                 padding: '6px 12px',
                 'font-size': '11px',
-                color: '#888',
-                'border-bottom': `1px solid ${themeColors.border}`,
+                color: themeColors.textMuted,
+                'border-bottom': dropdownPos()!.direction === 'down' ? `1px solid ${themeColors.border}` : 'none',
+                'border-top': dropdownPos()!.direction === 'up' ? `1px solid ${themeColors.border}` : 'none',
+                'flex-shrink': '0',
               }}
             >
               直接调用 Agent（跳过 Orchestrator）
             </div>
-            <For each={filteredAgents()}>
-              {(agent) => (
-                <div
-                  onClick={() => selectAgent(agent)}
-                  style={{
-                    padding: '8px 12px',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    gap: '10px',
-                    'align-items': 'center',
-                    transition: 'background 0.15s',
-                    background: hoveredId() === agent.id ? '#f5f5f5' : 'transparent',
-                  }}
-                  onMouseEnter={() => setHoveredId(agent.id)}
-                  onMouseLeave={() => setHoveredId(null)}
-                >
-                  <span style={{ 'font-size': '20px' }}>{agent.emoji}</span>
-                  <div>
-                    <div
-                      style={{
-                        'font-weight': '600',
-                        'font-size': '13px',
-                        color: '#1a1a1a',
-                      }}
-                    >
-                      {agent.name}
-                    </div>
-                    <div
-                      style={{ 'font-size': '11px', color: '#888' }}
-                    >
-                      @{agent.id} · {agent.description}
+            <div style={{ 'overflow-y': 'auto', flex: '1', 'min-height': '0' }}>
+              <For each={filteredAgents()}>
+                {(agent) => (
+                  <div
+                    onClick={() => selectAgent(agent)}
+                    style={{
+                      padding: '8px 12px',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      gap: '10px',
+                      'align-items': 'center',
+                      transition: 'background 0.15s',
+                      background: hoveredId() === agent.id ? themeColors.hover : 'transparent',
+                    }}
+                    onMouseEnter={() => setHoveredId(agent.id)}
+                    onMouseLeave={() => setHoveredId(null)}
+                  >
+                    <span style={{ 'font-size': '20px' }}>{agent.emoji}</span>
+                    <div>
+                      <div
+                        style={{
+                          'font-weight': '600',
+                          'font-size': '13px',
+                          color: themeColors.textPrimary,
+                        }}
+                      >
+                        {agent.name}
+                      </div>
+                      <div
+                        style={{ 'font-size': '11px', color: themeColors.textMuted }}
+                      >
+                        @{agent.id} · {agent.description}
+                      </div>
                     </div>
                   </div>
-                </div>
-              )}
-            </For>
+                )}
+              </For>
+            </div>
           </div>
         </Portal>
       </Show>

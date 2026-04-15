@@ -2,8 +2,14 @@
  * Autopilot Executor
  * 两阶段 Agent 调度：Orchestrator 解析意图 → 并发调用子 Agent
  * 支持 @mention 直接调用，零后端存储，OpenCode 不可用时降级 mock。
+ *
+ * Agent 发现机制：
+ * - 优先从 .opencode/agents/*.md 文件加载（文件驱动）
+ * - 回退到内置 SOLO_AGENTS / TEAM_AGENTS 常量（兜底）
+ * - 通过 agent-registry.ts 统一管理
  */
 import { callAgent, type CallAgentOptions } from './opencode-client';
+import { discoverAgents, type RegisteredAgent } from './agent-registry';
 
 // ─── Agent 定义 ─────────────────────────────────────────────────
 
@@ -188,6 +194,8 @@ export type AgentExecutionStatus =
 export interface OrchestratedRunOpts {
   workDir?: string;
   availableAgents: AutopilotAgent[];
+  /** Agent 发现模式：solo（独立版）或 team（团队版），用于动态发现时选择内置兜底 */
+  mode?: 'solo' | 'team';
   model?: { providerID: string; modelID: string };
   /** 注入 callAgent 实现，优先使用 store.actions.callAgent（复用 OpenWork client）*/
   callAgentFn?: (opts: CallAgentOptions) => Promise<void>;
@@ -209,8 +217,14 @@ export async function runOrchestratedAutopilot(
   goal: string,
   opts: OrchestratedRunOpts,
 ): Promise<void> {
-  const { availableAgents, workDir, model } = opts;
+  const { workDir, model } = opts;
   const invoke = opts.callAgentFn ?? callAgent;
+
+  // Agent 动态发现：如果调用方已提供 Agent 列表则直接使用，否则从文件 + 内置兜底动态发现
+  const availableAgents: AutopilotAgent[] = opts.availableAgents.length > 0
+    ? opts.availableAgents
+    : await discoverAgents(opts.mode ?? 'solo', workDir);
+
   const orchestratorSystemPrompt = buildOrchestratorSystemPrompt(availableAgents);
 
   // Phase 1: Orchestrator 决定调用哪些 Agent
@@ -285,6 +299,8 @@ export async function runOrchestratedAutopilot(
           systemPrompt: agentDef.systemPrompt,
           userPrompt: task,
           model,
+          // 传递 OpenCode Agent ID（若来自文件发现则有值，否则 undefined）
+          agentId: (agentDef as RegisteredAgent).opencodeAgentId,
           onPermissionAsked: opts.onPermissionAsked,
           onText: (accumulated) => {
             opts.onAgentStatus?.(agentId, 'working');
@@ -351,6 +367,8 @@ export async function runDirectAgent(
       systemPrompt: agent.systemPrompt,
       userPrompt: prompt,
       model: opts.model,
+      // 传递 OpenCode Agent ID（若来自文件发现则有值）
+      agentId: (agent as RegisteredAgent).opencodeAgentId,
       onPermissionAsked: opts.onPermissionAsked,
       onText: (accumulated) => {
         opts.onStatus?.('working');

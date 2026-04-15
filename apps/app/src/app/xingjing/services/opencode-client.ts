@@ -533,6 +533,11 @@ export interface CallAgentOptions {
   title?: string;
   /** 工作目录 */
   directory?: string;
+  /** OpenCode Agent ID，对应 .opencode/agents/{agentId}.md，用于 session.create 指定 Agent 上下文 */
+  agentId?: string;
+  /** 是否启用工具调用（默认 false，保持 deny-all 安全策略）。
+   *  设为 true 时不设置会话级权限限制，使用 Agent 定义的默认权限。*/
+  enableTools?: boolean;
   /** 流式文本回调（每次收到新文本片段时触发，参数为累积全文） */
   onText?: (accumulatedText: string) => void;
   /** 完成回调 */
@@ -604,12 +609,15 @@ async function runAgentSession(
   // 新建 session（Layer 2 或首次调用）
   if (!sid) {
     try {
-      // 始终设置 deny-all：xingjing 虚拟 Agent 通过 tools:{} 禁用工具，deny-all 作为会话级双重防护
-      // 防止模型意外生成工具调用导致 permission.asked 事件卡死 SSE 循环
-      // 未来若需要启用工具调用，应新增显式 enableTools 选项来放开
-      const sessionPermission = [{ permission: '*', pattern: '*', action: 'deny' }];
+      // 权限策略：默认 deny-all 防止工具调用卡死 SSE；enableTools=true 时放开使用 Agent 默认权限
+      const sessionPermission = opts.enableTools
+        ? undefined
+        : [{ permission: '*', pattern: '*', action: 'deny' }];
       const result = await client.session.create({
-        body: { ...(opts.title ? { title: opts.title } : { title: `xingjing-${Date.now()}` }) },
+        body: {
+          ...(opts.title ? { title: opts.title } : { title: `xingjing-${Date.now()}` }),
+          ...(opts.agentId ? { agent: opts.agentId } : {}),
+        },
         ...(sessionPermission ? { permission: sessionPermission } : {}),
         ...(opts.directory ?? _directory ? { directory: opts.directory ?? _directory } : {}),
       } as Parameters<typeof client.session.create>[0]);

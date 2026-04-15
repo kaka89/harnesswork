@@ -31,6 +31,8 @@ import {
   saveAutopilotHistory,
   type AutopilotChatMessage,
 } from '../../services/file-store';
+import { loadPipelineConfig, type PipelineConfig, type PipelineStage } from '../../services/pipeline-config';
+import { runPipeline } from '../../services/pipeline-executor';
 
 // ─── Status badge ────────────────────────────────────────────────────────────
 
@@ -140,6 +142,13 @@ const EnterpriseAutopilot = () => {
   const [agentError, setAgentError] = createSignal<string | null>(null);
   const [directAnswer, setDirectAnswer] = createSignal<string | null>(null);
 
+  // ─── Pipeline mode state ────────────────────────────────────────────────
+  const [autopilotMode, setAutopilotMode] = createSignal<'instant' | 'pipeline'>('instant');
+  const [pipelineConfig, setPipelineConfig] = createSignal<PipelineConfig | null>(null);
+  const [pipelineStageStatuses, setPipelineStageStatuses] = createSignal<Record<string, PipelineStage['outputStatus']>>({});
+  const [pipelineStageOutputs, setPipelineStageOutputs] = createSignal<Record<string, string>>({});
+  const [pipelineGateResolver, setPipelineGateResolver] = createSignal<{ stageId: string; stageName: string; resolve: (v: 'approve' | 'reject') => void } | null>(null);
+
   // ─── Model selector state ─────────────────────────────────────────────────
   const [providerKeys, setProviderKeys] = createSignal<Record<string, string>>({});
   const [sessionModelId, setSessionModelId] = createSignal<string>(
@@ -229,6 +238,54 @@ const EnterpriseAutopilot = () => {
       setRunState('idle');
       return;
     }
+
+    // ── Pipeline 模式执行 ──
+    if (autopilotMode() === 'pipeline') {
+      const config = pipelineConfig();
+      if (!config || config.stages.length === 0) {
+        setAgentError('Pipeline 配置为空或未找到 orchestrator.yaml，请先在项目根目录创建配置文件');
+        setRunState('idle');
+        return;
+      }
+      pushMsg({ type: 'ai', agentId: 'pipeline', agentName: 'Pipeline', agentEmoji: '🔗', text: `正在执行 Pipeline（${config.stages.length} 个阶段）...`, time: formatTime(), isStreaming: true });
+      const initStatuses: Record<string, PipelineStage['outputStatus']> = {};
+      config.stages.forEach((s) => { initStatuses[s.id] = 'pending'; });
+      setPipelineStageStatuses(initStatuses);
+      setPipelineStageOutputs({});
+      await runPipeline({
+        config, goal: goal().trim(), workDir, model,
+        callAgentFn: (o) => store.actions.callAgent(o),
+        onStageStart: (stageId) => {
+          setPipelineStageStatuses((prev) => ({ ...prev, [stageId]: 'running' }));
+          const stage = config.stages.find((s) => s.id === stageId);
+          pushMsg({ type: 'ai', agentId: stageId, agentName: stage?.name ?? stageId, agentEmoji: '⚙️', text: '执行中...', time: formatTime(), isStreaming: true });
+        },
+        onStageStream: (stageId, text) => {
+          setPipelineStageOutputs((prev) => ({ ...prev, [stageId]: text }));
+          updateLastAiMsg(stageId, text, true);
+        },
+        onStageComplete: (stageId, result) => {
+          setPipelineStageStatuses((prev) => ({ ...prev, [stageId]: 'success' }));
+          setPipelineStageOutputs((prev) => ({ ...prev, [stageId]: result }));
+          updateLastAiMsg(stageId, result, false);
+          const totalDone = Object.values(pipelineStageStatuses()).filter((s) => s === 'success' || s === 'failed' || s === 'skipped').length + 1;
+          setProgress(Math.round((totalDone / config.stages.length) * 100));
+        },
+        onStageFailed: (stageId, error) => {
+          setPipelineStageStatuses((prev) => ({ ...prev, [stageId]: 'failed' }));
+          updateLastAiMsg(stageId, `执行失败：${error}`, false);
+        },
+        onGateWaiting: (stageId, stageName) => {
+          return new Promise((resolve) => {
+            setPipelineGateResolver({ stageId, stageName, resolve });
+          });
+        },
+        onDone: () => { setProgress(100); setRunState('done'); updateLastAiMsg('pipeline', 'Pipeline 执行完成', false); },
+        onError: (err) => { setAgentError(`Pipeline 执行失败：${err}`); setRunState('idle'); },
+      });
+      return;
+    }
+
     const { targetAgent, cleanText } = parseMention(goal(), TEAM_AGENTS);
 
     if (targetAgent) {
@@ -316,6 +373,11 @@ const EnterpriseAutopilot = () => {
         const configured = modelOptions.filter((o) => o.providerID !== 'custom' && (keys[o.providerID]?.trim().length ?? 0) > 0);
         if (configured.length > 0 && !configured.find((o) => o.modelID === sessionModelId())) setSessionModelId(configured[0].modelID);
       } catch { /* silent */ }
+      // Load pipeline config
+      try {
+        const config = await loadPipelineConfig(workDir);
+        if (config) setPipelineConfig(config);
+      } catch { /* silent */ }
       // Load history
       try {
         const history = await loadAutopilotHistory(workDir);
@@ -382,12 +444,33 @@ const EnterpriseAutopilot = () => {
         overflow: 'hidden',
         background: themeColors.surface,
       }}>
-        {/* 标题行 */}
-        <div style={{ padding: '12px 16px 0', display: 'flex', 'align-items': 'center', gap: '6px' }}>
+        {/* 模式切换 + 标题行 */}
+        <div style={{ padding: '12px 16px 0', display: 'flex', 'align-items': 'center', gap: '8px' }}>
           <Zap size={15} style={{ color: chartColors.primary }} />
           <span style={{ 'font-size': '14px', 'font-weight': 600, color: themeColors.textPrimary }}>
             输入目标，启动 Agent 自动驾驶
           </span>
+          <div style={{ flex: 1 }} />
+          <div style={{ display: 'flex', gap: '4px', background: themeColors.bgSubtle, 'border-radius': '6px', padding: '2px' }}>
+            <button
+              onClick={() => setAutopilotMode('instant')}
+              style={{
+                padding: '3px 10px', 'border-radius': '4px', 'font-size': '12px',
+                border: 'none', cursor: 'pointer', 'font-weight': 500, transition: 'all 0.2s',
+                background: autopilotMode() === 'instant' ? chartColors.primary : 'transparent',
+                color: autopilotMode() === 'instant' ? 'white' : themeColors.textSecondary,
+              }}
+            >即时模式</button>
+            <button
+              onClick={() => setAutopilotMode('pipeline')}
+              style={{
+                padding: '3px 10px', 'border-radius': '4px', 'font-size': '12px',
+                border: 'none', cursor: 'pointer', 'font-weight': 500, transition: 'all 0.2s',
+                background: autopilotMode() === 'pipeline' ? chartColors.primary : 'transparent',
+                color: autopilotMode() === 'pipeline' ? 'white' : themeColors.textSecondary,
+              }}
+            >Pipeline</button>
+          </div>
         </div>
         {/* 大 textarea */}
         <textarea
@@ -467,6 +550,58 @@ const EnterpriseAutopilot = () => {
           </div>
           <span style={{ 'font-size': '12px', color: themeColors.textMuted, 'flex-shrink': 0 }}>{progress()}%</span>
         </div>
+      </Show>
+      {/* Pipeline 阶段时间线 */}
+      <Show when={autopilotMode() === 'pipeline' && pipelineConfig()}>
+        <div style={{ display: 'flex', gap: '4px', 'flex-wrap': 'wrap', 'margin-top': '8px' }}>
+          <For each={pipelineConfig()?.stages ?? []}>{(stage) => {
+            const status = () => pipelineStageStatuses()[stage.id] ?? 'pending';
+            const colors: Record<string, { bg: string; border: string; text: string }> = {
+              pending: { bg: themeColors.bgSubtle, border: themeColors.border, text: themeColors.textMuted },
+              running: { bg: themeColors.primaryBg, border: chartColors.primary, text: chartColors.primary },
+              success: { bg: '#f0fdf4', border: '#86efac', text: '#16a34a' },
+              failed: { bg: '#fef2f2', border: '#fca5a5', text: '#dc2626' },
+              skipped: { bg: themeColors.bgSubtle, border: themeColors.border, text: themeColors.textMuted },
+            };
+            const c = () => colors[status() ?? 'pending'] ?? colors.pending;
+            return (
+              <div style={{
+                display: 'flex', 'align-items': 'center', gap: '4px',
+                padding: '3px 8px', 'border-radius': '4px', 'font-size': '11px',
+                border: `1px solid ${c().border}`, background: c().bg, color: c().text,
+              }}>
+                <span>{status() === 'running' ? '▶' : status() === 'success' ? '✓' : status() === 'failed' ? '✗' : '○'}</span>
+                <span>{stage.name}</span>
+                <Show when={stage.gate === 'await-approval'}>
+                  <span style={{ 'font-size': '9px', opacity: 0.7 }}>🔒</span>
+                </Show>
+              </div>
+            );
+          }}</For>
+        </div>
+      </Show>
+      {/* Pipeline 门控审批 */}
+      <Show when={pipelineGateResolver()}>
+        {(gate) => (
+          <div style={{
+            'margin-top': '8px', padding: '10px 14px', 'border-radius': '6px',
+            background: '#fffbeb', border: '1px solid #fbbf24',
+            display: 'flex', 'align-items': 'center', gap: '10px',
+          }}>
+            <span style={{ 'font-size': '16px' }}>🔒</span>
+            <span style={{ flex: 1, 'font-size': '13px', color: '#92400e' }}>
+              阶段「{gate().stageName}」需要审批确认
+            </span>
+            <button
+              onClick={() => { gate().resolve('reject'); setPipelineGateResolver(null); }}
+              style={{ padding: '4px 12px', 'border-radius': '4px', 'font-size': '12px', border: '1px solid #d1d5db', background: 'white', cursor: 'pointer', color: '#6b7280' }}
+            >跳过</button>
+            <button
+              onClick={() => { gate().resolve('approve'); setPipelineGateResolver(null); }}
+              style={{ padding: '4px 12px', 'border-radius': '4px', 'font-size': '12px', border: 'none', background: '#16a34a', color: 'white', cursor: 'pointer', 'font-weight': 500 }}
+            >批准执行</button>
+          </div>
+        )}
       </Show>
     </div>
   );

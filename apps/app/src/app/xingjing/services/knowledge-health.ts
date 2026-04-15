@@ -333,14 +333,13 @@ function checkDocChainIntegrity(index: KnowledgeIndex): DocChainGap[] {
 async function loadAllMeta(workDir: string): Promise<Map<string, PrivateKnowledgeMeta>> {
   const map = new Map<string, PrivateKnowledgeMeta>();
   try {
-    const metaDir = `${workDir}/${META_DIR}`;
-    const files = await fileList(metaDir);
+    const files = await fileList(META_DIR, workDir);
     if (!files || files.length === 0) return map;
 
-    for (const file of files) {
-      if (!file.endsWith('.json')) continue;
+    for (const node of files) {
+      if (node.type !== 'file' || !node.name.endsWith('.json')) continue;
       try {
-        const content = await fileRead(`${metaDir}/${file}`);
+        const content = await fileRead(`${META_DIR}/${node.name}`, workDir);
         if (content) {
           const meta = JSON.parse(content) as PrivateKnowledgeMeta;
           map.set(meta.knowledgeId, meta);

@@ -24,13 +24,6 @@ let _password = '';
 /** 断线重试退避时间（ms）：1s / 2s / 5s */
 const RETRY_DELAYS = [1000, 2000, 5000] as const;
 
-/** SSE 事件流无活动超时（ms）：90 秒内无任何新事件则视为连接挂起，触发 sse-fail 重试 */
-const SSE_INACTIVITY_TIMEOUT_MS = 90_000;
-
-/** 首事件等待超时（ms）：prompt 发送后若 30 秒内未收到任何 SSE 事件，
- *  高概率为 API Key 未配置 / 模型不可用等配置问题，提前报错而非等满 90 秒 */
-const SSE_FIRST_EVENT_TIMEOUT_MS = 30_000;
-
 /** 异步等待指定毫秒 */
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -539,17 +532,6 @@ export interface CallAgentOptions {
   onDone?: (fullText: string) => void;
   /** 错误回调 */
   onError?: (errMsg: string) => void;
-  /** 工具权限请求回调（用户决定是否授权）。
-   *  不提供时沿用自动拒绝兜底行为。
-   *  提供时 SSE 循环将暂停等待 resolve 后继续。*/
-  onPermissionAsked?: (params: {
-    permissionId: string;
-    sessionId: string;
-    tool?: string;
-    description?: string;
-    input?: string;
-    resolve: (action: 'once' | 'always' | 'reject') => void;
-  }) => void;
 }
 
 /**
@@ -604,13 +586,8 @@ async function runAgentSession(
   // 新建 session（Layer 2 或首次调用）
   if (!sid) {
     try {
-      // 始终设置 deny-all：xingjing 虚拟 Agent 通过 tools:{} 禁用工具，deny-all 作为会话级双重防护
-      // 防止模型意外生成工具调用导致 permission.asked 事件卡死 SSE 循环
-      // 未来若需要启用工具调用，应新增显式 enableTools 选项来放开
-      const sessionPermission = [{ permission: '*', pattern: '*', action: 'deny' }];
       const result = await client.session.create({
         body: { ...(opts.title ? { title: opts.title } : { title: `xingjing-${Date.now()}` }) },
-        ...(sessionPermission ? { permission: sessionPermission } : {}),
         ...(opts.directory ?? _directory ? { directory: opts.directory ?? _directory } : {}),
       } as Parameters<typeof client.session.create>[0]);
       sid = (result.data as { id: string } | undefined)?.id ?? null;
@@ -627,35 +604,7 @@ async function runAgentSession(
   return new Promise<{ status: 'done' | 'sse-fail' | 'hard-error'; accumulated: string; sessionId: string | null; error?: string }>((resolve) => {
     let done = false;
     const controller = new AbortController();
-
-    // 无活动超时：若 SSE 流长时间无新事件（连接挂起），自动 abort 并触发 sse-fail 重试
-    let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
-    let firstEventReceived = false;
-    const resetInactivityTimer = () => {
-      if (inactivityTimer) clearTimeout(inactivityTimer);
-      if (done) return;
-      const isFirst = !firstEventReceived;
-      if (!isFirst) firstEventReceived = true; // 标记已收到首事件
-      const timeout = isFirst ? SSE_FIRST_EVENT_TIMEOUT_MS : SSE_INACTIVITY_TIMEOUT_MS;
-      inactivityTimer = setTimeout(() => {
-        if (!done) {
-          done = true;
-          controller.abort();
-          const errMsg = isFirst
-            ? `SSE 超时：${SSE_FIRST_EVENT_TIMEOUT_MS / 1000}s 内未收到任何事件，请检查大模型 API Key 是否已配置且有效`
-            : `SSE 超时：${SSE_INACTIVITY_TIMEOUT_MS / 1000}s 内无新事件，已触发重试`;
-          resolve({ status: 'sse-fail', accumulated: acc, sessionId: finalSid, error: errMsg });
-        }
-      }, timeout);
-    };
-
-    const cleanup = () => {
-      if (!done) {
-        done = true;
-        controller.abort();
-        if (inactivityTimer) { clearTimeout(inactivityTimer); inactivityTimer = null; }
-      }
-    };
+    const cleanup = () => { if (!done) { done = true; controller.abort(); } };
 
     // ── SSE 订阅（fire-and-resolve 模式）──
     void (async () => {
@@ -666,12 +615,8 @@ async function runAgentSession(
           { signal: controller.signal },
         );
 
-        resetInactivityTimer(); // 启动首次无活动计时器
-
         for await (const raw of sub.stream as AsyncIterable<unknown>) {
           if (done) break;
-          firstEventReceived = true; // 标记已收到首事件
-          resetInactivityTimer(); // 每收到任何事件都重置计时器
           const evt = normalizeRawEvent(raw);
           if (!evt) continue;
           const p = evt.props;
@@ -745,7 +690,7 @@ async function runAgentSession(
           // ── session.idle ──
           if (evt.type === 'session.idle') {
             const evtSid = typeof p.sessionID === 'string' ? p.sessionID : null;
-            if (evtSid && evtSid !== finalSid) continue; // null-safe：与 session.completed 保持一致
+            if (evtSid !== finalSid) continue;
             cleanup();
             resolve({ status: 'done', accumulated: acc, sessionId: finalSid });
             return;
@@ -754,7 +699,7 @@ async function runAgentSession(
           // ── session.status ──
           if (evt.type === 'session.status') {
             const evtSid = typeof p.sessionID === 'string' ? p.sessionID : null;
-            if (evtSid && evtSid !== finalSid) continue; // null-safe
+            if (evtSid !== finalSid) continue;
             const statusObj = p.status;
             const statusType = typeof statusObj === 'object' && statusObj !== null
               ? String((statusObj as Record<string, unknown>).type ?? '')
@@ -766,43 +711,22 @@ async function runAgentSession(
             }
           }
 
-          // ── 工具权限请求 ──
+          // ── 工具权限请求：视为硬错误，避免 session 永久挂起 ──
           if (evt.type === 'permission.asked') {
             const evtSid = typeof p.sessionID === 'string' ? p.sessionID : null;
             if (evtSid && evtSid !== finalSid) continue;
-            const permId = typeof p.id === 'string' ? p.id : null;
-            if (permId && opts.onPermissionAsked) {
-              // 有回调：暂停 SSE 循环，等待用户在 UI 上做决策
-              const action = await new Promise<'once' | 'always' | 'reject'>((res) => {
-                opts.onPermissionAsked!({
-                  permissionId: permId,
-                  sessionId: finalSid,
-                  tool: typeof p.tool === 'string' ? p.tool : undefined,
-                  description: typeof p.description === 'string' ? p.description : undefined,
-                  input: typeof p.input === 'string' ? p.input : (typeof p.path === 'string' ? p.path : undefined),
-                  resolve: res,
-                });
-              });
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              void (getClient().permission as any).reply({ requestID: permId, reply: action }).catch(() => {});
-            } else if (permId) {
-              // 无回调兜底：自动拒绝，model 继续以纯文本生成响应
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              void (getClient().permission as any).reply({ requestID: permId, reply: 'reject' }).catch(() => {});
-            }
-            continue; // 继续等待 session 完成
+            cleanup();
+            resolve({ status: 'hard-error', accumulated: acc, sessionId: finalSid, error: 'Agent 请求工具权限（自动拒绝）：xingjing 虚拟 Agent 不支持工具调用' });
+            return;
           }
 
-          // ── 澄清问题请求：自动拒绝并继续 ──
+          // ── 澄清问题请求：视为硬错误，避免 session 永久挂起 ──
           if (evt.type === 'question.asked') {
             const evtSid = typeof p.sessionID === 'string' ? p.sessionID : null;
             if (evtSid && evtSid !== finalSid) continue;
-            const reqId = typeof p.id === 'string' ? p.id : (typeof p.requestID === 'string' ? p.requestID : null);
-            if (reqId) {
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              void (getClient().question as any).reject({ requestID: reqId }).catch(() => {});
-            }
-            continue; // 继续等待 session 完成
+            cleanup();
+            resolve({ status: 'hard-error', accumulated: acc, sessionId: finalSid, error: 'Agent 发起澄清问题请求（自动拒绝）：xingjing 虚拟 Agent 不支持交互式澄清' });
+            return;
           }
         }
 
@@ -887,8 +811,308 @@ export async function callAgentWithClient(
       opts.onDone?.(accumulated);
       return;
     }
+
+  // 启动事件流监听（fire-and-forget，回调式通知结果）
+  // 传入 opts.directory 作为订阅目录，确保收到该 Session 所属目录的事件
+  void (async () => {
+    try {
+      const sub = await client.event.subscribe(
+        opts.directory ? { directory: opts.directory } : undefined,
+        { signal: controller.signal },
+      );
+      for await (const raw of sub.stream as AsyncIterable<unknown>) {
+        if (done) break;
+        const evt = normalizeRawEvent(raw);
+        if (!evt) continue;
+        const p = evt.props;
+
+        // ── 新格式: message.part.updated ──
+        if (evt.type === 'message.part.updated') {
+          const part = p.part as Record<string, unknown> | undefined;
+          if (!part || String(part.sessionID ?? '') !== sessionId) continue;
+          if (part.messageID) sessionMsgIds.add(String(part.messageID));
+          if (part.type === 'text') {
+            const fullText = String(part.text ?? '');
+            if (fullText.length >= accumulated.length) {
+              accumulated = fullText;
+              opts.onText?.(accumulated);
+            } else if (typeof p.delta === 'string' && p.delta) {
+              accumulated += p.delta;
+              opts.onText?.(accumulated);
+            }
+          }
+          continue;
+        }
+
+        // ── 新格式: message.part.delta ──
+        if (evt.type === 'message.part.delta') {
+          const msgId = typeof p.messageID === 'string' ? p.messageID : null;
+          if (msgId && sessionMsgIds.has(msgId)) {
+            const delta = typeof p.delta === 'string' ? p.delta : '';
+            const field = typeof p.field === 'string' ? p.field : '';
+            if (delta && field === 'text') {
+              accumulated += delta;
+              opts.onText?.(accumulated);
+            }
+          }
+          continue;
+        }
+
+        // ── 旧格式: message.part ──
+        if (evt.type === 'message.part') {
+          if (String(p.sessionID ?? '') !== sessionId) continue;
+          const part = p.part as Record<string, unknown> | undefined;
+          if (part?.type === 'text') {
+            const text = String(part.text ?? part.content ?? '');
+            accumulated += text;
+            opts.onText?.(accumulated);
+          }
+          continue;
+        }
+
+        // ── 错误: session.error ──
+        if (evt.type === 'session.error') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid && sid !== sessionId) continue;
+          cleanup();
+          const errObj = p.error as Record<string, unknown> | undefined;
+          const errMsg = errObj
+            ? String(errObj.message ?? errObj.name ?? '未知错误')
+            : String(p.message ?? '未知错误');
+          opts.onError?.(errMsg);
+          return;
+        }
+
+        // ── 完成: session.completed (旧) ──
+        if (evt.type === 'session.completed') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid && sid !== sessionId) continue;
+          cleanup();
+          opts.onDone?.(accumulated);
+          return;
+        }
+
+        // ── 完成: session.idle (新) ──
+        if (evt.type === 'session.idle') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid !== sessionId) continue;
+          cleanup();
+          opts.onDone?.(accumulated);
+          return;
+        }
+
+        // ── 完成: session.status + idle (新) ──
+        if (evt.type === 'session.status') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid !== sessionId) continue;
+          // p.status 是 SessionStatus 对象 { type: 'idle' | 'busy' | 'retry' }，不是字符串
+          const statusObj = p.status;
+          const statusType = typeof statusObj === 'object' && statusObj !== null
+            ? String((statusObj as Record<string, unknown>).type ?? '')
+            : String(statusObj ?? '');
+          if (statusType === 'idle' || statusType === 'completed') {
+            cleanup();
+            opts.onDone?.(accumulated);
+            return;
+          }
+        }
+
+        // ── 工具权限请求：自动拒绝，避免 session 永久挂起 ──
+        // xingjing 虚拟 Agent 只需文本输出，不支持工具调用
+        if (evt.type === 'permission.asked') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid && sid !== sessionId) continue;
+          cleanup();
+          opts.onError?.('Agent 请求工具权限（自动拒绝）：xingjing 虚拟 Agent 不支持工具调用');
+          return;
+        }
+
+        // ── 澄清问题请求：自动拒绝，避免 session 永久挂起 ──
+        if (evt.type === 'question.asked') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid && sid !== sessionId) continue;
+          cleanup();
+          opts.onError?.('Agent 发起澄清问题请求（自动拒绝）：xingjing 虚拟 Agent 不支持交互式澄清');
+          return;
+        }
+      }
+
+      // 事件流结束但未收到完成信号
+      if (!done) {
+        cleanup();
+        if (accumulated) opts.onDone?.(accumulated);
+        else opts.onError?.('SSE 事件流意外结束（外部 client）');
+      }
+    } catch (e) {
+      if (done) return;
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.toLowerCase().includes('abort')) return;
+      cleanup();
+      if (accumulated) opts.onDone?.(accumulated);
+      else opts.onError?.(`SSE 连接失败: ${msg}`);
+>>>>>>> Stashed changes
+    }
     if (r.status === 'hard-error' && !r.error?.includes('无法创建')) break;
     if (!sessionId) break;
+=======
+  // 启动事件流监听（fire-and-forget，回调式通知结果）
+  // 传入 opts.directory 作为订阅目录，确保收到该 Session 所属目录的事件
+  void (async () => {
+    try {
+      const sub = await client.event.subscribe(
+        opts.directory ? { directory: opts.directory } : undefined,
+        { signal: controller.signal },
+      );
+      for await (const raw of sub.stream as AsyncIterable<unknown>) {
+        if (done) break;
+        const evt = normalizeRawEvent(raw);
+        if (!evt) continue;
+        const p = evt.props;
+
+        // ── 新格式: message.part.updated ──
+        if (evt.type === 'message.part.updated') {
+          const part = p.part as Record<string, unknown> | undefined;
+          if (!part || String(part.sessionID ?? '') !== sessionId) continue;
+          if (part.messageID) sessionMsgIds.add(String(part.messageID));
+          if (part.type === 'text') {
+            const fullText = String(part.text ?? '');
+            if (fullText.length >= accumulated.length) {
+              accumulated = fullText;
+              opts.onText?.(accumulated);
+            } else if (typeof p.delta === 'string' && p.delta) {
+              accumulated += p.delta;
+              opts.onText?.(accumulated);
+            }
+          }
+          continue;
+        }
+
+        // ── 新格式: message.part.delta ──
+        if (evt.type === 'message.part.delta') {
+          const msgId = typeof p.messageID === 'string' ? p.messageID : null;
+          if (msgId && sessionMsgIds.has(msgId)) {
+            const delta = typeof p.delta === 'string' ? p.delta : '';
+            const field = typeof p.field === 'string' ? p.field : '';
+            if (delta && field === 'text') {
+              accumulated += delta;
+              opts.onText?.(accumulated);
+            }
+          }
+          continue;
+        }
+
+        // ── 旧格式: message.part ──
+        if (evt.type === 'message.part') {
+          if (String(p.sessionID ?? '') !== sessionId) continue;
+          const part = p.part as Record<string, unknown> | undefined;
+          if (part?.type === 'text') {
+            const text = String(part.text ?? part.content ?? '');
+            accumulated += text;
+            opts.onText?.(accumulated);
+          }
+          continue;
+        }
+
+        // ── 错误: session.error ──
+        if (evt.type === 'session.error') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid && sid !== sessionId) continue;
+          cleanup();
+          const errObj = p.error as Record<string, unknown> | undefined;
+          const errMsg = errObj
+            ? String(errObj.message ?? errObj.name ?? '未知错误')
+            : String(p.message ?? '未知错误');
+          opts.onError?.(errMsg);
+          return;
+        }
+
+        // ── 完成: session.completed (旧) ──
+        if (evt.type === 'session.completed') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid && sid !== sessionId) continue;
+          cleanup();
+          opts.onDone?.(accumulated);
+          return;
+        }
+
+        // ── 完成: session.idle (新) ──
+        if (evt.type === 'session.idle') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid !== sessionId) continue;
+          cleanup();
+          opts.onDone?.(accumulated);
+          return;
+        }
+
+        // ── 完成: session.status + idle (新) ──
+        if (evt.type === 'session.status') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid !== sessionId) continue;
+          // p.status 是 SessionStatus 对象 { type: 'idle' | 'busy' | 'retry' }，不是字符串
+          const statusObj = p.status;
+          const statusType = typeof statusObj === 'object' && statusObj !== null
+            ? String((statusObj as Record<string, unknown>).type ?? '')
+            : String(statusObj ?? '');
+          if (statusType === 'idle' || statusType === 'completed') {
+            cleanup();
+            opts.onDone?.(accumulated);
+            return;
+          }
+        }
+
+        // ── 工具权限请求：自动拒绝，避免 session 永久挂起 ──
+        // xingjing 虚拟 Agent 只需文本输出，不支持工具调用
+        if (evt.type === 'permission.asked') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid && sid !== sessionId) continue;
+          cleanup();
+          opts.onError?.('Agent 请求工具权限（自动拒绝）：xingjing 虚拟 Agent 不支持工具调用');
+          return;
+        }
+
+        // ── 澄清问题请求：自动拒绝，避免 session 永久挂起 ──
+        if (evt.type === 'question.asked') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid && sid !== sessionId) continue;
+          cleanup();
+          opts.onError?.('Agent 发起澄清问题请求（自动拒绝）：xingjing 虚拟 Agent 不支持交互式澄清');
+          return;
+        }
+      }
+
+      // 事件流结束但未收到完成信号
+      if (!done) {
+        cleanup();
+        if (accumulated) opts.onDone?.(accumulated);
+        else opts.onError?.('SSE 事件流意外结束（外部 client）');
+      }
+    } catch (e) {
+      if (done) return;
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.toLowerCase().includes('abort')) return;
+      cleanup();
+      if (accumulated) opts.onDone?.(accumulated);
+      else opts.onError?.(`SSE 连接失败: ${msg}`);
+    }
+  })();
+
+  const fullPrompt = opts.systemPrompt
+    ? `${opts.systemPrompt}\n\n---\n\n${opts.userPrompt}`
+    : opts.userPrompt;
+
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (client.session as any).promptAsync({
+      sessionID: sessionId,
+      directory: opts.directory ?? (_directory || undefined),
+      ...(opts.model ? { model: opts.model } : {}),
+      tools: {},  // 禁用所有工具，xingjing 虚拟 Agent 只需文本输出
+      parts: [{ type: 'text', text: fullPrompt }],
+    });
+  } catch {
+    cleanup();
+    opts.onError?.('发送提示词失败（外部 client）');
+>>>>>>> Stashed changes
   }
 
   // ── Layer 2: 全新调用（新 session + 重发 prompt）──
@@ -946,13 +1170,311 @@ export async function callAgent(opts: CallAgentOptions): Promise<void> {
       opts.onDone?.(accumulated);
       return;
     }
+
+  // 启动事件流监听
+  // 传入 opts.directory 作为订阅目录，确保收到该 Session 所属目录的事件
+  void (async () => {
+    try {
+      const eventDir = opts.directory ?? (_directory || undefined);
+      const sub = await client.event.subscribe(
+        eventDir ? { directory: eventDir } : undefined,
+        { signal: controller.signal },
+      );
+      for await (const raw of sub.stream as AsyncIterable<unknown>) {
+        if (done) break;
+        const evt = normalizeRawEvent(raw);
+        if (!evt) continue;
+        const p = evt.props;
+
+        if (evt.type === 'message.part.updated') {
+          const part = p.part as Record<string, unknown> | undefined;
+          if (!part || String(part.sessionID ?? '') !== sessionId) continue;
+          if (part.messageID) sessionMsgIds.add(String(part.messageID));
+          if (part.type === 'text') {
+            const fullText = String(part.text ?? '');
+            if (fullText.length >= accumulated.length) {
+              accumulated = fullText;
+              opts.onText?.(accumulated);
+            } else if (typeof p.delta === 'string' && p.delta) {
+              accumulated += p.delta;
+              opts.onText?.(accumulated);
+            }
+          }
+          continue;
+        }
+
+        if (evt.type === 'message.part.delta') {
+          const msgId = typeof p.messageID === 'string' ? p.messageID : null;
+          if (msgId && sessionMsgIds.has(msgId)) {
+            const delta = typeof p.delta === 'string' ? p.delta : '';
+            const field = typeof p.field === 'string' ? p.field : '';
+            if (delta && field === 'text') {
+              accumulated += delta;
+              opts.onText?.(accumulated);
+            }
+          }
+          continue;
+        }
+
+        if (evt.type === 'message.part') {
+          if (String(p.sessionID ?? '') !== sessionId) continue;
+          const part = p.part as Record<string, unknown> | undefined;
+          if (part?.type === 'text') {
+            const text = String(part.text ?? part.content ?? '');
+            accumulated += text;
+            opts.onText?.(accumulated);
+          }
+          continue;
+        }
+
+        if (evt.type === 'session.error') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid && sid !== sessionId) continue;
+          cleanup();
+          const errObj = p.error as Record<string, unknown> | undefined;
+          const errMsg = errObj
+            ? String(errObj.message ?? errObj.name ?? '未知错误')
+            : String(p.message ?? '未知错误');
+          opts.onError?.(errMsg);
+          return;
+        }
+
+        if (evt.type === 'session.completed') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid && sid !== sessionId) continue;
+          cleanup();
+          opts.onDone?.(accumulated);
+          return;
+        }
+
+        if (evt.type === 'session.idle') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid !== sessionId) continue;
+          cleanup();
+          opts.onDone?.(accumulated);
+          return;
+        }
+
+        if (evt.type === 'session.status') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid !== sessionId) continue;
+          // p.status 是 SessionStatus 对象 { type: 'idle' | 'busy' | 'retry' }，不是字符串
+          const statusObj = p.status;
+          const statusType = typeof statusObj === 'object' && statusObj !== null
+            ? String((statusObj as Record<string, unknown>).type ?? '')
+            : String(statusObj ?? '');
+          if (statusType === 'idle' || statusType === 'completed') {
+            cleanup();
+            opts.onDone?.(accumulated);
+            return;
+          }
+        }
+
+        // ── 工具权限请求：自动拒绝，避免 session 永久挂起 ──
+        // xingjing 虚拟 Agent 只需文本输出，不支持工具调用
+        if (evt.type === 'permission.asked') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid && sid !== sessionId) continue;
+          cleanup();
+          opts.onError?.('Agent 请求工具权限（自动拒绝）：xingjing 虚拟 Agent 不支持工具调用');
+          return;
+        }
+
+        // ── 澄清问题请求：自动拒绝，避免 session 永久挂起 ──
+        if (evt.type === 'question.asked') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid && sid !== sessionId) continue;
+          cleanup();
+          opts.onError?.('Agent 发起澄清问题请求（自动拒绝）：xingjing 虚拟 Agent 不支持交互式澄清');
+          return;
+        }
+      }
+
+      if (!done) {
+        cleanup();
+        if (accumulated) opts.onDone?.(accumulated);
+        else opts.onError?.('SSE 事件流意外结束');
+      }
+    } catch (e) {
+      if (done) return;
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.toLowerCase().includes('abort')) return;
+      cleanup();
+      if (accumulated) opts.onDone?.(accumulated);
+      else opts.onError?.(`SSE 连接失败: ${msg}`);
+>>>>>>> Stashed changes
+    }
     // 服务端硬错误（session.error）：不做 Layer 1 重试，直接进 Layer 2
     if (r.status === 'hard-error' && !r.error?.includes('无法创建')) {
       break;
+=======
+  // 启动事件流监听
+  // 传入 opts.directory 作为订阅目录，确保收到该 Session 所属目录的事件
+  void (async () => {
+    try {
+      const eventDir = opts.directory ?? (_directory || undefined);
+      const sub = await client.event.subscribe(
+        eventDir ? { directory: eventDir } : undefined,
+        { signal: controller.signal },
+      );
+      for await (const raw of sub.stream as AsyncIterable<unknown>) {
+        if (done) break;
+        const evt = normalizeRawEvent(raw);
+        if (!evt) continue;
+        const p = evt.props;
+
+        if (evt.type === 'message.part.updated') {
+          const part = p.part as Record<string, unknown> | undefined;
+          if (!part || String(part.sessionID ?? '') !== sessionId) continue;
+          if (part.messageID) sessionMsgIds.add(String(part.messageID));
+          if (part.type === 'text') {
+            const fullText = String(part.text ?? '');
+            if (fullText.length >= accumulated.length) {
+              accumulated = fullText;
+              opts.onText?.(accumulated);
+            } else if (typeof p.delta === 'string' && p.delta) {
+              accumulated += p.delta;
+              opts.onText?.(accumulated);
+            }
+          }
+          continue;
+        }
+
+        if (evt.type === 'message.part.delta') {
+          const msgId = typeof p.messageID === 'string' ? p.messageID : null;
+          if (msgId && sessionMsgIds.has(msgId)) {
+            const delta = typeof p.delta === 'string' ? p.delta : '';
+            const field = typeof p.field === 'string' ? p.field : '';
+            if (delta && field === 'text') {
+              accumulated += delta;
+              opts.onText?.(accumulated);
+            }
+          }
+          continue;
+        }
+
+        if (evt.type === 'message.part') {
+          if (String(p.sessionID ?? '') !== sessionId) continue;
+          const part = p.part as Record<string, unknown> | undefined;
+          if (part?.type === 'text') {
+            const text = String(part.text ?? part.content ?? '');
+            accumulated += text;
+            opts.onText?.(accumulated);
+          }
+          continue;
+        }
+
+        if (evt.type === 'session.error') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid && sid !== sessionId) continue;
+          cleanup();
+          const errObj = p.error as Record<string, unknown> | undefined;
+          const errMsg = errObj
+            ? String(errObj.message ?? errObj.name ?? '未知错误')
+            : String(p.message ?? '未知错误');
+          opts.onError?.(errMsg);
+          return;
+        }
+
+        if (evt.type === 'session.completed') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid && sid !== sessionId) continue;
+          cleanup();
+          opts.onDone?.(accumulated);
+          return;
+        }
+
+        if (evt.type === 'session.idle') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid !== sessionId) continue;
+          cleanup();
+          opts.onDone?.(accumulated);
+          return;
+        }
+
+        if (evt.type === 'session.status') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid !== sessionId) continue;
+          // p.status 是 SessionStatus 对象 { type: 'idle' | 'busy' | 'retry' }，不是字符串
+          const statusObj = p.status;
+          const statusType = typeof statusObj === 'object' && statusObj !== null
+            ? String((statusObj as Record<string, unknown>).type ?? '')
+            : String(statusObj ?? '');
+          if (statusType === 'idle' || statusType === 'completed') {
+            cleanup();
+            opts.onDone?.(accumulated);
+            return;
+          }
+        }
+
+        // ── 工具权限请求：自动拒绝，避免 session 永久挂起 ──
+        // xingjing 虚拟 Agent 只需文本输出，不支持工具调用
+        if (evt.type === 'permission.asked') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid && sid !== sessionId) continue;
+          cleanup();
+          opts.onError?.('Agent 请求工具权限（自动拒绝）：xingjing 虚拟 Agent 不支持工具调用');
+          return;
+        }
+
+        // ── 澄清问题请求：自动拒绝，避免 session 永久挂起 ──
+        if (evt.type === 'question.asked') {
+          const sid = typeof p.sessionID === 'string' ? p.sessionID : null;
+          if (sid && sid !== sessionId) continue;
+          cleanup();
+          opts.onError?.('Agent 发起澄清问题请求（自动拒绝）：xingjing 虚拟 Agent 不支持交互式澄清');
+          return;
+        }
+      }
+
+      if (!done) {
+        cleanup();
+        if (accumulated) opts.onDone?.(accumulated);
+        else opts.onError?.('SSE 事件流意外结束');
+      }
+    } catch (e) {
+      if (done) return;
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.toLowerCase().includes('abort')) return;
+      cleanup();
+      if (accumulated) opts.onDone?.(accumulated);
+      else opts.onError?.(`SSE 连接失败: ${msg}`);
+>>>>>>> Stashed changes
     }
 
+  // 发送提示词
+  const fullPrompt = opts.systemPrompt
+    ? `${opts.systemPrompt}\n\n---\n\n${opts.userPrompt}`
+    : opts.userPrompt;
+
+  const ok = await sessionPrompt(sessionId, fullPrompt, {
+    directory: opts.directory,
+    model: opts.model,
+    disableTools: true,  // xingjing 虚拟 Agent 只需文本输出，禁用工具调用
+  });
+  if (!ok) {
+    cleanup();
+    opts.onError?.('发送提示词失败，请检查 OpenCode 连接');
+>>>>>>> Stashed changes
+  }
     // session 创建失败：无法 Layer 1 重连，直接进 Layer 2
     if (!sessionId) break;
+  }
+=======
+  // 发送提示词
+  const fullPrompt = opts.systemPrompt
+    ? `${opts.systemPrompt}\n\n---\n\n${opts.userPrompt}`
+    : opts.userPrompt;
+
+  const ok = await sessionPrompt(sessionId, fullPrompt, {
+    directory: opts.directory,
+    model: opts.model,
+    disableTools: true,  // xingjing 虚拟 Agent 只需文本输出，禁用工具调用
+  });
+  if (!ok) {
+    cleanup();
+    opts.onError?.('发送提示词失败，请检查 OpenCode 连接');
+>>>>>>> Stashed changes
   }
 
   // ── Layer 2: 全新调用（新 session + 重发 prompt）──
@@ -995,6 +1517,8 @@ export interface DirectLLMConfig {
   apiKey: string;
   modelID?: string;
   providerID?: string;
+  maxTokens?: number;
+  temperature?: number;
 }
 
 /**
@@ -1036,7 +1560,7 @@ export async function callAgentDirect(
     endpoint = `${apiUrl}/messages`;
     body = {
       model: modelId,
-      max_tokens: 4096,
+      max_tokens: llmConfig.maxTokens ?? 4096,
       ...(systemContent ? { system: systemContent } : {}),
       messages: [{ role: 'user', content: userContent }],
       stream: true,
@@ -1048,6 +1572,8 @@ export async function callAgentDirect(
       model: modelId,
       messages,
       stream: true,
+      max_tokens: llmConfig.maxTokens ?? 4096,
+      temperature: llmConfig.temperature ?? 0.7,
     };
   }
 

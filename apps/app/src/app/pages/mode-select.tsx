@@ -20,15 +20,9 @@ export default function ModeSelectPage() {
     navigate("/");
   };
 
-  const handleSelectXingjing = () => {
-    savePreference("xingjing");
-    // 内部路由导航，在 openwork 窗口内嵌入星静，而非打开独立页面
-    navigate("/xingjing");
-  };
-
   const handleSelectXingjingSolid = () => {
     savePreference("xingjing-solid");
-    // 每次进入融合版，强制重置为团队版模式，确保默认打开团队版驾驶舱
+    // 进入星静时，强制重置为团队版模式，确保默认打开团队版驾驶舱
     try {
       const raw = localStorage.getItem('xingjing:preferences');
       const prefs = raw ? JSON.parse(raw) : { activeProductId: null };
@@ -72,27 +66,7 @@ export default function ModeSelectPage() {
             </div>
           </button>
 
-          {/* 星静平台卡片 (React iframe版) */}
-          <button
-            class={`flex-1 flex flex-col gap-3 p-6 rounded-xl border cursor-pointer bg-dls-surface transition-all text-left ${
-              preference() === "xingjing"
-                ? "border-purple-8 ring-2 ring-purple-8/60 hover:border-purple-9 hover:bg-purple-3"
-                : "border-purple-7 hover:border-purple-8 hover:bg-purple-3"
-            }`}
-            onClick={handleSelectXingjing}
-            data-testid="mode-xingjing"
-          >
-            <div class="text-2xl">🌙</div>
-            <div>
-              <div class="font-semibold text-purple-11 text-lg">星静 React 版</div>
-              <div class="text-gray-10 text-sm mt-1">All-in-One 研发平台</div>
-            </div>
-            <div class="text-gray-9 text-xs mt-auto">
-              产品规划 / 需求 / 研发 / 质量 / 发布一体化
-            </div>
-          </button>
-
-          {/* 星静 SolidJS 原生版卡片 */}
+          {/* 星静卡片 */}
           <button
             class={`flex-1 flex flex-col gap-3 p-6 rounded-xl border cursor-pointer bg-dls-surface transition-all text-left ${
               preference() === "xingjing-solid"
@@ -104,11 +78,11 @@ export default function ModeSelectPage() {
           >
             <div class="text-2xl">✨</div>
             <div>
-              <div class="font-semibold text-green-11 text-lg">星静（原生集成版）</div>
+              <div class="font-semibold text-green-11 text-lg">星静</div>
               <div class="text-gray-10 text-sm mt-1">All-in-One 研发平台 · 独立/团队双模式</div>
             </div>
             <div class="text-gray-9 text-xs mt-auto">
-              原生 SolidJS 深度融合 · 无 iframe · 高性能
+              产品规划 / 需求 / 研发 / 质量 / 发布一体化
             </div>
           </button>
         </div>

@@ -674,7 +674,7 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
         ));
         setLoading(false);
       },
-    });
+    }).catch(() => { setLoading(false); });
   };
 
   // ─── Orchestrator 两阶段调度 ───────────────────────────────────────────────
@@ -749,7 +749,7 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
         updateDispatch(prev => ({ ...prev, phase: 'error', error: err }));
         setLoading(false);
       },
-    });
+    }).catch(() => { setLoading(false); });
   };
 
   // ─── 拖拽处理 ─────────────────────────────────────────────────────────────

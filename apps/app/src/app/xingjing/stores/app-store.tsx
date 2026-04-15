@@ -350,6 +350,15 @@ export const AppStoreProvider: ParentComponent<{
       // 标记是否遇到“session 无法创建”类错误
       let sessionCreateFailed = false;
 
+      // ── 调用前确保 API Key 已同步到 OpenCode（解决端口变更后 key 丢失的问题）──
+      const ensureApiKey = async () => {
+        const pid = model?.providerID ?? llmCfg.providerID;
+        const key = llmCfg.apiKey;
+        if (pid && pid !== 'custom' && key && key.length > 4) {
+          await setProviderAuth(pid, key).catch(() => {/* silent */});
+        }
+      };
+
       const wrappedOpts: CallAgentOptions = {
         ...opts,
         directory: dir,
@@ -384,10 +393,13 @@ export const AppStoreProvider: ParentComponent<{
       };
 
       const runOpenCode = (): Promise<void> => {
-        if (owClient) {
-          return callAgentWithClient(owClient, wrappedOpts);
-        }
-        return _callAgent({ ...wrappedOpts });
+        // 调用前同步 API Key 到 OpenCode，确保端口变更后仍能调用成功
+        return ensureApiKey().then(() => {
+          if (owClient) {
+            return callAgentWithClient(owClient, wrappedOpts);
+          }
+          return _callAgent({ ...wrappedOpts });
+        });
       };
 
       return runOpenCode().then(async () => {

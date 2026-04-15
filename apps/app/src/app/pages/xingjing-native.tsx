@@ -147,7 +147,7 @@ function XingjingApp(props: { outerNavigate: ReturnType<typeof useNavigate>; ope
           ← 返回模式选择
         </button>
         <span class="text-lg">🌙</span>
-        <span class="font-semibold text-purple-11 text-base">星静 openwork融合版</span>
+        <span class="font-semibold text-purple-11 text-base">星静</span>
         <span class="text-gray-10 text-sm">All-in-One 研发平台</span>
       </header>
 

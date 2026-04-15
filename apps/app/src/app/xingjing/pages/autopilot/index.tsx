@@ -222,6 +222,13 @@ const EnterpriseAutopilot = () => {
 
     const workDir = store.productStore.activeProduct()?.workDir;
     const model = getSessionModel();
+
+    // ── 前置校验：模型未配置时立即报错，避免等待 SSE 超时 ──
+    if (!model && configuredModels().length === 0) {
+      setAgentError('尚未配置可用的大模型，请先前往「设置 → 大模型配置」填写 API Key 并保存');
+      setRunState('idle');
+      return;
+    }
     const { targetAgent, cleanText } = parseMention(goal(), TEAM_AGENTS);
 
     if (targetAgent) {

@@ -1,7 +1,7 @@
 import { createSignal, createMemo, Show, For } from 'solid-js';
 import {
   FileText, Edit3, Code2, Eye, Bold, Italic, Type, List, Link, Quote,
-  ExternalLink, Minimize2,
+  ExternalLink, Minimize2, Save, Loader2,
 } from 'lucide-solid';
 import { themeColors, chartColors } from '../../utils/colors';
 
@@ -20,6 +20,8 @@ interface ArtifactWorkspaceProps {
   onContentChange?: (id: string, content: string) => void;
   isFloating?: boolean;
   onToggleFloat?: () => void;
+  onSave?: (artifact: ArtifactItem) => void;
+  saving?: boolean;
   onDragStart?: (e: PointerEvent) => void;
   onDragMove?: (e: PointerEvent) => void;
   onDragEnd?: (e: PointerEvent) => void;
@@ -398,6 +400,33 @@ const ArtifactWorkspace = (props: ArtifactWorkspaceProps) => {
               }}
             >
               <span>Markdown · {charCount()} 字符</span>
+              <Show when={props.onSave !== undefined}>
+                <button
+                  onClick={() => { const a = activeArtifact(); if (a) props.onSave?.(a); }}
+                  disabled={props.saving}
+                  title="保存到工作目录"
+                  style={{
+                    display: 'inline-flex',
+                    'align-items': 'center',
+                    gap: '4px',
+                    padding: '2px 10px',
+                    'border-radius': '4px',
+                    'font-size': '11px',
+                    cursor: props.saving ? 'not-allowed' : 'pointer',
+                    border: `1px solid ${chartColors.success}`,
+                    background: chartColors.success + '15',
+                    color: chartColors.success,
+                    'font-weight': '500',
+                    opacity: props.saving ? 0.6 : 1,
+                    transition: 'all 0.15s',
+                  }}
+                >
+                  <Show when={props.saving} fallback={<Save size={11} />}>
+                    <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} />
+                  </Show>
+                  {props.saving ? '保存中...' : '保存'}
+                </button>
+              </Show>
               <span>来自 {art().agentName} · {art().createdAt}</span>
             </div>
           )}

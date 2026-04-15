@@ -237,13 +237,15 @@ export async function runOrchestratedAutopilot(
         safeResolve();
       },
       onError: (err) => {
-        opts.onError?.(`Orchestrator 调用失败: ${err}`);
-        safeResolve();
+        try { opts.onError?.(`Orchestrator 调用失败: ${err}`); } finally { safeResolve(); }
       },
     }).catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      opts.onError?.(`Orchestrator 调用异常: ${msg}`);
-      safeResolve();
+      try {
+        const msg = err instanceof Error ? err.message : String(err);
+        opts.onError?.(`Orchestrator 调用异常: ${msg}`);
+      } finally {
+        safeResolve();
+      }
     });
   });
 
@@ -289,20 +291,29 @@ export async function runOrchestratedAutopilot(
             opts.onAgentStream?.(agentId, accumulated);
           },
           onDone: (fullText) => {
-            results[agentId] = fullText;
-            opts.onAgentStatus?.(agentId, 'done');
-            safeResolve();
+            try {
+              results[agentId] = fullText;
+              opts.onAgentStatus?.(agentId, 'done');
+            } finally {
+              safeResolve();
+            }
           },
           onError: (err) => {
-            results[agentId] = `执行错误: ${err}`;
-            opts.onAgentStatus?.(agentId, 'error');
-            safeResolve();
+            try {
+              results[agentId] = `执行错误: ${err}`;
+              opts.onAgentStatus?.(agentId, 'error');
+            } finally {
+              safeResolve();
+            }
           },
         }).catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          results[agentId] = `执行异常: ${msg}`;
-          opts.onAgentStatus?.(agentId, 'error');
-          safeResolve();
+          try {
+            const msg = err instanceof Error ? err.message : String(err);
+            results[agentId] = `执行异常: ${msg}`;
+            opts.onAgentStatus?.(agentId, 'error');
+          } finally {
+            safeResolve();
+          }
         });
       });
     }),
@@ -346,20 +357,29 @@ export async function runDirectAgent(
         opts.onStream?.(accumulated);
       },
       onDone: (fullText) => {
-        opts.onStatus?.('done');
-        opts.onDone?.(fullText);
-        safeResolve();
+        try {
+          opts.onStatus?.('done');
+          opts.onDone?.(fullText);
+        } finally {
+          safeResolve();
+        }
       },
       onError: (err) => {
-        opts.onStatus?.('error');
-        opts.onError?.(err);
-        safeResolve();
+        try {
+          opts.onStatus?.('error');
+          opts.onError?.(err);
+        } finally {
+          safeResolve();
+        }
       },
     }).catch((err: unknown) => {
-      opts.onStatus?.('error');
-      const msg = err instanceof Error ? err.message : String(err);
-      opts.onError?.(`调用异常: ${msg}`);
-      safeResolve();
+      try {
+        opts.onStatus?.('error');
+        const msg = err instanceof Error ? err.message : String(err);
+        opts.onError?.(`调用异常: ${msg}`);
+      } finally {
+        safeResolve();
+      }
     });
   });
 }

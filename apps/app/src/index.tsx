@@ -150,9 +150,7 @@ const platform: Platform = {
 };
 
 const ModeSelectPage = lazy(() => import("./app/pages/mode-select"));
-// 星静平台：懒加载
-const XingjingPage = lazy(() => import("./app/pages/xingjing"));
-// 原生集成版：直接嵌入 apps/app/src/app/xingjing，无 iframe
+// 星静：直接嵌入 apps/app/src/app/xingjing，无 iframe
 const XingjingNativePageLazy = lazy(() => import("./app/pages/xingjing-native"));
 // 路由注册用包装器（路由系统不传 OpenWork 上下文，直接以空 props 渲染）
 const XingjingNativePage = () => <XingjingNativePageLazy />;
@@ -162,7 +160,6 @@ render(
     <PlatformProvider value={platform}>
       <RouterComponent root={AppEntry}>
         <Route path="/mode-select" component={ModeSelectPage} />
-        <Route path="/xingjing" component={XingjingPage} />
         <Route path="/xingjing-solid" component={XingjingNativePage} />
         <Route path="*all" component={() => null} />
       </RouterComponent>

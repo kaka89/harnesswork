@@ -12,7 +12,6 @@ import {
 
 import { useLocation, useNavigate } from "@solidjs/router";
 import ModeSelectPage from "./pages/mode-select";
-import XingjingPage from "./pages/xingjing";
 import XingjingNativePage from "./pages/xingjing-native";
 
 import type { Session } from "@opencode-ai/sdk/v2/client";
@@ -2256,7 +2255,7 @@ export default function App() {
       return;
     }
 
-    // F003: /mode-select、/xingjing、/xingjing-solid 是合法路由，不拦截
+    // F003: /mode-select、/xingjing-solid 是合法路由，不拦截
     if (path === "/mode-select" || path.startsWith("/xingjing")) {
       return;
     }
@@ -2358,9 +2357,6 @@ export default function App() {
             return m ? { providerID: m.providerID, modelID: m.modelID } : null;
           }}
         />
-      </Match>
-      <Match when={location.pathname.startsWith("/xingjing")}>
-        <XingjingPage />
       </Match>
       <Match when={true}>
     <OpenworkServerProvider store={openworkServerStore}>

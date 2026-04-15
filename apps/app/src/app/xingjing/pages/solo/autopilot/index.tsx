@@ -6,7 +6,8 @@ import { useAppStore } from '../../../stores/app-store';
 import { themeColors, chartColors } from '../../../utils/colors';
 import { soloWorkflowSteps, soloSampleGoals } from '../../../mock/autopilot';
 import { modelOptions } from '../../../mock/settings';
-import { loadProjectSettings } from '../../../services/file-store';
+import { loadProjectSettings, readYaml } from '../../../services/file-store';
+import { initProductDir } from '../../../../lib/tauri';
 import {
   SOLO_AGENTS,
   runOrchestratedAutopilot,
@@ -127,18 +128,32 @@ const SoloBrainCard = (props: {
           <span style={{ 'font-size': '11px', color: themeColors.textMuted }}>
             {props.elapsedTime ?? '—'}
           </span>
-          <Show when={props.artifactCount > 0}>
-            <span style={{
-              'font-size': '10px',
-              padding: '1px 7px',
-              'border-radius': '4px',
-              background: chartColors.success + '20',
-              color: chartColors.success,
-              'font-weight': '500',
-            }}>
-              {props.artifactCount} 产出
-            </span>
-          </Show>
+          <div style={{ display: 'flex', 'align-items': 'center', gap: '4px' }}>
+            <Show when={props.doneToday > 0}>
+              <span style={{
+                'font-size': '10px',
+                padding: '1px 6px',
+                'border-radius': '4px',
+                background: chartColors.primary + '20',
+                color: chartColors.primary,
+                'font-weight': '500',
+              }}>
+                {props.doneToday} 次
+              </span>
+            </Show>
+            <Show when={props.artifactCount > 0}>
+              <span style={{
+                'font-size': '10px',
+                padding: '1px 7px',
+                'border-radius': '4px',
+                background: chartColors.success + '20',
+                color: chartColors.success,
+                'font-weight': '500',
+              }}>
+                {props.artifactCount} 产出
+              </span>
+            </Show>
+          </div>
         </div>
       </div>
     </div>
@@ -454,6 +469,8 @@ const SoloAutopilot = () => {
   const [artifactsData, setArtifactsData] = createSignal<ArtifactItem[]>([]);
   const [showExpandOverlay, setShowExpandOverlay] = createSignal(false);
   const [directAnswer, setDirectAnswer] = createSignal<string | null>(null);
+  const [saving, setSaving] = createSignal(false);
+  const [saveMsg, setSaveMsg] = createSignal<string | null>(null);
 
   // ─── 权限授权队列 ─────────────────────────────────────────────────────────────
   // 队列头部为当前展示的 Dialog，resolve 后自动弹出下一个
@@ -562,6 +579,10 @@ const SoloAutopilot = () => {
     setExpandedSteps({});
     setStepTimes({});
     setChatMessages([]);
+    // 清理残留的权限请求：reject 所有等待中的 Promise 防止旧 SSE 循环永远卡住
+    permissionQueue().forEach((req) => { try { req.resolve('reject'); } catch { /* noop */ } });
+    setPermissionQueue([]);
+    // 注意：agentDone 不在此重置，记录本次会话的累计执行次数
   };
 
   // 格式化当前时间 HH:MM:SS
@@ -699,6 +720,13 @@ const SoloAutopilot = () => {
 
     const workDir = productStore.activeProduct()?.workDir;
     const model = getSessionModel();  // 使用会话内用户选择的模型
+
+    // ── 前置校验：模型未配置时立即报错，避免等待 SSE 超时 ──
+    if (!model && configuredModels().length === 0) {
+      setAgentError('尚未配置可用的大模型，请先前往「设置 → 大模型配置」填写 API Key 并保存');
+      setRunState('idle');
+      return;
+    }
     const { targetAgent, cleanText } = parseMention(goal(), SOLO_AGENTS);
 
     if (targetAgent) {
@@ -726,6 +754,22 @@ const SoloAutopilot = () => {
           setAgentStreamTexts((prev) => ({ ...prev, [targetAgent.id]: fullText }));
           updateLastAiMsg(targetAgent.id, fullText, false);
           setAgentDone((prev) => ({ ...prev, [targetAgent.id]: (prev[targetAgent.id] || 0) + 1 }));
+          // 解析并构造产出物
+          if (fullText.trim()) {
+            const now = new Date();
+            const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+            const titleMatch = fullText.match(/^#+\s+(.+)$/m);
+            const artTitle = titleMatch?.[1]?.trim() ?? `${targetAgent.name} 产出`;
+            setArtifactsData([{
+              id: `artifact-${targetAgent.id}-${Date.now()}`,
+              agentId: targetAgent.id,
+              agentName: targetAgent.name,
+              agentEmoji: targetAgent.emoji,
+              title: artTitle,
+              content: fullText,
+              createdAt: timeStr,
+            }]);
+          }
           setProgress(100);
           setRunState('done');
         },
@@ -802,8 +846,14 @@ const SoloAutopilot = () => {
           const agent = SOLO_AGENTS.find((a) => a.id === agentId);
           const actionMatch = text.match(/##\s+执行动作\s*\n([^\n]+)/);
           const artMatch = text.match(/###\s+产出物[：:]\s*(.+)\n([\s\S]+)/);
+          // 标题回退：取正文第一个 markdown heading 或 Agent 名称
+          const firstHeadingMatch = !artMatch ? text.match(/^#+\s+(.+)$/m) : null;
           if (agent) {
             updateLastAiMsg(agentId, text, false);
+            const artTitle = artMatch
+              ? artMatch[1].trim()
+              : (firstHeadingMatch?.[1]?.trim() ?? `${agent.name} 产出`);
+            const artContent = artMatch ? artMatch[2].trim() : text.trim();
             steps.push({
               id: `real-${agentId}`,
               agentId,
@@ -811,18 +861,18 @@ const SoloAutopilot = () => {
               action: actionMatch?.[1]?.trim() ?? '执行完成',
               output: text.slice(0, 200),
               durationMs: 0,
-              artifact: artMatch
-                ? { title: artMatch[1].trim(), content: artMatch[2].trim().slice(0, 500) }
+              artifact: artContent
+                ? { title: artTitle, content: artContent.slice(0, 500) }
                 : undefined,
             });
-            if (artMatch) {
+            if (artContent) {
               newArtifactsData.push({
                 id: `artifact-${agentId}-${Date.now()}`,
                 agentId,
                 agentName: agent.name,
                 agentEmoji: agent.emoji,
-                title: artMatch[1].trim(),
-                content: artMatch[2].trim(),
+                title: artTitle,
+                content: artContent,
                 createdAt: timeStr,
               });
             }
@@ -845,6 +895,70 @@ const SoloAutopilot = () => {
         setRunState('done');
       },
     });
+  };
+
+  // ─── 产出物保存 ─────────────────────────────────────────────────────────────
+  const handleSaveArtifact = async (artifact: ArtifactItem) => {
+    const product = productStore.activeProduct();
+    const workDir = product?.workDir;
+    if (!workDir) {
+      setSaveMsg('未找到活跃产品的工作目录');
+      setTimeout(() => setSaveMsg(null), 3000);
+      return;
+    }
+    setSaving(true);
+    try {
+      // 1. 读取 config.yaml 获取 appCode（使用相对路径 + directory 参数）
+      let appCode: string | undefined;
+      try {
+        const config = await readYaml<{ apps?: string[] }>(
+          '.xingjing/config.yaml',
+          { apps: [] },
+          workDir,
+        );
+        appCode = config.apps?.[0];
+      } catch {
+        console.warn('[solo-autopilot] 读取 .xingjing/config.yaml 失败，尝试降级');
+      }
+      // 降级：使用产品 code 作为 appCode
+      if (!appCode && product?.code) {
+        appCode = product.code;
+        console.info(`[solo-autopilot] 降级使用产品编码 "${appCode}" 作为 appCode`);
+      }
+      if (!appCode) throw new Error('未找到应用编码，请确认产品目录已初始化或产品已设置英文编码');
+
+      // 2. 根据 agentId 确定目标子目录
+      const dirMap: Record<string, string> = {
+        'product-brain': `apps/${appCode}/docs/product/prd`,
+        'eng-brain': `apps/${appCode}/docs/product/architecture`,
+      };
+      const subDir = dirMap[artifact.agentId] ?? `apps/${appCode}/docs/delivery`;
+
+      // 3. 生成安全文件名
+      const safeName = artifact.title
+        .replace(/[\/\\:*?"<>|]/g, '-')
+        .replace(/\s+/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '')
+        .slice(0, 60);
+      const timestamp = new Date().toISOString().slice(0, 10);
+      const fileName = `${safeName}-${timestamp}.md`;
+
+      // 4. 通过 Tauri 原生命令写入文件（自动创建父目录）
+      const relativePath = `${subDir}/${fileName}`;
+      const result = await initProductDir(workDir, [{ path: relativePath, content: artifact.content }]);
+      if (!result.ok) {
+        throw new Error(result.error ?? '文件写入失败');
+      }
+
+      setSaveMsg(`已保存到 ${subDir}/${fileName}`);
+      setTimeout(() => setSaveMsg(null), 3000);
+    } catch (e) {
+      setSaveMsg(`保存失败：${e instanceof Error ? e.message : String(e)}`);
+      setTimeout(() => setSaveMsg(null), 4000);
+    } finally {
+      setSaving(false);
+    }
   };
 
   // ─── 产出物区域 resize / 悬浮面板拖拽 ──────────────────────────────────────
@@ -1649,6 +1763,8 @@ const SoloAutopilot = () => {
           <ArtifactWorkspace
             artifacts={artifactsData()}
             isFloating={false}
+            onSave={handleSaveArtifact}
+            saving={saving()}
             onToggleFloat={() => {
               setArtifactFloatWidth(artifactWidth());
               setArtifactFloatHeight(Math.round(window.innerHeight * 0.78));
@@ -1677,6 +1793,8 @@ const SoloAutopilot = () => {
           <ArtifactWorkspace
             artifacts={artifactsData()}
             isFloating={true}
+            onSave={handleSaveArtifact}
+            saving={saving()}
             onToggleFloat={() => setArtifactFloat(false)}
             onDragStart={handleFloatDragStart}
             onDragMove={handleFloatDragMove}
@@ -1699,6 +1817,28 @@ const SoloAutopilot = () => {
         />
       </Show>
 
+      {/* 保存结果提示 */}
+      <Show when={saveMsg() !== null}>
+        <div
+          style={{
+            position: 'fixed',
+            bottom: '20px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            padding: '8px 20px',
+            'border-radius': '6px',
+            'font-size': '13px',
+            'z-index': 300,
+            background: saveMsg()?.startsWith('已保存') ? themeColors.successBg : '#fff2f0',
+            border: `1px solid ${saveMsg()?.startsWith('已保存') ? themeColors.successBorder : '#ffccc7'}`,
+            color: saveMsg()?.startsWith('已保存') ? chartColors.success : '#cf1322',
+            'box-shadow': '0 4px 16px rgba(0,0,0,0.12)',
+          }}
+        >
+          {saveMsg()}
+        </div>
+      </Show>
+
       <CreateProductModal
         open={createModalOpen()}
         onClose={() => setCreateModalOpen(false)}
@@ -1707,12 +1847,14 @@ const SoloAutopilot = () => {
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         @keyframes blink { 0%,80%,100% { opacity: 0; } 40% { opacity: 1; } }
       `}</style>
-      {/* 工具权限授权 Dialog */}
-      <Show when={permissionQueue().length > 0}>
-        <PermissionDialog
-          request={permissionQueue()[0]!}
-          onResolve={handlePermissionResolve}
-        />
+      {/* 工具权限授权 Dialog（用 permissionId 作 key 确保队列轮转时重建组件 + 重启倒计时） */}
+      <Show when={permissionQueue()[0]} keyed>
+        {(req) => (
+          <PermissionDialog
+            request={req}
+            onResolve={handlePermissionResolve}
+          />
+        )}
       </Show>
     </div>
   );

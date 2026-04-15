@@ -1,0 +1,462 @@
+/**
+ * dir-graph 驱动的文档知识扫描器
+ *
+ * 核心设计：不硬编码扫描路径，解析 .xingjing/dir-graph.yaml 作为权威文档地图，
+ * 根据其中的 doc-types、layers、path-vars、doc-chain 结构化地扫描整个 workspace。
+ *
+ * 扫描流程（三步）：
+ * 1. 解析 dir-graph.yaml
+ * 2. 台账优先扫描（_index.yaml 存在时直接解析，否则文件系统扫描）
+ * 3. 差异化提取（按文档类型差异化解析内容）
+ */
+
+import { fileRead, fileList } from './opencode-client';
+import { parseYamlSimple, parseFrontmatter } from './file-store';
+import type { WorkspaceDocKnowledge, DirGraphConfig } from './knowledge-index';
+
+// ─── 常量 ─────────────────────────────────────────────────────────────────────
+
+const DIR_GRAPH_PATH = '.xingjing/dir-graph.yaml';
+const DOC_INDEX_OUTPUT = '.xingjing/solo/knowledge/_doc-index.json';
+
+// ─── 主入口 ─────────────────────────────────────────────────────────────────
+
+/**
+ * 执行完整文档扫描，产出 WorkspaceDocKnowledge[]
+ *
+ * @param workDir 产品工作目录
+ * @returns 扫描到的文档知识列表
+ */
+export async function scanWorkspaceDocs(
+  workDir: string,
+): Promise<WorkspaceDocKnowledge[]> {
+  // Step 1: 解析 dir-graph.yaml
+  const dirGraph = await loadDirGraph(workDir);
+  if (!dirGraph) {
+    console.warn('[knowledge-scanner] dir-graph.yaml not found, using fallback scan');
+    return fallbackScan(workDir);
+  }
+
+  const results: WorkspaceDocKnowledge[] = [];
+
+  // Step 2: 遍历 doc-types，台账优先扫描
+  for (const [docTypeKey, docTypeDef] of Object.entries(dirGraph.docTypes)) {
+    try {
+      const docs = await scanDocType(workDir, dirGraph, docTypeKey, docTypeDef);
+      results.push(...docs);
+    } catch (e) {
+      console.warn(`[knowledge-scanner] Failed to scan docType ${docTypeKey}:`, e);
+    }
+  }
+
+  // 保存扫描结果
+  await saveScanResult(workDir, results);
+
+  return results;
+}
+
+/**
+ * 增量扫描：仅扫描指定路径的文档
+ */
+export async function scanSingleDoc(
+  workDir: string,
+  filePath: string,
+): Promise<WorkspaceDocKnowledge | null> {
+  const dirGraph = await loadDirGraph(workDir);
+  if (!dirGraph) return null;
+
+  // 从路径推断文档类型
+  for (const [docTypeKey, docTypeDef] of Object.entries(dirGraph.docTypes)) {
+    for (const location of docTypeDef.locations) {
+      const resolvedLocation = resolvePathVars(location, dirGraph.pathVars);
+      if (filePath.startsWith(resolvedLocation)) {
+        return extractDocKnowledge(workDir, filePath, docTypeKey, docTypeDef, dirGraph);
+      }
+    }
+  }
+
+  return null;
+}
+
+// ─── Step 1: 解析 dir-graph.yaml ─────────────────────────────────────────────
+
+async function loadDirGraph(workDir: string): Promise<DirGraphConfig | null> {
+  try {
+    const content = await fileRead(`${workDir}/${DIR_GRAPH_PATH}`);
+    if (!content) return null;
+    const raw = parseYamlSimple(content) as Record<string, unknown>;
+    return normalizeDirGraph(raw);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeDirGraph(raw: Record<string, unknown>): DirGraphConfig {
+  const pathVars = (raw['path-vars'] ?? raw['pathVars'] ?? {}) as Record<string, string | string[]>;
+  const layers = Array.isArray(raw['layers'])
+    ? (raw['layers'] as Array<Record<string, unknown>>).map(l => ({
+        id: String(l['id'] ?? ''),
+        path: String(l['path'] ?? ''),
+        contains: Array.isArray(l['contains']) ? l['contains'].map(String) : [],
+      }))
+    : [];
+
+  const rawDocTypes = (raw['doc-types'] ?? raw['docTypes'] ?? {}) as Record<string, Record<string, unknown>>;
+  const docTypes: DirGraphConfig['docTypes'] = {};
+  for (const [key, def] of Object.entries(rawDocTypes)) {
+    docTypes[key] = {
+      category: (def['category'] ?? 'baseline') as 'baseline' | 'process-delivery' | 'process-research',
+      naming: String(def['naming'] ?? ''),
+      locations: Array.isArray(def['locations']) ? def['locations'].map(String) : [],
+      owner: String(def['owner'] ?? ''),
+      upstream: Array.isArray(def['upstream']) ? def['upstream'].map(String) : undefined,
+      downstream: Array.isArray(def['downstream']) ? def['downstream'].map(String) : undefined,
+      index: def['index'] ? String(def['index']) : undefined,
+    };
+  }
+
+  const rawDocChain = Array.isArray(raw['doc-chain'] ?? raw['docChain'])
+    ? (raw['doc-chain'] ?? raw['docChain']) as Array<Record<string, string>>
+    : [];
+  const docChain = rawDocChain.map(c => ({
+    from: String(c['from'] ?? ''),
+    to: String(c['to'] ?? ''),
+    gate: String(c['gate'] ?? ''),
+  }));
+
+  const rawAgents = (raw['agents'] ?? {}) as Record<string, Record<string, unknown>>;
+  const agents: DirGraphConfig['agents'] = {};
+  for (const [key, def] of Object.entries(rawAgents)) {
+    agents[key] = {
+      outputs: Array.isArray(def['outputs'])
+        ? (def['outputs'] as Array<Record<string, string>>).map(o => ({
+            type: String(o['type'] ?? ''),
+            path: String(o['path'] ?? ''),
+          }))
+        : [],
+    };
+  }
+
+  return {
+    version: String(raw['version'] ?? '1'),
+    mode: (raw['mode'] ?? 'solo') as 'solo' | 'team',
+    pathVars,
+    layers,
+    docTypes,
+    docChain,
+    agents,
+  };
+}
+
+// ─── Step 2: 台账优先扫描 ───────────────────────────────────────────────────
+
+async function scanDocType(
+  workDir: string,
+  dirGraph: DirGraphConfig,
+  docTypeKey: string,
+  docTypeDef: DirGraphConfig['docTypes'][string],
+): Promise<WorkspaceDocKnowledge[]> {
+  const results: WorkspaceDocKnowledge[] = [];
+
+  for (const location of docTypeDef.locations) {
+    const resolvedPath = resolvePathVars(location, dirGraph.pathVars);
+    const fullPath = `${workDir}/${resolvedPath}`;
+
+    // 台账优先：检查 _index.yaml 是否存在
+    if (docTypeDef.index) {
+      const indexPath = `${fullPath}/${docTypeDef.index}`;
+      const indexContent = await fileRead(indexPath);
+      if (indexContent) {
+        const docs = await scanFromIndex(workDir, indexContent, docTypeKey, docTypeDef, dirGraph, resolvedPath);
+        results.push(...docs);
+        continue;
+      }
+    }
+
+    // 降级：文件系统扫描
+    const docs = await scanFromFileSystem(workDir, fullPath, docTypeKey, docTypeDef, dirGraph, resolvedPath);
+    results.push(...docs);
+  }
+
+  return results;
+}
+
+/**
+ * 从台账文件 _index.yaml 解析文档清单
+ */
+async function scanFromIndex(
+  workDir: string,
+  indexContent: string,
+  docTypeKey: string,
+  docTypeDef: DirGraphConfig['docTypes'][string],
+  dirGraph: DirGraphConfig,
+  basePath: string,
+): Promise<WorkspaceDocKnowledge[]> {
+  const results: WorkspaceDocKnowledge[] = [];
+  try {
+    const parsed = parseYamlSimple(indexContent);
+    const items = Array.isArray(parsed['items']) ? parsed['items'] as Array<Record<string, unknown>> : [];
+
+    for (const item of items) {
+      const filePath = item['path'] ? String(item['path']) : null;
+      if (!filePath) continue;
+
+      const fullFilePath = filePath.startsWith('/') ? filePath : `${basePath}/${filePath}`;
+      const doc = await extractDocKnowledge(workDir, fullFilePath, docTypeKey, docTypeDef, dirGraph);
+      if (doc) {
+        // 从台账补充元数据
+        if (item['status']) doc.frontmatter['status'] = item['status'];
+        if (item['refs']) doc.frontmatter['refs'] = item['refs'];
+        results.push(doc);
+      }
+    }
+  } catch {
+    // 台账解析失败，回退到文件系统扫描
+  }
+  return results;
+}
+
+/**
+ * 文件系统扫描（降级路径）
+ */
+async function scanFromFileSystem(
+  workDir: string,
+  dirPath: string,
+  docTypeKey: string,
+  docTypeDef: DirGraphConfig['docTypes'][string],
+  dirGraph: DirGraphConfig,
+  basePath: string,
+): Promise<WorkspaceDocKnowledge[]> {
+  const results: WorkspaceDocKnowledge[] = [];
+  try {
+    const files = await fileList(dirPath);
+    if (!files) return results;
+
+    const mdFiles = files.filter(f =>
+      f.type === 'file' && f.name.endsWith('.md') && matchesNaming(f.name, docTypeDef.naming),
+    );
+
+    for (const file of mdFiles) {
+      const relativePath = `${basePath}/${file.name}`;
+      const doc = await extractDocKnowledge(workDir, relativePath, docTypeKey, docTypeDef, dirGraph);
+      if (doc) results.push(doc);
+    }
+  } catch {
+    // 目录不存在或无权限
+  }
+  return results;
+}
+
+// ─── Step 3: 差异化提取 ──────────────────────────────────────────────────────
+
+async function extractDocKnowledge(
+  workDir: string,
+  relativePath: string,
+  docTypeKey: string,
+  docTypeDef: DirGraphConfig['docTypes'][string],
+  dirGraph: DirGraphConfig,
+): Promise<WorkspaceDocKnowledge | null> {
+  try {
+    const content = await fileRead(`${workDir}/${relativePath}`);
+    if (!content) return null;
+
+    const { frontmatter: fm, body } = parseFrontmatter(content);
+    const title = String(fm['title'] ?? fm['doc-type'] ?? extractTitleFromBody(body));
+    const tags = extractTags(fm, body);
+    const summary = extractSummary(docTypeKey, fm, body);
+    const layer = inferLayer(relativePath, dirGraph);
+
+    // 解析 doc-chain 上下游
+    const upstream = dirGraph.docChain
+      .filter(c => c.to === docTypeKey)
+      .map(c => c.from);
+    const downstream = dirGraph.docChain
+      .filter(c => c.from === docTypeKey)
+      .map(c => c.to);
+
+    // 推断 owner（从 agents 映射）
+    const owner = inferOwner(docTypeKey, dirGraph);
+
+    const id = generateDocId(docTypeKey, relativePath);
+
+    return {
+      id,
+      docType: docTypeKey,
+      category: docTypeDef.category,
+      layer,
+      title,
+      summary,
+      tags,
+      filePath: relativePath,
+      owner,
+      upstream,
+      downstream,
+      frontmatter: fm,
+      lifecycle: (fm['lifecycle'] ?? 'living') as 'living' | 'stable',
+      indexedAt: new Date().toISOString(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ─── 差异化摘要提取 ─────────────────────────────────────────────────────────
+
+function extractSummary(
+  docType: string,
+  fm: Record<string, unknown>,
+  body: string,
+): string {
+  const upper = docType.toUpperCase();
+
+  // 优先使用 frontmatter.description
+  if (fm['description']) return String(fm['description']).slice(0, 300);
+
+  // 按文档类型差异化提取
+  switch (upper) {
+    case 'PRD':
+      return extractSection(body, ['功能需求', '用户故事', '需求概述']) ?? body.slice(0, 500);
+    case 'SDD':
+      return extractSection(body, ['接口设计', '数据模型', '技术方案']) ?? body.slice(0, 500);
+    case 'MODULE':
+      return extractSection(body, ['行为规格', 'BH-']) ?? body.slice(0, 500);
+    case 'GLOSSARY':
+      return body.slice(0, 800); // 术语表需要更多内容
+    case 'PLAN':
+    case 'TASK':
+      return extractSection(body, ['目标', '概述', '交付物']) ?? body.slice(0, 300);
+    default:
+      return body.slice(0, 500);
+  }
+}
+
+function extractSection(body: string, sectionNames: string[]): string | null {
+  for (const name of sectionNames) {
+    const regex = new RegExp(`##\\s*.*${name}[\\s\\S]*?(?=\\n##\\s|$)`, 'i');
+    const match = body.match(regex);
+    if (match) return match[0].slice(0, 500);
+  }
+  return null;
+}
+
+// ─── 工具函数 ────────────────────────────────────────────────────────────────
+
+function resolvePathVars(
+  path: string,
+  pathVars: Record<string, string | string[]>,
+): string {
+  let resolved = path;
+  for (const [key, value] of Object.entries(pathVars)) {
+    const placeholder = `{${key}}`;
+    if (resolved.includes(placeholder)) {
+      const replacement = Array.isArray(value) ? value[0] : value;
+      resolved = resolved.replace(placeholder, replacement);
+    }
+  }
+  return resolved;
+}
+
+function matchesNaming(fileName: string, naming: string): boolean {
+  if (!naming) return true;
+  // 简单匹配：naming 如 "PRD-{NNN}-{slug}.md"
+  const prefix = naming.split('-')[0]?.split('{')[0];
+  if (!prefix) return true;
+  return fileName.toUpperCase().startsWith(prefix.toUpperCase());
+}
+
+function extractTitleFromBody(body: string): string {
+  const firstLine = body.split('\n').find(l => l.startsWith('# '));
+  return firstLine ? firstLine.replace(/^#\s*/, '').trim() : '未命名文档';
+}
+
+function extractTags(fm: Record<string, unknown>, body: string): string[] {
+  if (Array.isArray(fm['tags'])) return fm['tags'].map(String);
+  if (typeof fm['tags'] === 'string') return fm['tags'].split(',').map(s => s.trim());
+  // 从 body 提取关键词作为 fallback
+  const words = body.slice(0, 200).match(/[\u4e00-\u9fff]+/g) ?? [];
+  return words.slice(0, 5);
+}
+
+function inferLayer(
+  filePath: string,
+  dirGraph: DirGraphConfig,
+): string {
+  // 从路径推断层级
+  for (const layer of [...dirGraph.layers].reverse()) {
+    const resolvedPath = resolvePathVars(layer.path, dirGraph.pathVars);
+    if (filePath.startsWith(resolvedPath) || filePath.includes(`/${layer.id}/`)) {
+      return layer.id;
+    }
+  }
+  return 'application'; // 默认
+}
+
+function inferOwner(docType: string, dirGraph: DirGraphConfig): string {
+  for (const [agentId, agentDef] of Object.entries(dirGraph.agents)) {
+    for (const output of agentDef.outputs) {
+      if (output.type === docType) return agentId;
+    }
+  }
+  return '';
+}
+
+function generateDocId(docType: string, filePath: string): string {
+  const fileName = filePath.split('/').pop()?.replace('.md', '') ?? '';
+  return `${docType}-${fileName}`.replace(/[^a-zA-Z0-9-]/g, '-').toLowerCase();
+}
+
+// ─── 降级扫描 ────────────────────────────────────────────────────────────────
+
+async function fallbackScan(workDir: string): Promise<WorkspaceDocKnowledge[]> {
+  const results: WorkspaceDocKnowledge[] = [];
+  const fallbackDirs = [
+    '.xingjing/solo/knowledge',
+  ];
+
+  for (const dir of fallbackDirs) {
+    try {
+      const files = await fileList(`${workDir}/${dir}`);
+      if (!files) continue;
+      for (const file of files.filter(f => f.type === 'file' && f.name.endsWith('.md'))) {
+        const content = await fileRead(`${workDir}/${dir}/${file.name}`);
+        if (!content) continue;
+        const { frontmatter: fm, body } = parseFrontmatter(content);
+        results.push({
+          id: `fallback-${file.name.replace('.md', '')}`,
+          docType: 'UNKNOWN',
+          category: 'baseline',
+          layer: 'application',
+          title: String(fm['title'] ?? file.name),
+          summary: body.slice(0, 500),
+          tags: extractTags(fm, body),
+          filePath: `${dir}/${file.name}`,
+          owner: '',
+          upstream: [],
+          downstream: [],
+          frontmatter: fm,
+          lifecycle: 'living',
+          indexedAt: new Date().toISOString(),
+        });
+      }
+    } catch {
+      // silent
+    }
+  }
+
+  await saveScanResult(workDir, results);
+  return results;
+}
+
+// ─── 扫描结果持久化 ──────────────────────────────────────────────────────────
+
+async function saveScanResult(
+  workDir: string,
+  results: WorkspaceDocKnowledge[],
+): Promise<void> {
+  try {
+    const { fileWrite: fWrite } = await import('./opencode-client');
+    await fWrite(`${workDir}/${DOC_INDEX_OUTPUT}`, JSON.stringify(results, null, 2));
+  } catch {
+    // silent
+  }
+}

@@ -770,18 +770,19 @@ export async function saveRelease(workDir: string, release: ReleaseRecord): Prom
 }
 
 // ─── Solo 模式实体 CRUD ─────────────────────────────────────────────────────
-// Solo 数据存储在项目 workDir 的 .xingjing/solo/ 子目录中
-// Metrics:       .xingjing/solo/metrics.yaml（单文件）
-// Focus:         .xingjing/solo/focus.yaml（单文件）
-// Hypotheses:    .xingjing/solo/hypotheses/{id}.md（frontmatter + body）
-// Feature Ideas: .xingjing/solo/feature-ideas/{id}.yaml
-// ADRs:          .xingjing/solo/adrs/{id}.md（frontmatter + body）
-// Releases:      .xingjing/solo/releases/{version}.yaml
-// Feature Flags: .xingjing/solo/feature-flags.yaml（单文件）
-// Knowledge:     .xingjing/solo/knowledge/{id}.md（frontmatter + body）
-// Feedbacks:     .xingjing/solo/feedbacks/{id}.yaml
-// Tasks:         .xingjing/solo/tasks/{id}.yaml
-// Competitors:   .xingjing/solo/competitors.yaml（单文件）
+// Solo 数据直接存储在产品 workDir 根目录的扁平结构中（匹配 ENGINEERING-STRUCTURE-SOLO.md）
+// Focus:         focus.yml（单文件）
+// Metrics:       metrics.yml（单文件）
+// Hypotheses:    iterations/hypotheses/{id}.md（frontmatter + body）
+// Tasks:         iterations/tasks/{id}.yaml
+// Releases:      iterations/releases/{version}.yaml
+// ADRs:          adrs.yml（单文件）
+// Feature Flags: feature-flags.yml（单文件）
+// Knowledge:     knowledge/{category}/{id}.md（frontmatter + body）
+// Feedbacks:     iterations/feedbacks/{id}.yaml
+// Requirements:  iterations/requirements/{id}.yaml
+// Feature Ideas: iterations/feature-ideas/{id}.yaml
+// Competitors:   competitors.yml（单文件）
 
 // ─── Solo: Today's Focus ────────────────────────────────────────────────────
 
@@ -796,7 +797,7 @@ export interface SoloFocusItem {
 }
 
 export async function loadTodayFocus(workDir: string): Promise<SoloFocusItem[]> {
-  const path = `${workDir}/.xingjing/solo/focus.yaml`;
+  const path = `${workDir}/focus.yml`;
   try {
     const data = await readYaml<{ items: SoloFocusItem[] }>(path, { items: [] });
     return data.items ?? [];
@@ -807,7 +808,7 @@ export async function loadTodayFocus(workDir: string): Promise<SoloFocusItem[]> 
 
 export async function saveTodayFocus(workDir: string, items: SoloFocusItem[]): Promise<boolean> {
   return writeYaml(
-    `${workDir}/.xingjing/solo/focus.yaml`,
+    `${workDir}/focus.yml`,
     { items } as unknown as Record<string, unknown>,
   );
 }
@@ -845,7 +846,7 @@ export interface SoloMetricsData {
 }
 
 export async function loadSoloMetrics(workDir: string): Promise<SoloMetricsData> {
-  const path = `${workDir}/.xingjing/solo/metrics.yaml`;
+  const path = `${workDir}/metrics.yml`;
   const fallback: SoloMetricsData = { businessMetrics: [], metricsHistory: [], featureUsage: [] };
   try {
     return await readYaml<SoloMetricsData>(path, fallback);
@@ -856,7 +857,7 @@ export async function loadSoloMetrics(workDir: string): Promise<SoloMetricsData>
 
 export async function saveSoloMetrics(workDir: string, data: SoloMetricsData): Promise<boolean> {
   return writeYaml(
-    `${workDir}/.xingjing/solo/metrics.yaml`,
+    `${workDir}/metrics.yml`,
     data as unknown as Record<string, unknown>,
   );
 }
@@ -879,7 +880,7 @@ export interface SoloHypothesis {
 }
 
 export async function loadHypotheses(workDir: string): Promise<SoloHypothesis[]> {
-  const dir = `${workDir}/.xingjing/solo/hypotheses`;
+  const dir = `${workDir}/iterations/hypotheses`;
   try {
     const docs = await readMarkdownDir<Record<string, unknown>>(dir);
     return docs
@@ -896,7 +897,7 @@ export async function loadHypotheses(workDir: string): Promise<SoloHypothesis[]>
 export async function saveHypothesis(workDir: string, item: SoloHypothesis): Promise<boolean> {
   const { result, markdownDetail, ...rest } = item;
   return writeMarkdownWithFrontmatter(
-    `${workDir}/.xingjing/solo/hypotheses/${item.id}.md`,
+    `${workDir}/iterations/hypotheses/${item.id}.md`,
     {
       frontmatter: { ...rest, ...(markdownDetail !== undefined ? { markdownDetail } : {}) } as unknown as Record<string, unknown>,
       body: result ?? '',
@@ -917,7 +918,7 @@ export interface SoloFeatureIdea {
 }
 
 export async function loadFeatureIdeas(workDir: string): Promise<SoloFeatureIdea[]> {
-  const dir = `${workDir}/.xingjing/solo/feature-ideas`;
+  const dir = `${workDir}/iterations/feature-ideas`;
   try {
     const items = await readYamlDir<SoloFeatureIdea>(dir);
     return items.filter((t) => !!t.id);
@@ -928,7 +929,7 @@ export async function loadFeatureIdeas(workDir: string): Promise<SoloFeatureIdea
 
 export async function saveFeatureIdea(workDir: string, item: SoloFeatureIdea): Promise<boolean> {
   return writeYaml(
-    `${workDir}/.xingjing/solo/feature-ideas/${item.id}.yaml`,
+    `${workDir}/iterations/feature-ideas/${item.id}.yaml`,
     item as unknown as Record<string, unknown>,
   );
 }
@@ -944,7 +945,7 @@ export interface SoloCompetitor {
 }
 
 export async function loadCompetitors(workDir: string): Promise<SoloCompetitor[]> {
-  const path = `${workDir}/.xingjing/solo/competitors.yaml`;
+  const path = `${workDir}/competitors.yml`;
   try {
     const data = await readYaml<{ items: SoloCompetitor[] }>(path, { items: [] });
     return data.items ?? [];
@@ -955,7 +956,7 @@ export async function loadCompetitors(workDir: string): Promise<SoloCompetitor[]
 
 export async function saveCompetitors(workDir: string, items: SoloCompetitor[]): Promise<boolean> {
   return writeYaml(
-    `${workDir}/.xingjing/solo/competitors.yaml`,
+    `${workDir}/competitors.yml`,
     { items } as unknown as Record<string, unknown>,
   );
 }
@@ -975,7 +976,7 @@ export interface SoloRequirementOutput {
 }
 
 export async function loadRequirementOutputs(workDir: string): Promise<SoloRequirementOutput[]> {
-  const dir = `${workDir}/.xingjing/solo/requirements`;
+  const dir = `${workDir}/iterations/requirements`;
   try {
     const items = await readYamlDir<SoloRequirementOutput>(dir);
     return items.filter((t) => !!t.id);
@@ -986,7 +987,7 @@ export async function loadRequirementOutputs(workDir: string): Promise<SoloRequi
 
 export async function saveRequirementOutput(workDir: string, item: SoloRequirementOutput): Promise<boolean> {
   return writeYaml(
-    `${workDir}/.xingjing/solo/requirements/${item.id}.yaml`,
+    `${workDir}/iterations/requirements/${item.id}.yaml`,
     item as unknown as Record<string, unknown>,
   );
 }
@@ -1008,7 +1009,7 @@ export interface SoloTaskRecord {
 }
 
 export async function loadSoloTasks(workDir: string): Promise<SoloTaskRecord[]> {
-  const dir = `${workDir}/.xingjing/solo/tasks`;
+  const dir = `${workDir}/iterations/tasks`;
   try {
     const items = await readYamlDir<SoloTaskRecord>(dir);
     return items.filter((t) => !!t.id);
@@ -1019,7 +1020,7 @@ export async function loadSoloTasks(workDir: string): Promise<SoloTaskRecord[]> 
 
 export async function saveSoloTask(workDir: string, task: SoloTaskRecord): Promise<boolean> {
   return writeYaml(
-    `${workDir}/.xingjing/solo/tasks/${task.id}.yaml`,
+    `${workDir}/iterations/tasks/${task.id}.yaml`,
     task as unknown as Record<string, unknown>,
   );
 }
@@ -1037,29 +1038,22 @@ export interface SoloAdr {
 }
 
 export async function loadAdrs(workDir: string): Promise<SoloAdr[]> {
-  const dir = `${workDir}/.xingjing/solo/adrs`;
+  const path = `${workDir}/adrs.yml`;
   try {
-    const docs = await readMarkdownDir<Record<string, unknown>>(dir);
-    return docs
-      .map((d) => ({
-        ...(d.frontmatter as unknown as SoloAdr),
-        ...(d.body.trim() ? { reason: (d.frontmatter as Record<string, unknown>).reason as string ?? d.body.trim() } : {}),
-      }))
-      .filter((d) => !!d.id);
+    const data = await readYaml<{ items: SoloAdr[] }>(path, { items: [] });
+    return (data.items ?? []).filter((d) => !!d.id);
   } catch {
     return [];
   }
 }
 
 export async function saveAdr(workDir: string, item: SoloAdr): Promise<boolean> {
-  const { reason, ...rest } = item;
-  return writeMarkdownWithFrontmatter(
-    `${workDir}/.xingjing/solo/adrs/${item.id}.md`,
-    {
-      frontmatter: { ...rest, reason } as unknown as Record<string, unknown>,
-      body: '',
-    },
-  );
+  const path = `${workDir}/adrs.yml`;
+  const existing = await loadAdrs(workDir);
+  const idx = existing.findIndex(a => a.id === item.id);
+  if (idx >= 0) existing[idx] = item;
+  else existing.push(item);
+  return writeYaml(path, { items: existing } as unknown as Record<string, unknown>);
 }
 
 // ─── Solo: Feature Flags ────────────────────────────────────────────────────
@@ -1074,7 +1068,7 @@ export interface SoloFeatureFlag {
 }
 
 export async function loadFeatureFlags(workDir: string): Promise<SoloFeatureFlag[]> {
-  const path = `${workDir}/.xingjing/solo/feature-flags.yaml`;
+  const path = `${workDir}/feature-flags.yml`;
   try {
     const data = await readYaml<{ flags: SoloFeatureFlag[] }>(path, { flags: [] });
     return data.flags ?? [];
@@ -1085,7 +1079,7 @@ export async function loadFeatureFlags(workDir: string): Promise<SoloFeatureFlag
 
 export async function saveFeatureFlags(workDir: string, flags: SoloFeatureFlag[]): Promise<boolean> {
   return writeYaml(
-    `${workDir}/.xingjing/solo/feature-flags.yaml`,
+    `${workDir}/feature-flags.yml`,
     { flags } as unknown as Record<string, unknown>,
   );
 }
@@ -1102,7 +1096,7 @@ export interface SoloRelease {
 }
 
 export async function loadSoloReleases(workDir: string): Promise<SoloRelease[]> {
-  const dir = `${workDir}/.xingjing/solo/releases`;
+  const dir = `${workDir}/iterations/releases`;
   try {
     const items = await readYamlDir<SoloRelease>(dir);
     return items.filter((t) => !!t.version);
@@ -1114,7 +1108,7 @@ export async function loadSoloReleases(workDir: string): Promise<SoloRelease[]> 
 export async function saveSoloRelease(workDir: string, release: SoloRelease): Promise<boolean> {
   const filename = release.version.replace(/[^a-zA-Z0-9._-]/g, '_');
   return writeYaml(
-    `${workDir}/.xingjing/solo/releases/${filename}.yaml`,
+    `${workDir}/iterations/releases/${filename}.yaml`,
     release as unknown as Record<string, unknown>,
   );
 }
@@ -1134,24 +1128,35 @@ export interface SoloKnowledgeItem {
 }
 
 export async function loadSoloKnowledge(workDir: string): Promise<SoloKnowledgeItem[]> {
-  const dir = `${workDir}/.xingjing/solo/knowledge`;
-  try {
-    const docs = await readMarkdownDir<Omit<SoloKnowledgeItem, 'content'>>(dir);
-    return docs
-      .map((d) => ({
-        ...d.frontmatter,
-        content: d.body,
-      }))
-      .filter((d) => !!d.id) as SoloKnowledgeItem[];
-  } catch {
-    return [];
+  const subdirs = ['pitfalls', 'insights', 'tech-notes'];
+  const all: SoloKnowledgeItem[] = [];
+  for (const sub of subdirs) {
+    try {
+      const docs = await readMarkdownDir<Omit<SoloKnowledgeItem, 'content'>>(`${workDir}/knowledge/${sub}`);
+      all.push(...docs
+        .map((d) => ({
+          ...d.frontmatter,
+          content: d.body,
+        }))
+        .filter((d) => !!d.id) as SoloKnowledgeItem[]);
+    } catch {
+      // subdirectory may not exist yet
+    }
   }
+  return all;
 }
 
+const knowledgeCategoryDir: Record<SoloKnowledgeCategory, string> = {
+  'pitfall': 'pitfalls',
+  'user-insight': 'insights',
+  'tech-note': 'tech-notes',
+};
+
 export async function saveSoloKnowledge(workDir: string, item: SoloKnowledgeItem): Promise<boolean> {
+  const subdir = knowledgeCategoryDir[item.category] ?? 'pitfalls';
   const { content, ...frontmatter } = item;
   return writeMarkdownWithFrontmatter(
-    `${workDir}/.xingjing/solo/knowledge/${item.id}.md`,
+    `${workDir}/knowledge/${subdir}/${item.id}.md`,
     {
       frontmatter: frontmatter as unknown as Record<string, unknown>,
       body: content ?? '',
@@ -1171,7 +1176,7 @@ export interface SoloUserFeedback {
 }
 
 export async function loadUserFeedbacks(workDir: string): Promise<SoloUserFeedback[]> {
-  const dir = `${workDir}/.xingjing/solo/feedbacks`;
+  const dir = `${workDir}/iterations/feedbacks`;
   try {
     const items = await readYamlDir<SoloUserFeedback>(dir);
     return items.filter((t) => !!t.id);
@@ -1182,7 +1187,7 @@ export async function loadUserFeedbacks(workDir: string): Promise<SoloUserFeedba
 
 export async function saveUserFeedback(workDir: string, feedback: SoloUserFeedback): Promise<boolean> {
   return writeYaml(
-    `${workDir}/.xingjing/solo/feedbacks/${feedback.id}.yaml`,
+    `${workDir}/iterations/feedbacks/${feedback.id}.yaml`,
     feedback as unknown as Record<string, unknown>,
   );
 }

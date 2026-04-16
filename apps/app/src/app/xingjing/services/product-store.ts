@@ -295,25 +295,22 @@ export function createProductStore() {
   // ── Product initialization ──
 
   /**
-   * 在指定 workDir 下初始化完整的 Solo Monorepo 目录结构
+   * 在指定 workDir 下初始化扁平化的 Solo 产品目录结构
    * 使用 Tauri 原生文件写入（不依赖 OpenCode），自动 mkdir -p 所有父目录
-   * 严格对照 KNOWLEDGE-LIFECYCLE.md §7.1-7.4 + §8.3
-   * @param productCode 产品英文编码，用作产品线/Domain 目录名
-   * @param appCode     应用英文编码，用作 App 目录名
+   * 匹配 ENGINEERING-STRUCTURE-SOLO.md 设计
+   * @param productCode 产品英文编码
    */
   async function initializeProductDir(
     workDir: string,
     productName: string,
-    appName: string,
     productCode: string,
-    appCode: string,
   ) {
-    const fileList = buildProductFileList(productName, appName, productCode, appCode);
+    const fileList = buildProductFileList(productName, productCode);
     const result = await initProductDir(workDir, fileList);
     if (!result.ok) {
       throw new Error(result.error ?? '目录初始化失败');
     }
-    console.info(`[xingjing] Initialized Solo Monorepo in ${workDir} (${result.count} files)`);
+    console.info(`[xingjing] Initialized Solo product in ${workDir} (${result.count} files)`);
   }
 
   /**

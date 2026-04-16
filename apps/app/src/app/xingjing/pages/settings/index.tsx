@@ -12,6 +12,7 @@ import {
   defaultGateNodes, GateNode,
   builtinTools, type BuiltinToolDef,
 } from '../../mock/settings';
+import { MCP_QUICK_CONNECT, CHROME_DEVTOOLS_MCP_ID, GITHUB_MCP_ID, GITLAB_MCP_ID, type McpDirectoryInfo } from '../../../constants';
 import { getAllGitTokens, setGitToken, clearGitToken, type XingjingProduct } from '../../services/product-store';
 import { deleteProductDir } from '../../../lib/tauri';
 import { isTauriRuntime } from '../../../utils';
@@ -2539,39 +2540,63 @@ const McpToolsTab: Component = () => {
         </div>
 
         <Show when={openworkStatus() === 'disconnected'}>
-          <div style={{
-            padding: '12px',
-            'border-radius': '8px',
-            background: themeColors.bgSubtle,
-            'text-align': 'center',
-          }}>
-            <AlertTriangle size={16} style={{ color: chartColors.warning, 'margin-bottom': '4px' }} />
-            <p style={{ margin: '0', 'font-size': '12px', color: themeColors.textMuted }}>
-              OpenWork 未连接，MCP 服务器列表不可用
-            </p>
+          {/* 预配置 MCP 服务器（始终展示，不依赖 OpenWork 连接状态） */}
+          <div style={{ display: 'flex', 'flex-direction': 'column', gap: '2px', 'margin-bottom': '8px' }}>
+            <For each={MCP_QUICK_CONNECT.filter((m: McpDirectoryInfo) => m.id === CHROME_DEVTOOLS_MCP_ID || m.id === GITHUB_MCP_ID || m.id === GITLAB_MCP_ID)}>
+              {(mcp) => {
+                const key = mcp.id ?? mcp.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+                return (
+                  <ToolRow
+                    name={key}
+                    label={mcp.name}
+                    description={mcp.description}
+                    badge={mcp.type === 'local' ? 'Local' : 'Remote'}
+                  />
+                );
+              }}
+            </For>
           </div>
+          <p style={{ margin: '0', 'font-size': '11px', color: themeColors.textMuted, 'text-align': 'center' }}>
+            OpenWork 未连接，仅展示预配置 MCP 服务器
+          </p>
         </Show>
 
         <Show when={openworkStatus() !== 'disconnected'}>
-          <Show when={mcpServers().length > 0} fallback={
-            <p style={{ margin: '0', 'font-size': '12px', color: themeColors.textMuted, 'text-align': 'center', padding: '12px 0' }}>
-              {mcpLoading() ? '加载中...' : '未配置 MCP 服务器'}
-            </p>
-          }>
-            <div style={{ display: 'flex', 'flex-direction': 'column', gap: '2px' }}>
-              <For each={mcpServers()}>
-                {(server) => {
-                  const cfgType = typeof server.config?.type === 'string' ? server.config.type : 'unknown';
-                  return (
-                    <ToolRow
-                      name={server.name}
-                      label={server.name}
-                      description={`类型: ${cfgType}`}
-                      badge="MCP"
-                    />
-                  );
-                }}
-              </For>
+          {/* 预配置 MCP 服务器（始终展示） */}
+          <div style={{ display: 'flex', 'flex-direction': 'column', gap: '2px' }}>
+            <For each={MCP_QUICK_CONNECT.filter((m: McpDirectoryInfo) => m.id === CHROME_DEVTOOLS_MCP_ID || m.id === GITHUB_MCP_ID || m.id === GITLAB_MCP_ID)}>
+              {(mcp) => {
+                const key = mcp.id ?? mcp.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+                return (
+                  <ToolRow
+                    name={key}
+                    label={mcp.name}
+                    description={mcp.description}
+                    badge={mcp.type === 'local' ? 'Local' : 'Remote'}
+                  />
+                );
+              }}
+            </For>
+          </div>
+          {/* 动态 MCP 服务器（通过 listMcp API 加载） */}
+          <Show when={mcpServers().filter(s => !['control-chrome', 'github', 'gitlab'].includes(s.name)).length > 0}>
+            <div style={{ 'margin-top': '4px', 'border-top': `1px solid ${themeColors.border}`, 'padding-top': '8px' }}>
+              <p style={{ margin: '0 0 6px', 'font-size': '11px', color: themeColors.textMuted }}>其他已连接的 MCP 服务器</p>
+              <div style={{ display: 'flex', 'flex-direction': 'column', gap: '2px' }}>
+                <For each={mcpServers().filter(s => !['control-chrome', 'github', 'gitlab'].includes(s.name))}>
+                  {(server) => {
+                    const cfgType = typeof server.config?.type === 'string' ? server.config.type : 'unknown';
+                    return (
+                      <ToolRow
+                        name={server.name}
+                        label={server.name}
+                        description={`类型: ${cfgType}`}
+                        badge="MCP"
+                      />
+                    );
+                  }}
+                </For>
+              </div>
             </div>
           </Show>
         </Show>

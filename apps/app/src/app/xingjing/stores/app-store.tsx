@@ -14,6 +14,7 @@ import {
 import { callAgent as _callAgent, callAgentWithClient, callAgentDirect, setProviderAuth, type CallAgentOptions } from '../services/opencode-client';
 import { appendAgentLog } from '../services/agent-logger';
 import { currentUser } from '../services/auth-service';
+import { DEFAULT_ALLOWED_TOOLS } from '../mock/settings';
 import type { createClient } from '../../lib/opencode';
 import type { OpenworkSkillItem, OpenworkSkillContent } from '../../lib/openwork-server';
 
@@ -248,7 +249,12 @@ export const AppStoreProvider: ParentComponent<{
         setState('llmConfig', { ...DEFAULT_LLM_CONFIG, ...g.llm });
       }
       if (g.allowedTools?.length) {
+        // 用户已有自定义配置，直接使用
         setState('allowedTools', g.allowedTools);
+      } else {
+        // 首次启动：使用默认工具列表并持久化
+        setState('allowedTools', DEFAULT_ALLOWED_TOOLS);
+        saveGlobalSettings({ ...g, allowedTools: DEFAULT_ALLOWED_TOOLS }).catch(() => {});
       }
     }).catch(() => {/* silent */});
   });

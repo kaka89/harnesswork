@@ -643,6 +643,8 @@ async function runAgentSession(
           ];
         }
         if (opts.enableTools) return undefined;
+        // 有权限回调时不设 deny-all，让 OpenCode 发送 permission.asked 事件
+        if (opts.onPermissionAsked) return undefined;
         return [{ permission: '*', pattern: '*', action: 'deny' }];
       })();
       const result = await client.session.create({

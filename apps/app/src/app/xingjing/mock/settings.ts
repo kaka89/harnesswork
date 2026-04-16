@@ -110,6 +110,16 @@ export const builtinTools: BuiltinToolDef[] = [
   { name: 'edit',  label: '编辑文件',   description: '对已有文件进行局部修改',            category: 'builtin' },
 ];
 
+/** 默认开启的工具和 MCP 服务器名称列表（首次启动时写入 allowedTools） */
+export const DEFAULT_ALLOWED_TOOLS: string[] = [
+  // 内置工具
+  'bash', 'read', 'write', 'edit',
+  // 预配置 MCP 服务器
+  'control-chrome',
+  'github',
+  'gitlab',
+];
+
 // ==================== Git 仓库配置 ====================
 
 export interface GitRepoConfig {

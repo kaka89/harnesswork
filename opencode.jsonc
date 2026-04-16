@@ -6,6 +6,14 @@
       "command": [
         "chrome-devtools-mcp"
       ]
+    },
+    "github": {
+      "type": "remote",
+      "url": "https://api.githubcopilot.com/mcp/"
+    },
+    "gitlab": {
+      "type": "remote",
+      "url": "https://gitlab.com/api/v4/mcp"
     }
   },
   "model": "openai/gpt-5.2-codex",

@@ -34,6 +34,8 @@ export type McpDirectoryInfo = {
 
 export const CHROME_DEVTOOLS_MCP_ID = "chrome-devtools";
 export const CHROME_DEVTOOLS_MCP_COMMAND = ["npx", "-y", "chrome-devtools-mcp@latest"] as const;
+export const GITHUB_MCP_ID = "github";
+export const GITLAB_MCP_ID = "gitlab";
 
 export const MCP_QUICK_CONNECT: McpDirectoryInfo[] = [
   {
@@ -78,5 +80,21 @@ export const MCP_QUICK_CONNECT: McpDirectoryInfo[] = [
     type: "local",
     command: [...CHROME_DEVTOOLS_MCP_COMMAND],
     oauth: false,
+  },
+  {
+    id: GITHUB_MCP_ID,
+    name: "GitHub",
+    description: "Manage repos, issues, PRs, and CI/CD workflows.",
+    url: "https://api.githubcopilot.com/mcp/",
+    type: "remote",
+    oauth: true,
+  },
+  {
+    id: GITLAB_MCP_ID,
+    name: "GitLab",
+    description: "Access projects, merge requests, issues, and pipelines.",
+    url: "https://gitlab.com/api/v4/mcp",
+    type: "remote",
+    oauth: true,
   },
 ];

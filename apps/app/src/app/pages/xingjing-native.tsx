@@ -53,8 +53,6 @@ interface XingjingNativePageProps {
   opencodeClient?: ReturnType<typeof createClient> | null;
   /** OpenWork 当前选中的模型 */
   selectedModel?: () => { providerID: string; modelID: string } | null;
-  /** OpenWork session 状态映射（用于快速检测 session 完成） */
-  sessionStatusById?: () => Record<string, string>;
 }
 
 export default function XingjingNativePage(props: XingjingNativePageProps) {
@@ -104,7 +102,6 @@ export default function XingjingNativePage(props: XingjingNativePageProps) {
           listMcp: (workspaceId) =>
             props.openworkServerClient!.listMcp(workspaceId)
               .then((r) => r.items.map((i) => ({ name: i.name, config: i.config }))).catch(() => []),
-          sessionStatusById: () => props.sessionStatusById?.() ?? {},
         }
       : undefined
   );

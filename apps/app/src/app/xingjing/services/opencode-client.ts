@@ -550,13 +550,9 @@ export interface CallAgentOptions {
   directory?: string;
   /** OpenCode Agent ID，对应 .opencode/agents/{agentId}.md，用于 session.create 指定 Agent 上下文 */
   agentId?: string;
-  /** 是否启用工具调用（默认 false，保持 deny-all 安全策略）。
-   *  设为 true 时不设置会话级权限限制，使用 Agent 定义的默认权限。*/
-  enableTools?: boolean;
     /** 自动授权的工具名称列表。
      *  在白名单中的工具会自动通过权限审批（reply 'always'），
-     *  不在白名单中的工具会被自动拒绝（reply 'reject'）。
-     *  优先级：autoApproveTools > enableTools > deny-all。 */
+     *  不在白名单中的工具会被自动拒绝（reply 'reject'）。*/
     autoApproveTools?: string[];
   /** 流式文本回调（每次收到新文本片段时触发，参数为累积全文） */
   onText?: (accumulatedText: string) => void;
@@ -579,10 +575,6 @@ export interface CallAgentOptions {
     input?: string;
     resolve: (action: 'once' | 'always' | 'reject') => void;
   }) => void;
-  /** OpenWork session 状态映射（由外层注入）。
-   *  当使用 OpenWork client 时，OpenWork 全局 SSE 监听器维护所有 session 状态，
-   *  此处直接读取其 store 即可快速检测 session 完成，不依赖 Xingjing 自己的 SSE 订阅。*/
-  sessionStatusById?: () => Record<string, string>;
 }
 
 /**
@@ -638,7 +630,11 @@ async function runAgentSession(
   // 新建 session（Layer 2 或首次调用）
   if (!sid) {
     try {
-      // 权限策略：默认 deny-all 防止工具调用卡死 SSE；enableTools=true 时放开使用 Agent 默认权限
+      // 权限策略：对齐 OpenWork 模式 —— 不在 session 创建时设置 deny-all 限制。
+      // deny-all 会阻断 OpenCode 状态机，导致不发送 session.idle/completed 事件，
+      // 使会话只能靠超时兜底。工具权限改为运行时按需处理：
+      //   - autoApproveTools 白名单 → 白名单工具 allow，其余 deny（仍在创建时设置）
+      //   - 其余情况 → 不限制，通过 SSE permission.asked 事件按需审批/拒绝
       const sessionPermission = (() => {
         if (opts.autoApproveTools?.length) {
           return [
@@ -646,10 +642,8 @@ async function runAgentSession(
             { permission: '*', pattern: '*', action: 'deny' },
           ];
         }
-        if (opts.enableTools) return undefined;
-        // 有权限回调时不设 deny-all，让 OpenCode 发送 permission.asked 事件
-        if (opts.onPermissionAsked) return undefined;
-        return [{ permission: '*', pattern: '*', action: 'deny' }];
+        // 无白名单时不设权限限制（对齐 OpenWork），让 OpenCode 状态机正常运转
+        return undefined;
       })();
       const result = await client.session.create({
         body: {
@@ -681,7 +675,7 @@ async function runAgentSession(
       if (inactivityTimer) clearTimeout(inactivityTimer);
       if (done) return;
       const isFirst = !firstEventReceived;
-      if (!isFirst) firstEventReceived = true; // 标记已收到首事件
+      if (isFirst) firstEventReceived = true; // 标记已收到首事件
       const timeout = isFirst ? SSE_FIRST_EVENT_TIMEOUT_MS : SSE_INACTIVITY_TIMEOUT_MS;
       console.log(`[xingjing-diag] resetInactivityTimer: isFirst=${isFirst}, timeout=${timeout / 1000}s, sid=${finalSid}`);
       inactivityTimer = setTimeout(() => {
@@ -772,35 +766,8 @@ async function runAgentSession(
         if (inactivityTimer) { clearTimeout(inactivityTimer); inactivityTimer = null; }
         if (contentIdleTimer) { clearTimeout(contentIdleTimer); contentIdleTimer = null; }
         stopSessionPoll();
-        stopOwStatusPoll();
       }
     };
-
-    // ── OpenWork session 状态监听（最高优先级完成信号）──
-    // 当使用 OpenWork client 时，OpenWork 的全局 SSE 监听器已在维护 sessionStatusById，
-    // 直接读取其 store 即可判断 session 是否完成，不依赖 Xingjing 自己的 SSE 订阅。
-    const OW_STATUS_POLL_INTERVAL_MS = 500;
-    let owStatusPollTimer: ReturnType<typeof setInterval> | null = null;
-    const startOwStatusPoll = () => {
-      if (!opts.sessionStatusById || owStatusPollTimer || done) return;
-      owStatusPollTimer = setInterval(() => {
-        if (done) { stopOwStatusPoll(); return; }
-        try {
-          const statuses = opts.sessionStatusById!();
-          const status = statuses[finalSid];
-          if (status === 'idle' || status === 'completed') {
-            console.log(`[xingjing-diag] OpenWork session status detected completion: status="${status}", accLen=${acc.length}, sid=${finalSid}`);
-            finishSession('openwork-session-status');
-          }
-        } catch { /* silent — store 未就绪时忽略 */ }
-      }, OW_STATUS_POLL_INTERVAL_MS);
-    };
-    const stopOwStatusPoll = () => {
-      if (owStatusPollTimer) { clearInterval(owStatusPollTimer); owStatusPollTimer = null; }
-    };
-
-    // Session 创建成功后立即启动 OpenWork 状态轮询（读内存，最高优先级）
-    startOwStatusPoll();
 
     // ── SSE 订阅（fire-and-resolve 模式）──
     void (async () => {

@@ -692,14 +692,15 @@ async function runAgentSession(
     };
 
     // 内容空闲超时：有累积内容后若 CONTENT_IDLE_TIMEOUT_MS 内无新内容，判定为完成
-    // 解决 OpenCode 不发 session.completed 但 heartbeat 持续重置 inactivity timer 的问题
+    // 注意：clearTimeout 必须在内容变化检查之后，否则 heartbeat/工具事件会不断清除定时器
     let contentIdleTimer: ReturnType<typeof setTimeout> | null = null;
     let lastAccLen = 0;
     const resetContentIdleTimer = () => {
-      if (contentIdleTimer) clearTimeout(contentIdleTimer);
       if (done) return;
       if (acc.length === 0) return; // 无内容时不启动
-      if (acc.length === lastAccLen) return; // 内容未变化，不重置（让计时器继续倒计时）
+      if (acc.length === lastAccLen) return; // 内容未变化，保留现有定时器继续倒计时
+      // 内容增长了 → 清除旧定时器，重新开始 8s 倒计时
+      if (contentIdleTimer) clearTimeout(contentIdleTimer);
       lastAccLen = acc.length;
       contentIdleTimer = setTimeout(() => {
         if (!done && acc.length > 0) {
@@ -710,12 +711,12 @@ async function runAgentSession(
     };
 
     // ── Session 状态主动轮询 ──
-    // OpenCode 对 deny-all 权限策略的 session 不发 idle/completed SSE 事件，
-    // 导致会话只能等超时。此轮询机制在内容停止增长后主动查询 session 状态，
-    // 一旦检测到 idle/completed 立即结束，避免等待超时。
+    // SSE 完成事件可能因 scope 不匹配而丢失，此轮询作为 L2 兜底，
+    // 通过 REST API 主动查询 session 状态。
     let sessionPollTimer: ReturnType<typeof setInterval> | null = null;
     let sessionPollDelayTimer: ReturnType<typeof setTimeout> | null = null;
     let pollStarted = false;
+    let pollFirstLog = false;
     const startSessionPoll = () => {
       if (pollStarted || done) return;
       pollStarted = true;
@@ -727,13 +728,23 @@ async function runAgentSession(
           if (done) { stopSessionPoll(); return; }
           try {
             const result = await client.session.get({ sessionID: finalSid } as Parameters<typeof client.session.get>[0]);
-            const sessionData = result.data as Record<string, unknown> | undefined;
+            // SDK 返回值可能是 { data: session } 或直接是 session 对象
+            const sessionData = (result?.data ?? result) as Record<string, unknown> | undefined;
             if (!sessionData || done) return;
-            // 检查 session 状态
+            // 状态可能在 status.type（对象形式）、status（字符串形式）、或 status.status
             const statusObj = sessionData.status;
-            const statusType = typeof statusObj === 'object' && statusObj !== null
-              ? String((statusObj as Record<string, unknown>).type ?? '')
-              : String(statusObj ?? '');
+            let statusType = '';
+            if (typeof statusObj === 'object' && statusObj !== null) {
+              const so = statusObj as Record<string, unknown>;
+              statusType = String(so.type ?? so.status ?? '');
+            } else if (typeof statusObj === 'string') {
+              statusType = statusObj;
+            }
+            // 首次轮询打印完整状态结构，便于诊断
+            if (!pollFirstLog) {
+              pollFirstLog = true;
+              console.log(`[xingjing-diag] Session poll first result: keys=${Object.keys(sessionData).join(',')}, statusObj=${JSON.stringify(statusObj)}, sid=${finalSid}`);
+            }
             console.log(`[xingjing-diag] Session poll: statusType="${statusType}", accLen=${acc.length}, sid=${finalSid}`);
             if (statusType === 'idle' || statusType === 'completed') {
               console.log(`[xingjing-diag] Session poll detected completion: statusType="${statusType}", accLen=${acc.length}, sid=${finalSid}`);

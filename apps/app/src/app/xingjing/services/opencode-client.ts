@@ -781,11 +781,13 @@ async function runAgentSession(
     };
 
     // ── SSE 订阅（fire-and-resolve 模式）──
+    // 对齐 OpenWork：使用全局无 scope 订阅（undefined），确保能收到所有 session 的完成事件。
+    // 之前使用 directory scope 订阅导致 OpenCode 事件路由过滤后收不到 session.idle/completed 事件。
+    // 事件处理中已有按 sessionID 过滤的逻辑，不会串扰其他 session。
     void (async () => {
       try {
-        const eventDir = opts.directory ?? (_directory || undefined);
         const sub = await client.event.subscribe(
-          eventDir ? { directory: eventDir } : undefined,
+          undefined,
           { signal: controller.signal },
         );
 

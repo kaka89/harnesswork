@@ -302,7 +302,267 @@ function buildKnowledgeSkill(ctx: PathCtx): string {
   ].join('\n');
 }
 
-/** 生成产品工作区的全部知识规约文件（AGENTS.md + 4 Agent + Skill） */
+// ─── Solo 模式专用函数（扁平结构，匹配 ENGINEERING-STRUCTURE-SOLO.md） ────────
+
+function buildSoloAgentsMd(productName: string): string {
+  return [
+    `# AGENTS.md — ${productName} 知识管理规约`,
+    ``,
+    `> Solo 模式 — 所有 Agent 在生成文档前 **MUST** 遵循此规约。`,
+    ``,
+    `## 目录结构`,
+    ``,
+    '```',
+    `├── product/           活文档（产品全貌：PRD / SDD / 功能索引）`,
+    `├── iterations/        增量文档（假设 / 任务 / 发布 / 归档）`,
+    `├── knowledge/         个人知识库（踩坑 / 洞察 / 技术笔记）`,
+    `├── .xingjing/         星静元数据`,
+    `├── .opencode/         Agent + Skill`,
+    `├── focus.yml          今日焦点`,
+    `├── metrics.yml        商业指标`,
+    `├── feature-flags.yml  功能开关`,
+    `├── adrs.yml           架构决策`,
+    `└── AGENTS.md`,
+    '```',
+    ``,
+    `## 角色-目录所有权`,
+    ``,
+    `| Agent | 主要产出 | 输出路径 |`,
+    `|-------|---------|---------|`,
+    `| product-brain | PRD（功能需求）| \`product/features/{feat}/PRD.md\` |`,
+    `| eng-brain | SDD（技术方案）、Task | \`product/features/{feat}/SDD.md\`、\`iterations/tasks/\` |`,
+    `| growth-brain | 用户洞察、增长策略 | \`knowledge/insights/\` |`,
+    `| ops-brain | 发布记录 | \`iterations/releases/\` |`,
+    ``,
+    `## 回写规则`,
+    ``,
+    `- 任务完成 → changelog 回写到 \`product/features/{feat}/SDD.md\``,
+    `- 假设验证 → 结论回写到 \`product/features/{feat}/PRD.md\``,
+    `- 增量文档（iterations/）只增不改，保持原样`,
+    ``,
+    `## 命名规范`,
+    ``,
+    `| 类型 | 格式 | 示例 |`,
+    `|------|------|------|`,
+    `| 功能目录 | \`{kebab-name}/\` | \`product/features/paragraph-rewrite/\` |`,
+    `| 假设 | \`H-{NNN}-{name}.md\` | \`H-001-rewrite.md\` |`,
+    `| 任务 | \`T-{NNN}-{name}.yml\` | \`T-002-rewrite-mvp.yml\` |`,
+    `| 发布 | \`v{x.y.z}.yml\` | \`v1.3.0.yml\` |`,
+    `| 知识 | \`K-{NNN}-{name}.md\` | \`K-001-prosemirror-ime.md\` |`,
+    ``,
+    `## 台账规则`,
+    ``,
+    `生成文档后 **MUST** 更新同目录 \`_index.yml\`。`,
+    `所有 Agent 生成文档前 **MUST** 调用 \`knowledge-conventions\` skill。`,
+    ``,
+  ].join('\n');
+}
+
+function soloProductBrainTable(): string {
+  return [
+    `| PRD | \`product/features/{feat}/PRD.md\` | 原地更新 |`,
+    `| Roadmap | \`product/roadmap.md\` | 原地更新 |`,
+  ].join('\n');
+}
+
+function soloEngBrainTable(): string {
+  return [
+    `| SDD | \`product/features/{feat}/SDD.md\` | 原地更新 |`,
+    `| Task | \`iterations/tasks/\` | T-{NNN}-{name}.yml |`,
+  ].join('\n');
+}
+
+function soloGrowthBrainTable(): string {
+  return [
+    `| 用户洞察 | \`knowledge/insights/\` | K-{NNN}-{name}.md |`,
+  ].join('\n');
+}
+
+function soloOpsBrainTable(): string {
+  return [
+    `| Release | \`iterations/releases/\` | v{x.y.z}.yml |`,
+  ].join('\n');
+}
+
+function buildSoloKnowledgeSkill(): string {
+  return [
+    '---',
+    'name: knowledge-conventions',
+    'description: 知识管理规约 — 在生成文档前调用此 Skill 获取正确的放置路径和命名格式',
+    '---', '',
+    '# 知识管理规约（Solo 模式）', '',
+    '> **调用时机**：在生成任何文档前 MUST 调用本 Skill。', '',
+    '## 目录结构', '',
+    '| 区域 | 路径 | 职责 |',
+    '|------|------|------|',
+    '| 活文档 | `product/` | 产品当前全貌（PRD / SDD / 功能索引 / Roadmap） |',
+    '| 增量文档 | `iterations/` | 执行过程（假设 / 任务 / 发布 / 归档） |',
+    '| 知识库 | `knowledge/` | 个人知识沉淀（踩坑 / 洞察 / 技术笔记） |',
+    '| 运行时 | 根目录 `.yml` | focus / metrics / feature-flags / adrs |',
+    '',
+    '## 活文档（原地更新）', '',
+    '| 类型 | 路径 | 说明 |',
+    '|------|------|------|',
+    '| PRD | `product/features/{feat}/PRD.md` | 功能需求（活文档，持续更新） |',
+    '| SDD | `product/features/{feat}/SDD.md` | 技术方案（活文档，持续更新） |',
+    '| 功能索引 | `product/features/_index.yml` | 功能全景清单 |',
+    '| 概述 | `product/overview.md` | 产品定位 |',
+    '| 路线图 | `product/roadmap.md` | 未来规划 |',
+    '',
+    '## 增量文档（只增不改）', '',
+    '| 类型 | 路径 | 命名 | 台账 |',
+    '|------|------|------|------|',
+    '| 假设 | `iterations/hypotheses/` | H-{NNN}-{name}.md | _index.yml |',
+    '| 任务 | `iterations/tasks/` | T-{NNN}-{name}.yml | _index.yml |',
+    '| 发布 | `iterations/releases/` | v{x.y.z}.yml | — |',
+    '',
+    '## 回写规则', '',
+    '- 任务完成 → `changelog` 回写到 `product/features/{feat}/SDD.md`',
+    '- 假设验证 → 结论回写到 `product/features/{feat}/PRD.md`',
+    '- 增量文档本身不受影响',
+    '',
+    '## 归档', '',
+    '版本发布后，将已完成的假设和任务移入 `iterations/archive/{version}/`。',
+    '_index.yml 中归档条目标记 `archived: true`。',
+    '',
+  ].join('\n');
+}
+
+/** Solo 模式的简化 dir-graph.yaml */
+function buildSoloDirGraphSimple(): string {
+  const now = new Date().toISOString();
+  return [
+    `version: "2.0"`,
+    `mode: solo`,
+    `generated-at: "${now}"`,
+    ``,
+    `# ── Solo 扁平结构（活文档 + 增量文档 + 知识库） ──`,
+    `areas:`,
+    `  - id: product`,
+    `    name: 活文档`,
+    `    path: product/`,
+    `    description: 产品当前全貌（SSOT），持续更新`,
+    `    contains: [overview, roadmap, features, prd, sdd]`,
+    `  - id: iterations`,
+    `    name: 增量文档`,
+    `    path: iterations/`,
+    `    description: 执行过程记录，只增不改`,
+    `    contains: [hypothesis, task, release, archive]`,
+    `  - id: knowledge`,
+    `    name: 个人知识库`,
+    `    path: knowledge/`,
+    `    description: 踩坑记录、用户洞察、技术笔记`,
+    `    contains: [pitfall, user-insight, tech-note]`,
+    `  - id: runtime`,
+    `    name: 运行时数据`,
+    `    path: ./`,
+    `    description: 今日焦点、商业指标、功能开关、架构决策`,
+    `    contains: [focus, metrics, feature-flags, adrs]`,
+    ``,
+    `# ── 文档类型 ──`,
+    `doc-types:`,
+    `  PRD:`,
+    `    name: 产品需求文档（活文档）`,
+    `    category: living`,
+    `    location: "product/features/{feature}/PRD.md"`,
+    `    owner: product-brain`,
+    `  SDD:`,
+    `    name: 系统设计文档（活文档）`,
+    `    category: living`,
+    `    location: "product/features/{feature}/SDD.md"`,
+    `    owner: eng-brain`,
+    `    upstream: [PRD]`,
+    `  Hypothesis:`,
+    `    name: 产品假设`,
+    `    category: incremental`,
+    `    naming: "H-{NNN}-{name}.md"`,
+    `    location: "iterations/hypotheses/"`,
+    `    owner: product-brain`,
+    `    index: _index.yml`,
+    `  Task:`,
+    `    name: 开发任务`,
+    `    category: incremental`,
+    `    naming: "T-{NNN}-{name}.yml"`,
+    `    location: "iterations/tasks/"`,
+    `    owner: eng-brain`,
+    `    index: _index.yml`,
+    `  Release:`,
+    `    name: 发布记录`,
+    `    category: incremental`,
+    `    naming: "v{x.y.z}.yml"`,
+    `    location: "iterations/releases/"`,
+    `    owner: ops-brain`,
+    `  Knowledge:`,
+    `    name: 知识条目`,
+    `    category: incremental`,
+    `    naming: "K-{NNN}-{name}.md"`,
+    `    location: "knowledge/{category}/"`,
+    `    owner: all`,
+    `    index: _index.yml`,
+    ``,
+    `# ── 回写链路 ──`,
+    `writeback:`,
+    `  - trigger: task.status == done`,
+    `    source: task.changelog`,
+    `    target: "product/features/{task.feature}/SDD.md"`,
+    `  - trigger: hypothesis.status in [validated, invalidated]`,
+    `    source: hypothesis.result`,
+    `    target: "product/features/{hypothesis.feature}/PRD.md"`,
+    ``,
+    `# ── Agent 产出映射 ──`,
+    `agents:`,
+    `  product-brain:`,
+    `    outputs:`,
+    `      - { type: PRD, path: "product/features/{feat}/PRD.md" }`,
+    `      - { type: Hypothesis, path: "iterations/hypotheses/" }`,
+    `      - { type: Roadmap, path: "product/roadmap.md" }`,
+    `  eng-brain:`,
+    `    outputs:`,
+    `      - { type: SDD, path: "product/features/{feat}/SDD.md" }`,
+    `      - { type: Task, path: "iterations/tasks/" }`,
+    `  growth-brain:`,
+    `    outputs:`,
+    `      - { type: Knowledge, path: "knowledge/insights/" }`,
+    `  ops-brain:`,
+    `    outputs:`,
+    `      - { type: Release, path: "iterations/releases/" }`,
+    ``,
+  ].join('\n');
+}
+
+/** Solo 模式的知识规约文件（AGENTS.md + 4 Agent + Skill） */
+function buildSoloKnowledgeAgentFiles(productName: string): ProductFileEntry[] {
+  return [
+    { path: 'AGENTS.md', content: buildSoloAgentsMd(productName) },
+    { path: '.opencode/agents/product-brain.md', content: enhancedAgentContent(
+      'product-brain', 'AI产品搭档', '🧠', '#1264e5', '#e6f0ff', '#91c5ff',
+      ['需求分析', '假设拆解', '用户洞察', '功能优先级', 'knowledge-conventions'],
+      '以产品经理视角分析目标，拆解为可验证的假设和功能点。',
+      soloProductBrainTable(),
+    ) },
+    { path: '.opencode/agents/eng-brain.md', content: enhancedAgentContent(
+      'eng-brain', 'AI工程搭档', '⚙️', '#08979c', '#e6fffb', '#87e8de',
+      ['技术方案', '代码实现', 'Bug 修复', '部署执行', 'knowledge-conventions'],
+      '选择最简技术方案，直接生成可运行代码，无需评审。',
+      soloEngBrainTable(),
+    ) },
+    { path: '.opencode/agents/growth-brain.md', content: enhancedAgentContent(
+      'growth-brain', 'AI增长搭档', '📈', '#d46b08', '#fff7e6', '#ffd591',
+      ['用户获取', '留存策略', '文案生成', '社区运营', 'knowledge-conventions'],
+      '制定增长策略，生成营销文案，规划用户触达方案。',
+      soloGrowthBrainTable(),
+    ) },
+    { path: '.opencode/agents/ops-brain.md', content: enhancedAgentContent(
+      'ops-brain', 'AI运营搭档', '🔧', '#389e0d', '#f6ffed', '#b7eb8f',
+      ['数据监控', '发布管理', '客服回复', '故障处理', 'knowledge-conventions'],
+      '监控生产环境，处理用户反馈，执行日常运营任务。',
+      soloOpsBrainTable(),
+    ) },
+    { path: '.opencode/skills/knowledge-conventions/SKILL.md', content: buildSoloKnowledgeSkill() },
+  ];
+}
+
+/** 生成产品工作区的全部知识规约文件（AGENTS.md + 4 Agent + Skill）— Team 模式 */
 function buildKnowledgeAgentFiles(ctx: PathCtx): ProductFileEntry[] {
   return [
     { path: 'AGENTS.md', content: buildAgentsMd(ctx) },
@@ -1281,59 +1541,63 @@ function buildTeamDirGraph(
 // ─── 主入口 ───────────────────────────────────────────────────────────────
 
 /**
- * 根据产品名、首个应用名及编码，生成完整的 Solo Monorepo 文件清单
+ * 根据产品名和编码，生成 Solo 模式的扁平目录文件清单
+ * 匹配 ENGINEERING-STRUCTURE-SOLO.md 设计：
+ *   product/   — 活文档（产品全貌）
+ *   iterations/ — 增量文档（执行过程）
+ *   knowledge/  — 个人知识库
+ *   *.yml       — 运行时数据
+ *
  * @param productName 产品名（原始输入，用于文档内容）
- * @param appName     首个应用名（原始输入，用于文档内容）
- * @param productCode 产品英文编码，直接用作产品线目录名（{productCode}-pl）和 Domain 目录名（{productCode}-domain）
- * @param appCode     应用英文编码，直接用作 App 目录名
+ * @param productCode 产品英文编码（用于 config 标识）
  * @returns 文件清单（path 相对于 workDir）
  */
 export function buildProductFileList(
   productName: string,
-  appName: string,
   productCode: string,
-  appCode: string,
 ): ProductFileEntry[] {
-  const pl = `${productCode}-pl`;
-  const app = appCode;
-
   return [
-    // .xingjing/config.yaml（星静自身配置）
+    // ── .xingjing/ 星静元数据 ──
     {
       path: '.xingjing/config.yaml',
       content: [
         `name: ${productName}`,
+        `code: ${productCode}`,
         `version: "1.0.0"`,
+        `mode: solo`,
         `created-at: ${new Date().toISOString()}`,
-        `product-line: ${pl}`,
-        `apps:`,
-        `  - ${app}`,
         '',
       ].join('\n'),
     },
-    // .xingjing/dir-graph.yaml（目录文档关系图谱，供 Agent 差异化解析）
-    { path: '.xingjing/dir-graph.yaml', content: buildSoloDirGraph({ mode: 'solo', pl, domain: `${productCode}-domain`, app }) },
-    // .xingjing/solo/ 子目录（Solo 模式数据存储）
-    { path: '.xingjing/solo/focus.yaml', content: 'items: []\n' },
-    { path: '.xingjing/solo/metrics.yaml', content: 'businessMetrics: []\nmetricsHistory: []\nfeatureUsage: []\n' },
-    { path: '.xingjing/solo/competitors.yaml', content: 'items: []\n' },
-    { path: '.xingjing/solo/feature-flags.yaml', content: 'flags: []\n' },
-    { path: '.xingjing/solo/hypotheses/.gitkeep', content: EMPTY },
-    { path: '.xingjing/solo/feature-ideas/.gitkeep', content: EMPTY },
-    { path: '.xingjing/solo/adrs/.gitkeep', content: EMPTY },
-    { path: '.xingjing/solo/releases/.gitkeep', content: EMPTY },
-    { path: '.xingjing/solo/knowledge/.gitkeep', content: EMPTY },
-    { path: '.xingjing/solo/feedbacks/.gitkeep', content: EMPTY },
-    { path: '.xingjing/solo/tasks/.gitkeep', content: EMPTY },
-    // .opencode/agents/ + .opencode/skills/ + AGENTS.md — 知识规约文件
-    ...buildKnowledgeAgentFiles({ mode: 'solo', pl, domain: `${productCode}-domain`, app }),
-    // §8.3 根目录
-    ...buildMonorepoRoot(productName),
-    // §7.1 平台层
-    ...buildGovernanceStandards(),
-    // §7.2 产品线层
-    ...buildProductLine(pl, productName),
-    // §7.4 应用层
-    ...buildApp(app, productName),
+    { path: '.xingjing/dir-graph.yaml', content: buildSoloDirGraphSimple() },
+
+    // ── product/ 活文档区（产品当前全貌，持续更新） ──
+    { path: 'product/overview.md', content: overviewMd(productName, '产品概述：定位、核心价值、技术栈。') },
+    { path: 'product/roadmap.md', content: roadmapMd(productName) },
+    { path: 'product/features/_index.yml', content: 'features: []\n' },
+
+    // ── iterations/ 增量文档区（执行过程，只增不改） ──
+    { path: 'iterations/hypotheses/_index.yml', content: INDEX_YAML },
+    { path: 'iterations/hypotheses/.gitkeep', content: EMPTY },
+    { path: 'iterations/tasks/_index.yml', content: INDEX_YAML },
+    { path: 'iterations/tasks/.gitkeep', content: EMPTY },
+    { path: 'iterations/releases/.gitkeep', content: EMPTY },
+    { path: 'iterations/archive/.gitkeep', content: EMPTY },
+    { path: 'iterations/feedbacks/.gitkeep', content: EMPTY },
+
+    // ── knowledge/ 个人知识库 ──
+    { path: 'knowledge/_index.yml', content: INDEX_YAML },
+    { path: 'knowledge/pitfalls/.gitkeep', content: EMPTY },
+    { path: 'knowledge/insights/.gitkeep', content: EMPTY },
+    { path: 'knowledge/tech-notes/.gitkeep', content: EMPTY },
+
+    // ── 运行时数据（根目录） ──
+    { path: 'focus.yml', content: 'items: []\n' },
+    { path: 'metrics.yml', content: 'businessMetrics: []\nmetricsHistory: []\nfeatureUsage: []\n' },
+    { path: 'feature-flags.yml', content: 'flags: []\n' },
+    { path: 'adrs.yml', content: 'items: []\n' },
+
+    // ── .opencode/ Agent + Skill + AGENTS.md ──
+    ...buildSoloKnowledgeAgentFiles(productName),
   ];
 }

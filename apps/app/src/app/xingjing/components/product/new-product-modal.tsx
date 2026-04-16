@@ -45,8 +45,6 @@ const NewProductModal: Component<Props> = (props) => {
   let pendingSubmitFn: (() => Promise<void>) | null = null;
 
   // ── 独立版（Solo）专用 ──
-  const [appName, setAppName] = createSignal('');
-  const [soloAppCode, setSoloAppCode] = createSignal('');
   const soloGit = useGitInput();
 
   // ── 团队版（Team）专用 ──
@@ -89,11 +87,7 @@ const NewProductModal: Component<Props> = (props) => {
     if (!workDir().trim()) { setError('请选择工作目录'); return; }
 
     if (productType() === 'solo') {
-      if (!appName().trim()) { setError('请填写首个应用名'); return; }
-      if (!soloAppCode().trim() || !isValidCode(soloAppCode())) {
-        setError('应用编码只能包含英文字母和数字，不能有空格或特殊字符');
-        return;
-      }
+      // Solo 模式只需产品名称和编码，不需要额外的应用层参数
     } else {
       if (!domainName().trim()) { setError('请填写首个 Domain 名称'); return; }
       if (!domainCode().trim() || !isValidCode(domainCode())) {
@@ -132,9 +126,7 @@ const NewProductModal: Component<Props> = (props) => {
         await productStore.initializeProductDir(
           workDir().trim(),
           name().trim(),
-          appName().trim(),
           productCode().trim(),
-          soloAppCode().trim(),
         );
         const newSoloProduct = await productStore.addProduct({
           name: name().trim(),
@@ -216,8 +208,6 @@ const NewProductModal: Component<Props> = (props) => {
     setName('');
     setProductCode('');
     setWorkDir('');
-    setAppName('');
-    setSoloAppCode('');
     setDomainName('');
     setDomainCode('');
     setFirstAppName('');
@@ -364,7 +354,9 @@ const NewProductModal: Component<Props> = (props) => {
                 onInput={(e) => setProductCode(e.currentTarget.value)}
               />
               <p class="text-xs mt-1" style={{ color: themeColors.textMuted }}>
-                作为目录名使用：产品线目录 = <code>{productCode() || 'code'}-pl</code>
+                {productType() === 'team'
+                  ? <>作为目录名使用：产品线目录 = <code>{productCode() || 'code'}-pl</code></>
+                  : <>用于产品配置标识</>}
               </p>
             </div>
 
@@ -410,43 +402,12 @@ const NewProductModal: Component<Props> = (props) => {
               <p class="text-xs mt-1" style={{ color: themeColors.textMuted }}>
                 {productType() === 'team'
                   ? '星静将在此目录下创建产品线、Domain、App 三个独立子仓库'
-                  : '星静会在此目录下初始化完整的 Solo Monorepo 目录结构'}
+                  : '星静会在此目录下初始化产品目录结构（product/、iterations/、knowledge/ 等）'}
               </p>
             </div>
 
             {/* ── 独立版（Solo）专用字段 ── */}
             <Show when={productType() === 'solo'}>
-              <div>
-                <label class="block text-sm font-medium mb-1" style={{ color: themeColors.textSecondary }}>
-                  首个应用名 <span style={{ color: chartColors.error }}>*</span>
-                </label>
-                <input
-                  type="text"
-                  class="w-full rounded-lg px-3 py-2 text-sm outline-none"
-                  style={inputStyle()}
-                  placeholder="例：支付服务"
-                  value={appName()}
-                  onInput={(e) => setAppName(e.currentTarget.value)}
-                />
-              </div>
-
-              <div>
-                <label class="block text-sm font-medium mb-1" style={{ color: themeColors.textSecondary }}>
-                  应用编码 <span style={{ color: chartColors.error }}>*</span>
-                </label>
-                <input
-                  type="text"
-                  class="w-full rounded-lg px-3 py-2 text-sm font-mono outline-none"
-                  style={inputStyle()}
-                  placeholder="例：paymentapi（仅英文字母和数字）"
-                  value={soloAppCode()}
-                  onInput={(e) => setSoloAppCode(e.currentTarget.value)}
-                />
-                <p class="text-xs mt-1" style={{ color: themeColors.textMuted }}>
-                  App 目录名 = <code>{soloAppCode() || 'code'}</code>
-                </p>
-              </div>
-
               <GitInputRow
                 label="Git 地址"
                 placeholder="git@github.com:me/my-product.git"
@@ -617,7 +578,7 @@ const NewProductModal: Component<Props> = (props) => {
               >
                 {creating()
                   ? '创建中…'
-                  : productType() === 'team' ? '创建团队版产品' : '创建产品'}
+                  : productType() === 'team' ? '创建团队版产品' : '创建独立版产品'}
               </button>
             </div>
           </form>

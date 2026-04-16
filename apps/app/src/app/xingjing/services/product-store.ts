@@ -9,7 +9,7 @@
 
 import { createSignal, createEffect } from 'solid-js';
 import { readYaml, writeYaml } from './file-store';
-import { buildProductFileList, buildTeamProductLineFiles, buildTeamDomainFiles, buildTeamAppFiles, buildTeamRootConfig } from './product-dir-structure';
+import { buildProductFileList, buildTeamProductLineFiles, buildTeamDomainFiles, buildTeamAppFiles, buildTeamRootConfig, type SoloProductType } from './product-dir-structure';
 import { initProductDir, runGitInit, engineInfo } from '../../lib/tauri';
 import { initXingjingClient } from './opencode-client';
 import { isTauriRuntime } from '../../utils';
@@ -84,6 +84,8 @@ export interface XingjingProduct {
   description?: string;
   /** 产品类型：team = 多仓库模式，solo = Monorepo 模式（默认，向后兼容）*/
   productType?: 'team' | 'solo';
+  /** Solo 产品类型：web = 纯 Web / saas = SaaS 全栈 / h5 = H5 移动端 */
+  soloProductType?: SoloProductType;
   /** 仅 team 类型产品有此字段 */
   teamStructure?: TeamStructure;
 }
@@ -304,8 +306,9 @@ export function createProductStore() {
     workDir: string,
     productName: string,
     productCode: string,
+    soloProductType?: SoloProductType,
   ) {
-    const fileList = buildProductFileList(productName, productCode);
+    const fileList = buildProductFileList(productName, productCode, soloProductType ?? 'web');
     const result = await initProductDir(workDir, fileList);
     if (!result.ok) {
       throw new Error(result.error ?? '目录初始化失败');

@@ -302,6 +302,10 @@ function buildKnowledgeSkill(ctx: PathCtx): string {
   ].join('\n');
 }
 
+// ─── Solo 产品类型 ──────────────────────────────────────────────────────────
+
+export type SoloProductType = 'web' | 'saas' | 'h5';
+
 // ─── Solo 模式专用函数（扁平结构，匹配 ENGINEERING-STRUCTURE-SOLO.md） ────────
 
 function buildSoloAgentsMd(productName: string): string {
@@ -316,6 +320,7 @@ function buildSoloAgentsMd(productName: string): string {
     `├── product/           活文档（产品全貌：PRD / SDD / 功能索引）`,
     `├── iterations/        增量文档（假设 / 任务 / 发布 / 归档）`,
     `├── knowledge/         个人知识库（踩坑 / 洞察 / 技术笔记）`,
+    `├── code/              源代码（前端 / 后端 / 共享包，按需创建子工程）`,
     `├── .xingjing/         星静元数据`,
     `├── .opencode/         Agent + Skill`,
     `├── focus.yml          今日焦点`,
@@ -330,7 +335,7 @@ function buildSoloAgentsMd(productName: string): string {
     `| Agent | 主要产出 | 输出路径 |`,
     `|-------|---------|---------|`,
     `| product-brain | PRD（功能需求）| \`product/features/{feat}/PRD.md\` |`,
-    `| eng-brain | SDD（技术方案）、Task | \`product/features/{feat}/SDD.md\`、\`iterations/tasks/\` |`,
+    `| eng-brain | SDD（技术方案）、Task、源代码 | \`product/features/{feat}/SDD.md\`、\`iterations/tasks/\`、\`code/\` |`,
     `| growth-brain | 用户洞察、增长策略 | \`knowledge/insights/\` |`,
     `| ops-brain | 发布记录 | \`iterations/releases/\` |`,
     ``,
@@ -369,6 +374,7 @@ function soloEngBrainTable(): string {
   return [
     `| SDD | \`product/features/{feat}/SDD.md\` | 原地更新 |`,
     `| Task | \`iterations/tasks/\` | T-{NNN}-{name}.yml |`,
+    `| 源代码 | \`code/\` | 按需在 web/ / server/ / shared/ 下创建 |`,
   ].join('\n');
 }
 
@@ -398,6 +404,7 @@ function buildSoloKnowledgeSkill(): string {
     '| 活文档 | `product/` | 产品当前全貌（PRD / SDD / 功能索引 / Roadmap） |',
     '| 增量文档 | `iterations/` | 执行过程（假设 / 任务 / 发布 / 归档） |',
     '| 知识库 | `knowledge/` | 个人知识沉淀（踩坑 / 洞察 / 技术笔记） |',
+    '| 源代码 | `code/` | 产品源代码容器，按需包含 web/、server/、shared/ 等子工程（eng-brain 操作区域） |',
     '| 运行时 | 根目录 `.yml` | focus / metrics / feature-flags / adrs |',
     '',
     '## 活文档（原地更新）', '',
@@ -458,6 +465,11 @@ function buildSoloDirGraphSimple(): string {
     `    path: ./`,
     `    description: 今日焦点、商业指标、功能开关、架构决策`,
     `    contains: [focus, metrics, feature-flags, adrs]`,
+    `  - id: code`,
+    `    name: 源代码`,
+    `    path: code/`,
+    `    description: 产品源代码容器，按需包含前端(web/)、后端(server/)、共享包(shared/)等子工程`,
+    `    contains: [frontend, backend, shared]`,
     ``,
     `# ── 文档类型 ──`,
     `doc-types:`,
@@ -520,6 +532,7 @@ function buildSoloDirGraphSimple(): string {
     `    outputs:`,
     `      - { type: SDD, path: "product/features/{feat}/SDD.md" }`,
     `      - { type: Task, path: "iterations/tasks/" }`,
+    `      - { type: Code, path: "code/" }`,
     `  growth-brain:`,
     `    outputs:`,
     `      - { type: Knowledge, path: "knowledge/insights/" }`,
@@ -1555,6 +1568,7 @@ function buildTeamDirGraph(
 export function buildProductFileList(
   productName: string,
   productCode: string,
+  productType: SoloProductType = 'web',
 ): ProductFileEntry[] {
   return [
     // ── .xingjing/ 星静元数据 ──
@@ -1565,6 +1579,7 @@ export function buildProductFileList(
         `code: ${productCode}`,
         `version: "1.0.0"`,
         `mode: solo`,
+        `productType: ${productType}`,
         `created-at: ${new Date().toISOString()}`,
         '',
       ].join('\n'),
@@ -1596,6 +1611,9 @@ export function buildProductFileList(
     { path: 'metrics.yml', content: 'businessMetrics: []\nmetricsHistory: []\nfeatureUsage: []\n' },
     { path: 'feature-flags.yml', content: 'flags: []\n' },
     { path: 'adrs.yml', content: 'items: []\n' },
+
+    // ── code/ 源代码容器（初始为空） ──
+    { path: 'code/.gitkeep', content: EMPTY },
 
     // ── .opencode/ Agent + Skill + AGENTS.md ──
     ...buildSoloKnowledgeAgentFiles(productName),

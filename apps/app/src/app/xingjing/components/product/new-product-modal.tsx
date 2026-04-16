@@ -4,12 +4,13 @@
  *   - 团队版（team）：产品线 / Domain / App 各自独立 git 仓库，位于父工作目录下
  *   - 独立版（solo）：Solo Monorepo，单一工作目录
  */
-import { Component, createSignal, Show } from 'solid-js';
+import { Component, createSignal, Show, For } from 'solid-js';
 import { useAppStore } from '../../stores/app-store';
 import { themeColors, chartColors } from '../../utils/colors';
 import { isTauriRuntime } from '../../../utils';
 import { pickDirectory, checkGitInstalled, installGit } from '../../../lib/tauri';
 import { GitInputRow, useGitInput } from './git-input';
+import type { SoloProductType } from '../../services/product-dir-structure';
 
 interface Props {
   open: boolean;
@@ -46,6 +47,13 @@ const NewProductModal: Component<Props> = (props) => {
 
   // ── 独立版（Solo）专用 ──
   const soloGit = useGitInput();
+  const [soloProductType, setSoloProductType] = createSignal<SoloProductType>('web');
+
+  const soloProductTypeOptions: { value: SoloProductType; label: string; desc: string }[] = [
+    { value: 'web', label: '纯 Web', desc: '前端应用、落地页、官网' },
+    { value: 'saas', label: 'SaaS', desc: '前端 + 后端全栈平台' },
+    { value: 'h5', label: 'H5', desc: '移动端 H5 页面' },
+  ];
 
   // ── 团队版（Team）专用 ──
   const [domainName, setDomainName] = createSignal('');
@@ -127,6 +135,7 @@ const NewProductModal: Component<Props> = (props) => {
           workDir().trim(),
           name().trim(),
           productCode().trim(),
+          soloProductType(),
         );
         const newSoloProduct = await productStore.addProduct({
           name: name().trim(),
@@ -135,6 +144,7 @@ const NewProductModal: Component<Props> = (props) => {
           gitUrl: soloGit.gitUrl().trim() || undefined,
           description: '',
           productType: 'solo',
+          soloProductType: soloProductType(),
         });
         // 非首个产品不会自动激活，确保新产品处于活跃状态
         if (productStore.activeProduct()?.id !== newSoloProduct.id) {
@@ -213,6 +223,7 @@ const NewProductModal: Component<Props> = (props) => {
     setFirstAppName('');
     setFirstAppCode('');
     soloGit.reset();
+    setSoloProductType('web');
     plGit.reset();
     domainGit.reset();
     appGit.reset();
@@ -408,6 +419,30 @@ const NewProductModal: Component<Props> = (props) => {
 
             {/* ── 独立版（Solo）专用字段 ── */}
             <Show when={productType() === 'solo'}>
+              {/* Solo 产品类型选择 */}
+              <div>
+                <label class="block text-sm font-medium mb-2" style={{ color: themeColors.textSecondary }}>
+                  产品类型
+                </label>
+                <div class="flex gap-2">
+                  <For each={soloProductTypeOptions}>{(opt) =>
+                    <button
+                      type="button"
+                      class="flex-1 rounded-lg py-2 text-sm font-medium transition-colors"
+                      style={{
+                        background: soloProductType() === opt.value ? themeColors.purple : themeColors.bgSubtle,
+                        color: soloProductType() === opt.value ? 'white' : themeColors.textSecondary,
+                        border: `1px solid ${soloProductType() === opt.value ? themeColors.purple : themeColors.border}`,
+                      }}
+                      onClick={() => setSoloProductType(opt.value)}
+                    >
+                      {opt.label}
+                      <span class="block text-xs font-normal mt-0.5 opacity-75">{opt.desc}</span>
+                    </button>
+                  }</For>
+                </div>
+              </div>
+
               <GitInputRow
                 label="Git 地址"
                 placeholder="git@github.com:me/my-product.git"

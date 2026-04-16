@@ -711,8 +711,9 @@ async function runAgentSession(
     };
 
     // ── Session 状态主动轮询 ──
-    // SSE 完成事件可能因 scope 不匹配而丢失，此轮询作为 L2 兜底，
-    // 通过 REST API 主动查询 session 状态。
+    // directory scope 的 SSE 订阅可正常接收内容事件，但 session 完成事件（session.idle/completed）
+    // 可能因 scope 不匹配而丢失。此轮询作为 L2 兜底，通过 REST API 主动查询 session 状态。
+    // 不能使用全局 SSE 订阅（会与 OpenWork 的全局订阅互斥）。
     let sessionPollTimer: ReturnType<typeof setInterval> | null = null;
     let sessionPollDelayTimer: ReturnType<typeof setTimeout> | null = null;
     let pollStarted = false;
@@ -781,13 +782,15 @@ async function runAgentSession(
     };
 
     // ── SSE 订阅（fire-and-resolve 模式）──
-    // 对齐 OpenWork：使用全局无 scope 订阅（undefined），确保能收到所有 session 的完成事件。
-    // 之前使用 directory scope 订阅导致 OpenCode 事件路由过滤后收不到 session.idle/completed 事件。
-    // 事件处理中已有按 sessionID 过滤的逻辑，不会串扰其他 session。
+    // 使用 directory scope 订阅：星静和 OpenWork 共用同一个 OpenCode 客户端，
+    // 若都用全局 undefined 订阅会导致 SSE 连接互斥，事件流被截断。
+    // directory scope 下内容事件（message.part.*）正常接收，
+    // session 完成检测由 L2 REST 轮询 + L3 内容空闲超时兜底。
     void (async () => {
       try {
+        const eventDir = opts.directory ?? (_directory || undefined);
         const sub = await client.event.subscribe(
-          undefined,
+          eventDir ? { directory: eventDir } : undefined,
           { signal: controller.signal },
         );
 

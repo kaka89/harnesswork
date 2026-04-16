@@ -75,8 +75,6 @@ export interface XingjingOpenworkContext {
   createWorkspaceByDir: (productDir: string, productName: string) => Promise<string | null>;
   /** 列出指定工作区的 MCP 服务器 */
   listMcp: (workspaceId: string) => Promise<Array<{ name: string; config: Record<string, unknown> }>>;
-  /** OpenWork session 状态映射（实时响应式，用于快速检测 session 完成） */
-  sessionStatusById: () => Record<string, string>;
 }
 
 interface AppState {
@@ -397,8 +395,6 @@ export const AppStoreProvider: ParentComponent<{
         model,
         // 注入全局工具白名单（如果调用方未显式指定）
         autoApproveTools: opts.autoApproveTools ?? (state.allowedTools.length ? state.allowedTools : undefined),
-        // 注入 OpenWork session 状态 store，作为最高优先级完成信号
-        sessionStatusById: props.openworkCtx?.sessionStatusById,
         onDone: (text: string) => {
           void appendAgentLog({
             ...logBase,

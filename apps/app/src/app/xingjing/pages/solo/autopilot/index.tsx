@@ -773,6 +773,7 @@ const SoloAutopilot = () => {
           setProgress(50);
         },
         onDone: (fullText) => {
+          console.log(`[xingjing-diag] @mention onDone: agentId=${targetAgent.id}, fullTextLen=${fullText.length}`);
           setAgentStreamTexts((prev) => ({ ...prev, [targetAgent.id]: fullText }));
           updateLastAiMsg(targetAgent.id, fullText, false);
           setAgentDone((prev) => ({ ...prev, [targetAgent.id]: (prev[targetAgent.id] || 0) + 1 }));
@@ -796,7 +797,7 @@ const SoloAutopilot = () => {
           setRunState('done');
         },
         onError: (err) => {
-          console.warn('[solo-autopilot] @mention direct agent failed:', err);
+          console.warn(`[xingjing-diag] @mention onError: agentId=${targetAgent.id}, err=${err}`);
           setAgentStatuses((prev) => ({ ...prev, [targetAgent.id]: 'idle' }));
           updateLastAiMsg(targetAgent.id, `调用失败：${err}`, false);
           setAgentError(`调用 ${targetAgent.name} 失败：${err}`);
@@ -859,6 +860,7 @@ const SoloAutopilot = () => {
         );
       },
       onDone: (results) => {
+        console.log(`[xingjing-diag] orchestrated onDone: agentCount=${Object.keys(results).length}, agents=${Object.keys(results).join(',')}, textLens=${Object.entries(results).map(([id, t]) => `${id}:${t.length}`).join(',')}`);
         // 将 Agent 结果解析为 visibleSteps 供现有 UI 展示
         const steps: typeof soloWorkflowSteps = [];
         const newArtifactsData: ArtifactItem[] = [];
@@ -908,6 +910,7 @@ const SoloAutopilot = () => {
         setRunState('done');
       },
       onError: (err) => {
+        console.warn(`[xingjing-diag] orchestrated onError: err=${err}`);
         setAgentError(`编排执行失败：${err}`);
         setRunState('idle');
       },

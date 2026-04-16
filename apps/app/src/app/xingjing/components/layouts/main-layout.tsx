@@ -613,7 +613,7 @@ const MainLayout: ParentComponent = (props) => {
       </div>
 
       {/* AI Float Button — 可拖拽 */}
-      <Show when={floatPos() !== null}>
+      <Show when={floatPos() !== null && !aiDrawerOpen()}>
         <button
           class={`fixed w-14 h-14 rounded-full text-white shadow-lg flex items-center justify-center select-none touch-none
             ${isSoloMode() ? 'bg-[var(--green-9)]' : 'bg-[var(--purple-9)]'}`}

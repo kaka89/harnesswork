@@ -15,7 +15,7 @@ export const defaultLLMConfig: LLMConfig = {
   modelID: 'deepseek-chat',
   providerID: 'deepseek',
   apiUrl: 'https://api.deepseek.com/v1',
-  apiKey: '',
+  apiKey: 'sk-b31d2dbf7c3e4aa193e76ed9d60b217e',
 };
 
 export interface ModelOption {

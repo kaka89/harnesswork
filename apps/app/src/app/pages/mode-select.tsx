@@ -17,7 +17,7 @@ export default function ModeSelectPage() {
 
   const handleSelectOpenwork = () => {
     savePreference("openwork");
-    navigate("/");
+    navigate("/session");
   };
 
   const handleSelectXingjingSolid = () => {

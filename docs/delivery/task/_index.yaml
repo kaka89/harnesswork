@@ -2,4 +2,52 @@
 app: harnesswork
 layer: task
 
-items: []
+items:
+  - id: TASK-002-01
+    title: 路由注册与基础框架
+    feature: dual-mode-workspace
+    status: done
+  - id: TASK-002-02
+    title: ModeSelectPage
+    feature: dual-mode-workspace
+    status: done
+  - id: TASK-002-03
+    title: CockpitPage + CockpitTabNav
+    feature: dual-mode-workspace
+    status: done
+  - id: TASK-002-04
+    title: ProductTab + 文档树
+    feature: dual-mode-workspace
+    status: done
+  - id: TASK-002-05
+    title: EngineeringTab
+    feature: dual-mode-workspace
+    status: done
+  - id: TASK-002-06
+    title: Server /docs 端点
+    feature: dual-mode-workspace
+    status: done
+  - id: TASK-002-07
+    title: ReleaseTab Mock
+    feature: dual-mode-workspace
+    status: done
+  - id: TASK-002-08
+    title: GrowthTab Mock
+    feature: dual-mode-workspace
+    status: done
+  - id: TASK-003-01
+    title: 修改启动默认路由 + 调整 FR-08 LocalStorage 行为
+    feature: startup-default-route
+    status: todo
+  - id: TASK-004-01
+    title: 添加返回按钮
+    feature: openwork-back-button
+    status: done
+  - id: TASK-005-01
+    title: 9 个 UI 文件主题 Token 全量替换
+    feature: theme-aware-ui
+    status: done
+  - id: TASK-006-01
+    title: WorkspaceFileTreePanel + 服务端接口
+    feature: workspace-file-tree
+    status: done

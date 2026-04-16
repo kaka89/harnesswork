@@ -31,6 +31,21 @@ const SSE_INACTIVITY_TIMEOUT_MS = 90_000;
  *  高概率为 API Key 未配置 / 模型不可用等配置问题，提前报错而非等满 90 秒 */
 const SSE_FIRST_EVENT_TIMEOUT_MS = 30_000;
 
+/** 内容空闲超时（ms）：已有累积内容后，若指定时间内无新内容增长，
+ *  视为模型已完成输出但 OpenCode 未发 completion 信号，直接判定完成。
+ *  注：此值为兜底上限，正常情况下 session 状态轮询会更早检测到完成。 */
+const CONTENT_IDLE_TIMEOUT_MS = 8_000;
+
+/** 内容停止后 session 状态轮询间隔（ms）：每 2 秒通过 REST API 主动查询 session 状态，
+ *  解决 OpenCode 对 deny-all session 不发 idle/completed SSE 事件的问题 */
+const SESSION_POLL_INTERVAL_MS = 2_000;
+
+/** 首次内容到达后延迟多久开始轮询（ms）：避免模型还在生成时过早轮询 */
+const SESSION_POLL_START_DELAY_MS = 1_000;
+
+/** 不应重置无活动计时器的 SSE 事件类型（服务器级 keep-alive，非会话进度） */
+const NON_ACTIVITY_EVENT_TYPES = new Set(['server.heartbeat', 'server.connected']);
+
 /** 异步等待指定毫秒 */
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -538,6 +553,11 @@ export interface CallAgentOptions {
   /** 是否启用工具调用（默认 false，保持 deny-all 安全策略）。
    *  设为 true 时不设置会话级权限限制，使用 Agent 定义的默认权限。*/
   enableTools?: boolean;
+    /** 自动授权的工具名称列表。
+     *  在白名单中的工具会自动通过权限审批（reply 'always'），
+     *  不在白名单中的工具会被自动拒绝（reply 'reject'）。
+     *  优先级：autoApproveTools > enableTools > deny-all。 */
+    autoApproveTools?: string[];
   /** 流式文本回调（每次收到新文本片段时触发，参数为累积全文） */
   onText?: (accumulatedText: string) => void;
   /** 完成回调 */
@@ -549,7 +569,7 @@ export interface CallAgentOptions {
   /** 历史会话回忆上下文（由 memory-recall 检索后注入，Markdown 格式） */
   recallContext?: string;
   /** 工具权限请求回调（用户决定是否授权）。
-   *  不提供时沿用自动拒绝兖底行为。
+   *  不提供时沿用自动拒绝兜底行为。
    *  提供时 SSE 循环将暂停等待 resolve 后继续。*/
   onPermissionAsked?: (params: {
     permissionId: string;
@@ -559,10 +579,6 @@ export interface CallAgentOptions {
     input?: string;
     resolve: (action: 'once' | 'always' | 'reject') => void;
   }) => void;
-  /** 自动授权的工具名称列表。
-   *  设置后，session 创建时为每个工具生成 allow 规则，
-   *  permission.asked 中自动 reply 'always'。*/
-  autoApproveTools?: string[];
 }
 
 /**
@@ -613,21 +629,21 @@ async function runAgentSession(
   let sid = sessionId;
   const sessionMsgIds = new Set<string>();
   let acc = accumulated;
+  let userMsgId: string | null = null;  // 追踪用户 prompt 消息 ID，用于过滤 SSE 回显
 
   // 新建 session（Layer 2 或首次调用）
   if (!sid) {
     try {
-      // 权限策略优先级：autoApproveTools > enableTools > deny-all
+      // 权限策略：默认 deny-all 防止工具调用卡死 SSE；enableTools=true 时放开使用 Agent 默认权限
       const sessionPermission = (() => {
         if (opts.autoApproveTools?.length) {
-          // 指定工具自动授权 + 其余拒绝
           return [
             ...opts.autoApproveTools.map(t => ({ permission: t, pattern: '*', action: 'allow' })),
             { permission: '*', pattern: '*', action: 'deny' },
           ];
         }
-        if (opts.enableTools) return undefined; // 全部放开
-        return [{ permission: '*', pattern: '*', action: 'deny' }]; // 全部拒绝
+        if (opts.enableTools) return undefined;
+        return [{ permission: '*', pattern: '*', action: 'deny' }];
       })();
       const result = await client.session.create({
         body: {
@@ -661,6 +677,7 @@ async function runAgentSession(
       const isFirst = !firstEventReceived;
       if (!isFirst) firstEventReceived = true; // 标记已收到首事件
       const timeout = isFirst ? SSE_FIRST_EVENT_TIMEOUT_MS : SSE_INACTIVITY_TIMEOUT_MS;
+      console.log(`[xingjing-diag] resetInactivityTimer: isFirst=${isFirst}, timeout=${timeout / 1000}s, sid=${finalSid}`);
       inactivityTimer = setTimeout(() => {
         if (!done) {
           done = true;
@@ -668,9 +685,78 @@ async function runAgentSession(
           const errMsg = isFirst
             ? `SSE 超时：${SSE_FIRST_EVENT_TIMEOUT_MS / 1000}s 内未收到任何事件，请检查大模型 API Key 是否已配置且有效`
             : `SSE 超时：${SSE_INACTIVITY_TIMEOUT_MS / 1000}s 内无新事件，已触发重试`;
+          console.warn(`[xingjing-diag] SSE inactivity timeout fired: isFirst=${isFirst}, accLen=${acc.length}, sid=${finalSid}`);
           resolve({ status: 'sse-fail', accumulated: acc, sessionId: finalSid, error: errMsg });
         }
       }, timeout);
+    };
+
+    // 内容空闲超时：有累积内容后若 CONTENT_IDLE_TIMEOUT_MS 内无新内容，判定为完成
+    // 解决 OpenCode 不发 session.completed 但 heartbeat 持续重置 inactivity timer 的问题
+    let contentIdleTimer: ReturnType<typeof setTimeout> | null = null;
+    let lastAccLen = 0;
+    const resetContentIdleTimer = () => {
+      if (contentIdleTimer) clearTimeout(contentIdleTimer);
+      if (done) return;
+      if (acc.length === 0) return; // 无内容时不启动
+      if (acc.length === lastAccLen) return; // 内容未变化，不重置（让计时器继续倒计时）
+      lastAccLen = acc.length;
+      contentIdleTimer = setTimeout(() => {
+        if (!done && acc.length > 0) {
+          console.warn(`[xingjing-diag] Content idle timeout: ${CONTENT_IDLE_TIMEOUT_MS / 1000}s no new content, accLen=${acc.length}, treating as done, sid=${finalSid}`);
+          finishSession('content-idle-timeout');
+        }
+      }, CONTENT_IDLE_TIMEOUT_MS);
+    };
+
+    // ── Session 状态主动轮询 ──
+    // OpenCode 对 deny-all 权限策略的 session 不发 idle/completed SSE 事件，
+    // 导致会话只能等超时。此轮询机制在内容停止增长后主动查询 session 状态，
+    // 一旦检测到 idle/completed 立即结束，避免等待超时。
+    let sessionPollTimer: ReturnType<typeof setInterval> | null = null;
+    let sessionPollDelayTimer: ReturnType<typeof setTimeout> | null = null;
+    let pollStarted = false;
+    const startSessionPoll = () => {
+      if (pollStarted || done) return;
+      pollStarted = true;
+      // 延迟启动：首次内容到达后等 SESSION_POLL_START_DELAY_MS 再开始轮询
+      sessionPollDelayTimer = setTimeout(() => {
+        if (done) return;
+        sessionPollDelayTimer = null;
+        sessionPollTimer = setInterval(async () => {
+          if (done) { stopSessionPoll(); return; }
+          try {
+            const result = await client.session.get({ sessionID: finalSid } as Parameters<typeof client.session.get>[0]);
+            const sessionData = result.data as Record<string, unknown> | undefined;
+            if (!sessionData || done) return;
+            // 检查 session 状态
+            const statusObj = sessionData.status;
+            const statusType = typeof statusObj === 'object' && statusObj !== null
+              ? String((statusObj as Record<string, unknown>).type ?? '')
+              : String(statusObj ?? '');
+            console.log(`[xingjing-diag] Session poll: statusType="${statusType}", accLen=${acc.length}, sid=${finalSid}`);
+            if (statusType === 'idle' || statusType === 'completed') {
+              console.log(`[xingjing-diag] Session poll detected completion: statusType="${statusType}", accLen=${acc.length}, sid=${finalSid}`);
+              finishSession('session-poll-idle');
+            }
+          } catch (e) {
+            // 轮询失败不影响主流程，继续等待 SSE 事件或超时
+            console.warn(`[xingjing-diag] Session poll error:`, e instanceof Error ? e.message : e);
+          }
+        }, SESSION_POLL_INTERVAL_MS);
+      }, SESSION_POLL_START_DELAY_MS);
+    };
+    const stopSessionPoll = () => {
+      if (sessionPollDelayTimer) { clearTimeout(sessionPollDelayTimer); sessionPollDelayTimer = null; }
+      if (sessionPollTimer) { clearInterval(sessionPollTimer); sessionPollTimer = null; }
+    };
+
+    /** 统一完成处理：清理所有计时器并 resolve */
+    const finishSession = (reason: string) => {
+      if (done) return;
+      console.log(`[xingjing-diag] finishSession: reason=${reason}, accLen=${acc.length}, sid=${finalSid}`);
+      cleanup();
+      resolve({ status: 'done', accumulated: acc, sessionId: finalSid });
     };
 
     const cleanup = () => {
@@ -678,6 +764,8 @@ async function runAgentSession(
         done = true;
         controller.abort();
         if (inactivityTimer) { clearTimeout(inactivityTimer); inactivityTimer = null; }
+        if (contentIdleTimer) { clearTimeout(contentIdleTimer); contentIdleTimer = null; }
+        stopSessionPoll();
       }
     };
 
@@ -695,16 +783,44 @@ async function runAgentSession(
         for await (const raw of sub.stream as AsyncIterable<unknown>) {
           if (done) break;
           firstEventReceived = true; // 标记已收到首事件
-          resetInactivityTimer(); // 每收到任何事件都重置计时器
           const evt = normalizeRawEvent(raw);
           if (!evt) continue;
+
+          // 只有非 keep-alive 事件才重置无活动计时器
+          // server.heartbeat / server.connected 是服务器级心跳，不代表会话有进展
+          if (!NON_ACTIVITY_EVENT_TYPES.has(evt.type)) {
+            resetInactivityTimer();
+          }
+
           const p = evt.props;
+          // [诊断日志] 打印每个SSE事件类型和sessionID，用于排查完成信号丢失
+          const evtSidForLog = typeof p.sessionID === 'string' ? p.sessionID : (typeof (p.part as Record<string, unknown> | undefined)?.sessionID === 'string' ? String((p.part as Record<string, unknown>).sessionID) : 'N/A');
+          if (evt.type !== 'message.part.updated' && evt.type !== 'message.part.delta' && evt.type !== 'message.part') {
+            console.log(`[xingjing-diag] SSE event: type=${evt.type}, evtSid=${evtSidForLog}, ourSid=${finalSid}, accLen=${acc.length}`);
+          }
 
           // ── message.part.updated ──
           if (evt.type === 'message.part.updated') {
             const part = p.part as Record<string, unknown> | undefined;
             if (!part || String(part.sessionID ?? '') !== finalSid) continue;
-            if (part.messageID) sessionMsgIds.add(String(part.messageID));
+
+            const partMsgId = part.messageID ? String(part.messageID) : null;
+
+            // 检测并跳过用户 prompt 消息回显（含 Agent systemPrompt 等）
+            const partRole = typeof part.role === 'string' ? part.role : null;
+            if (partRole === 'user') {
+              if (partMsgId) userMsgId = partMsgId;
+              continue;
+            }
+            if (sendPrompt && !userMsgId && partMsgId) {
+              userMsgId = partMsgId;
+              continue;
+            }
+            if (partMsgId && partMsgId === userMsgId) {
+              continue;
+            }
+
+            if (partMsgId) sessionMsgIds.add(partMsgId);
             if (part.type === 'text') {
               const fullText = String(part.text ?? '');
               if (fullText.length >= acc.length) {
@@ -715,12 +831,15 @@ async function runAgentSession(
                 opts.onText?.(acc);
               }
             }
+            resetContentIdleTimer(); // 内容变化，重置内容空闲计时器
+            startSessionPoll(); // 首次内容到达后启动 session 状态轮询
             continue;
           }
 
           // ── message.part.delta ──
           if (evt.type === 'message.part.delta') {
             const msgId = typeof p.messageID === 'string' ? p.messageID : null;
+            if (msgId && msgId === userMsgId) { resetContentIdleTimer(); continue; } // 跳过用户消息 delta
             if (msgId && sessionMsgIds.has(msgId)) {
               const delta = typeof p.delta === 'string' ? p.delta : '';
               const field = typeof p.field === 'string' ? p.field : '';
@@ -729,6 +848,8 @@ async function runAgentSession(
                 opts.onText?.(acc);
               }
             }
+            resetContentIdleTimer(); // 内容变化，重置内容空闲计时器
+            startSessionPoll(); // 确保 session 状态轮询已启动
             continue;
           }
 
@@ -736,11 +857,16 @@ async function runAgentSession(
           if (evt.type === 'message.part') {
             if (String(p.sessionID ?? '') !== finalSid) continue;
             const part = p.part as Record<string, unknown> | undefined;
+            // 跳过用户消息
+            const partMsgId2 = part?.messageID ? String(part.messageID) : null;
+            if (partMsgId2 && partMsgId2 === userMsgId) { resetContentIdleTimer(); continue; }
             if (part?.type === 'text') {
               const text = String(part.text ?? part.content ?? '');
               acc += text;
               opts.onText?.(acc);
             }
+            resetContentIdleTimer(); // 内容变化，重置内容空闲计时器
+            startSessionPoll(); // 确保 session 状态轮询已启动
             continue;
           }
 
@@ -761,8 +887,7 @@ async function runAgentSession(
           if (evt.type === 'session.completed') {
             const evtSid = typeof p.sessionID === 'string' ? p.sessionID : null;
             if (evtSid && evtSid !== finalSid) continue;
-            cleanup();
-            resolve({ status: 'done', accumulated: acc, sessionId: finalSid });
+            finishSession('session.completed');
             return;
           }
 
@@ -770,8 +895,7 @@ async function runAgentSession(
           if (evt.type === 'session.idle') {
             const evtSid = typeof p.sessionID === 'string' ? p.sessionID : null;
             if (evtSid && evtSid !== finalSid) continue; // null-safe：与 session.completed 保持一致
-            cleanup();
-            resolve({ status: 'done', accumulated: acc, sessionId: finalSid });
+            finishSession('session.idle');
             return;
           }
 
@@ -783,9 +907,9 @@ async function runAgentSession(
             const statusType = typeof statusObj === 'object' && statusObj !== null
               ? String((statusObj as Record<string, unknown>).type ?? '')
               : String(statusObj ?? '');
+            console.log(`[xingjing-diag] session.status: statusType="${statusType}", accLen=${acc.length}, sid=${finalSid}`);
             if (statusType === 'idle' || statusType === 'completed') {
-              cleanup();
-              resolve({ status: 'done', accumulated: acc, sessionId: finalSid });
+              finishSession(`session.status:${statusType}`);
               return;
             }
           }
@@ -796,6 +920,7 @@ async function runAgentSession(
             if (evtSid && evtSid !== finalSid) continue;
             const permId = typeof p.id === 'string' ? p.id : null;
             const toolName = typeof p.tool === 'string' ? p.tool : '';
+            console.warn(`[xingjing-diag] permission.asked: permId=${permId}, tool=${String(p.tool ?? 'N/A')}, desc=${String(p.description ?? 'N/A')}, hasCallback=${!!opts.onPermissionAsked}, sid=${finalSid}`);
           
             // 自动授权：工具名在白名单中 → 静默 reply 'always'
             if (permId && opts.autoApproveTools?.length) {
@@ -812,7 +937,7 @@ async function runAgentSession(
               void (getClient().permission as any).reply({ requestID: permId, reply: 'reject' }).catch(() => {});
               continue;
             }
-          
+
             if (permId && opts.onPermissionAsked) {
               // 有回调：暂停 SSE 循环，等待用户在 UI 上做决策
               const action = await new Promise<'once' | 'always' | 'reject'>((res) => {
@@ -828,7 +953,7 @@ async function runAgentSession(
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               void (getClient().permission as any).reply({ requestID: permId, reply: action }).catch(() => {});
             } else if (permId) {
-              // 无回调兖底：自动拒绝，model 继续以纯文本生成响应
+              // 无回调兜底：自动拒绝，model 继续以纯文本生成响应
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               void (getClient().permission as any).reply({ requestID: permId, reply: 'reject' }).catch(() => {});
             }
@@ -850,6 +975,7 @@ async function runAgentSession(
 
         // 事件流结束但未收到完成信号
         if (!done) {
+          console.warn(`[xingjing-diag] SSE stream ended without completion signal: accLen=${acc.length}, resolvingAs=${acc ? 'done' : 'sse-fail'}, sid=${finalSid}`);
           cleanup();
           resolve({
             status: acc ? 'done' : 'sse-fail',
@@ -919,6 +1045,7 @@ export async function callAgentWithClient(
   for (let sseTry = 0; sseTry <= RETRY_DELAYS.length; sseTry++) {
     if (sseTry > 0) await sleep(RETRY_DELAYS[sseTry - 1]);
 
+    console.log(`[xingjing-diag] callAgentWithClient Layer1 try=${sseTry}, sessionId=${sessionId}, accLen=${accumulated.length}`);
     const r = await runAgentSession(
       getClient,
       sseTry === 0 ? null : sessionId,
@@ -929,8 +1056,10 @@ export async function callAgentWithClient(
 
     accumulated = r.accumulated;
     sessionId = r.sessionId;
+    console.log(`[xingjing-diag] callAgentWithClient Layer1 result: status=${r.status}, error=${r.error ?? 'none'}, accLen=${accumulated.length}, sid=${sessionId}`);
 
     if (r.status === 'done') {
+      console.log(`[xingjing-diag] callAgentWithClient Layer1 DONE, calling onDone with accLen=${accumulated.length}`);
       opts.onDone?.(accumulated);
       return;
     }
@@ -942,22 +1071,27 @@ export async function callAgentWithClient(
   for (let callTry = 0; callTry <= RETRY_DELAYS.length; callTry++) {
     if (callTry > 0) await sleep(RETRY_DELAYS[callTry - 1]);
 
+    console.log(`[xingjing-diag] callAgentWithClient Layer2 try=${callTry}`);
     const r = await runAgentSession(getClient, null, '', true, opts);
 
     accumulated = r.accumulated;
     sessionId = r.sessionId;
+    console.log(`[xingjing-diag] callAgentWithClient Layer2 result: status=${r.status}, error=${r.error ?? 'none'}, accLen=${accumulated.length}, sid=${sessionId}`);
 
     if (r.status === 'done') {
+      console.log(`[xingjing-diag] callAgentWithClient Layer2 DONE, calling onDone with accLen=${accumulated.length}`);
       opts.onDone?.(accumulated);
       return;
     }
 
     if (callTry === RETRY_DELAYS.length) {
+      console.error(`[xingjing-diag] callAgentWithClient all retries exhausted, calling onError`);
       opts.onError?.(r.error ?? '重试耗尽（外部 client）');
       return;
     }
   }
 
+  console.error(`[xingjing-diag] callAgentWithClient fell through, calling onError`);
   opts.onError?.('重试耗尽（外部 client）');
 }
 /**
@@ -978,6 +1112,7 @@ export async function callAgent(opts: CallAgentOptions): Promise<void> {
   for (let sseTry = 0; sseTry <= RETRY_DELAYS.length; sseTry++) {
     if (sseTry > 0) await sleep(RETRY_DELAYS[sseTry - 1]);
 
+    console.log(`[xingjing-diag] callAgent Layer1 try=${sseTry}, sessionId=${sessionId}, accLen=${accumulated.length}`);
     const r = await runAgentSession(
       getClient,
       sseTry === 0 ? null : sessionId,
@@ -988,8 +1123,10 @@ export async function callAgent(opts: CallAgentOptions): Promise<void> {
 
     accumulated = r.accumulated;
     sessionId = r.sessionId;
+    console.log(`[xingjing-diag] callAgent Layer1 result: status=${r.status}, error=${r.error ?? 'none'}, accLen=${accumulated.length}, sid=${sessionId}`);
 
     if (r.status === 'done') {
+      console.log(`[xingjing-diag] callAgent Layer1 DONE, calling onDone with accLen=${accumulated.length}`);
       opts.onDone?.(accumulated);
       return;
     }
@@ -1006,6 +1143,7 @@ export async function callAgent(opts: CallAgentOptions): Promise<void> {
   for (let callTry = 0; callTry <= RETRY_DELAYS.length; callTry++) {
     if (callTry > 0) await sleep(RETRY_DELAYS[callTry - 1]);
 
+    console.log(`[xingjing-diag] callAgent Layer2 try=${callTry}`);
     const r = await runAgentSession(
       getClient,
       null,
@@ -1016,19 +1154,23 @@ export async function callAgent(opts: CallAgentOptions): Promise<void> {
 
     accumulated = r.accumulated;
     sessionId = r.sessionId;
+    console.log(`[xingjing-diag] callAgent Layer2 result: status=${r.status}, error=${r.error ?? 'none'}, accLen=${accumulated.length}, sid=${sessionId}`);
 
     if (r.status === 'done') {
+      console.log(`[xingjing-diag] callAgent Layer2 DONE, calling onDone with accLen=${accumulated.length}`);
       opts.onDone?.(accumulated);
       return;
     }
 
     if (callTry === RETRY_DELAYS.length) {
       const errMsg = r.error ?? '重试耗尽，请检查网络连接或 OpenCode 服务状态';
+      console.error(`[xingjing-diag] callAgent all retries exhausted, calling onError: ${errMsg}`);
       opts.onError?.(errMsg);
       return;
     }
   }
 
+  console.error(`[xingjing-diag] callAgent fell through, calling onError`);
   opts.onError?.('重试耗尽，请检查网络连接或 OpenCode 服务状态');
 }
 

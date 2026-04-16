@@ -579,6 +579,10 @@ export interface CallAgentOptions {
     input?: string;
     resolve: (action: 'once' | 'always' | 'reject') => void;
   }) => void;
+  /** OpenWork session 状态映射（由外层注入）。
+   *  当使用 OpenWork client 时，OpenWork 全局 SSE 监听器维护所有 session 状态，
+   *  此处直接读取其 store 即可快速检测 session 完成，不依赖 Xingjing 自己的 SSE 订阅。*/
+  sessionStatusById?: () => Record<string, string>;
 }
 
 /**
@@ -768,8 +772,35 @@ async function runAgentSession(
         if (inactivityTimer) { clearTimeout(inactivityTimer); inactivityTimer = null; }
         if (contentIdleTimer) { clearTimeout(contentIdleTimer); contentIdleTimer = null; }
         stopSessionPoll();
+        stopOwStatusPoll();
       }
     };
+
+    // ── OpenWork session 状态监听（最高优先级完成信号）──
+    // 当使用 OpenWork client 时，OpenWork 的全局 SSE 监听器已在维护 sessionStatusById，
+    // 直接读取其 store 即可判断 session 是否完成，不依赖 Xingjing 自己的 SSE 订阅。
+    const OW_STATUS_POLL_INTERVAL_MS = 500;
+    let owStatusPollTimer: ReturnType<typeof setInterval> | null = null;
+    const startOwStatusPoll = () => {
+      if (!opts.sessionStatusById || owStatusPollTimer || done) return;
+      owStatusPollTimer = setInterval(() => {
+        if (done) { stopOwStatusPoll(); return; }
+        try {
+          const statuses = opts.sessionStatusById!();
+          const status = statuses[finalSid];
+          if (status === 'idle' || status === 'completed') {
+            console.log(`[xingjing-diag] OpenWork session status detected completion: status="${status}", accLen=${acc.length}, sid=${finalSid}`);
+            finishSession('openwork-session-status');
+          }
+        } catch { /* silent — store 未就绪时忽略 */ }
+      }, OW_STATUS_POLL_INTERVAL_MS);
+    };
+    const stopOwStatusPoll = () => {
+      if (owStatusPollTimer) { clearInterval(owStatusPollTimer); owStatusPollTimer = null; }
+    };
+
+    // Session 创建成功后立即启动 OpenWork 状态轮询（读内存，最高优先级）
+    startOwStatusPoll();
 
     // ── SSE 订阅（fire-and-resolve 模式）──
     void (async () => {

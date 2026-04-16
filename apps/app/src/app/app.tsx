@@ -2356,6 +2356,7 @@ export default function App() {
             const m = modelConfig.selectedSessionModel();
             return m ? { providerID: m.providerID, modelID: m.modelID } : null;
           }}
+          sessionStatusById={activeSessionStatusById}
         />
       </Match>
       <Match when={true}>

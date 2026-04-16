@@ -53,6 +53,8 @@ interface XingjingNativePageProps {
   opencodeClient?: ReturnType<typeof createClient> | null;
   /** OpenWork 当前选中的模型 */
   selectedModel?: () => { providerID: string; modelID: string } | null;
+  /** OpenWork 全局 SSE 维护的 session 状态映射（复用） */
+  sessionStatusById?: () => Record<string, string>;
 }
 
 export default function XingjingNativePage(props: XingjingNativePageProps) {
@@ -73,6 +75,7 @@ export default function XingjingNativePage(props: XingjingNativePageProps) {
           serverStatus: () => props.openworkServerStatus?.() ?? 'disconnected',
           opencodeClient: () => props.opencodeClient ?? null,
           selectedModel: () => props.selectedModel?.() ?? null,
+          sessionStatusById: props.sessionStatusById ?? (() => ({})),
           listSkills: (workspaceId) =>
             props.openworkServerClient!.listSkills(workspaceId)
               .then((r) => r.items).catch(() => []),

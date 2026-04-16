@@ -13,6 +13,10 @@ import { useAppStore } from '../../../stores/app-store';
 import { themeColors, chartColors } from '../../../utils/colors';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
+import type { InsightRecord, ProductSuggestion } from '../../../services/insight-store';
+import { loadInsightRecords, saveInsightRecord, deleteInsightRecord } from '../../../services/insight-store';
+import InsightAgentPanel from '../../../components/insight/insight-agent-panel';
+import InsightBoard from '../../../components/insight/insight-board';
 
 const statusConfig: Record<HypothesisStatus, { label: string; icon: string; bg: string; border: string; cardBorder: string }> = {
   testing:     { label: '验证中',  icon: '🧪', bg: themeColors.primaryBg, border: themeColors.primaryBorder, cardBorder: themeColors.border },
@@ -39,6 +43,7 @@ interface DragHandlers {
   draggingId: () => string | null;
   dragOverStatus: () => HypothesisStatus | null;
   onDragStart: (id: string) => void;
+  onDragEnd: () => void;
   onDrop: (targetStatus: HypothesisStatus, transferId?: string) => void;
   onDragEnter: (status: HypothesisStatus) => void;
   onDragLeave: () => void;
@@ -157,6 +162,7 @@ const HypothesisColumn: Component<{
                   props.drag.onDragStart(h.id);
                   console.error('[DnD] dragstart id=', h.id);
                 }}
+                onDragEnd={() => props.drag.onDragEnd()}
                 style={{
                   'border-radius': '10px',
                   border: `1px solid ${isOver() ? theme().overBorder : theme().colBorder}`,
@@ -257,9 +263,11 @@ const REQ_DOC_REGEX = /^\[REQ_DOC:([^\]]+)\]/;
 
 const SoloProduct: Component = () => {
   const { productStore, actions } = useAppStore();
-  const [activeTab, setActiveTab] = createSignal<'hypotheses' | 'requirements'>('hypotheses');
+  const [activeTab, setActiveTab] = createSignal<'hypotheses' | 'requirements' | 'insights'>('hypotheses');
   const [hypotheses, setHypotheses] = createSignal<Hypothesis[]>(mockHypotheses);
   const [requirements, setRequirements] = createSignal<RequirementOutput[]>(mockRequirements);
+  const [insightRecords, setInsightRecords] = createSignal<InsightRecord[]>([]);
+  const [insightLoading, setInsightLoading] = createSignal(false);
   const [detailHypo, setDetailHypo] = createSignal<Hypothesis | null>(null);
   const [editMode, setEditMode] = createSignal<'preview' | 'edit'>('preview');
   const [editContent, setEditContent] = createSignal('');
@@ -300,6 +308,16 @@ const SoloProduct: Component = () => {
       if (fileReqs.length > 0) setRequirements(fileReqs as unknown as RequirementOutput[]);
     } catch {
       // Mock fallback
+    }
+    // Load insight records
+    setInsightLoading(true);
+    try {
+      const records = await loadInsightRecords(workDir);
+      setInsightRecords(records);
+    } catch {
+      // No insight records yet
+    } finally {
+      setInsightLoading(false);
     }
   });
 
@@ -356,6 +374,7 @@ const SoloProduct: Component = () => {
     draggingId,
     dragOverStatus,
     onDragStart: (id) => setDraggingId(id),
+    onDragEnd: () => { setDraggingId(null); setDragOverStatus(null); },
     onDrop: (targetStatus, transferId?) => {
       const id = draggingId() ?? (transferId && transferId.trim() !== '' ? transferId : null);
       console.error('[DnD] handler id=', id, 'targetStatus=', targetStatus, 'hypotheses=', hypotheses().length);
@@ -486,6 +505,70 @@ ${reqSummary}
     });
   };
 
+  // ─── Insight handlers ──────────────────────────────────────────────────────
+
+  const handleInsightRecord = (record: InsightRecord) => {
+    setInsightRecords(prev => {
+      const exists = prev.some(r => r.id === record.id);
+      return exists ? prev.map(r => r.id === record.id ? record : r) : [record, ...prev];
+    });
+    const workDir = productStore.activeProduct()?.workDir;
+    if (workDir) void saveInsightRecord(workDir, record);
+  };
+
+  const handleDeleteInsightRecord = (id: string) => {
+    setInsightRecords(prev => prev.filter(r => r.id !== id));
+    const workDir = productStore.activeProduct()?.workDir;
+    if (workDir) void deleteInsightRecord(workDir, id);
+  };
+
+  const handleConvertSuggestionToHypothesis = (sug: ProductSuggestion) => {
+    const newH: Hypothesis = {
+      id: `h-sug-${Date.now()}`,
+      status: 'testing',
+      belief: sug.title,
+      why: sug.rationale,
+      method: '待定（源自产品洞察建议）',
+      impact: sug.priority === 'P0' ? 'high' : sug.priority === 'P1' ? 'high' : sug.priority === 'P2' ? 'medium' : 'low',
+      createdAt: new Date().toISOString().slice(0, 10),
+    };
+    setHypotheses(prev => [newH, ...prev]);
+    const workDir = productStore.activeProduct()?.workDir;
+    if (workDir) void saveHypothesis(workDir, newH as unknown as Parameters<typeof saveHypothesis>[1]);
+  };
+
+  const handleConvertSuggestionToRequirement = (sug: ProductSuggestion, _insightId: string) => {
+    const newReq: RequirementOutput = {
+      id: `req-sug-${Date.now()}`,
+      title: sug.title,
+      type: 'user-story',
+      content: `## 需求：${sug.title}\n\n### 背景\n${sug.rationale}\n\n### 分类\n${sug.category}\n\n### 优先级\n${sug.priority}\n`,
+      priority: sug.priority === 'P0' ? 'P0' : sug.priority === 'P1' ? 'P1' : sug.priority === 'P2' ? 'P2' : 'P3',
+      createdAt: new Date().toISOString().slice(0, 10),
+    };
+    setRequirements(prev => [newReq, ...prev]);
+    const workDir = productStore.activeProduct()?.workDir;
+    if (workDir) void saveRequirementOutput(workDir, newReq as unknown as Parameters<typeof saveRequirementOutput>[1]);
+  };
+
+  const handleHypothesisSaveFromAgent = (h: Hypothesis) => {
+    setHypotheses(prev => {
+      const exists = prev.some(item => item.id === h.id);
+      return exists ? prev.map(item => item.id === h.id ? h : item) : [h, ...prev];
+    });
+    const workDir = productStore.activeProduct()?.workDir;
+    if (workDir) void saveHypothesis(workDir, h as unknown as Parameters<typeof saveHypothesis>[1]);
+  };
+
+  const handleRequirementSaveFromAgent = (r: RequirementOutput) => {
+    setRequirements(prev => {
+      const exists = prev.some(item => item.id === r.id);
+      return exists ? prev.map(item => item.id === r.id ? r : item) : [r, ...prev];
+    });
+    const workDir = productStore.activeProduct()?.workDir;
+    if (workDir) void saveRequirementOutput(workDir, r as unknown as Parameters<typeof saveRequirementOutput>[1]);
+  };
+
   // ─── Tab style ────────────────────────────────────────────────────────────
 
   const tabStyle = (isActive: boolean): Record<string, string | number> => ({
@@ -512,9 +595,9 @@ ${reqSummary}
         </div>
       </div>
 
-      <div style={{ display: 'grid', 'grid-template-columns': '2fr 1fr', gap: '16px' }}>
+      <div style={{ display: 'flex', gap: '16px', 'align-items': 'flex-start' }}>
         {/* Main Content */}
-        <div>
+        <div style={{ flex: 1, 'min-width': 0 }}>
           <div style={{ border: `1px solid ${themeColors.border}`, 'border-radius': '8px', background: themeColors.surface }}>
             {/* Tabs */}
             <div style={{ display: 'flex', 'border-bottom': `1px solid ${themeColors.borderLight}` }}>
@@ -525,6 +608,10 @@ ${reqSummary}
               <button style={tabStyle(activeTab() === 'requirements')} onClick={() => setActiveTab('requirements')}>
                 📋 产品需求
                 <span style={{ 'margin-left': '6px', 'font-size': '12px', padding: '1px 6px', background: themeColors.hover, color: themeColors.textSecondary, 'border-radius': '9999px' }}>{requirements().length}</span>
+              </button>
+              <button style={tabStyle(activeTab() === 'insights')} onClick={() => setActiveTab('insights')}>
+                🔍 外部洞察
+                <span style={{ 'margin-left': '6px', 'font-size': '12px', padding: '1px 6px', background: themeColors.hover, color: themeColors.textSecondary, 'border-radius': '9999px' }}>{insightRecords().length}</span>
               </button>
             </div>
 
@@ -588,129 +675,36 @@ ${reqSummary}
                   </For>
                 </div>
               </Show>
+
+              {/* External Insights */}
+              <Show when={activeTab() === 'insights'}>
+                <InsightBoard
+                  records={insightRecords()}
+                  loading={insightLoading()}
+                  onDeleteRecord={handleDeleteInsightRecord}
+                  onConvertToRequirement={handleConvertSuggestionToRequirement}
+                  onConvertToHypothesis={handleConvertSuggestionToHypothesis}
+                />
+              </Show>
             </div>
           </div>
         </div>
 
-        {/* Right: AI产品搭档 */}
-        <div style={{ position: 'relative' }}>
-          <div style={{ border: `1px solid ${themeColors.border}`, 'border-radius': '8px', background: themeColors.surface, display: 'flex', 'flex-direction': 'column', height: 'calc(100vh - 200px)' }}>
-            {/* Panel Header */}
-            <div style={{ padding: '12px 16px', 'border-bottom': `1px solid ${themeColors.borderLight}`, display: 'flex', 'align-items': 'center', gap: '8px' }}>
-              <span style={{ color: themeColors.purple }}>🧠</span>
-              <span style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text }}>AI产品搭档</span>
-              <Show when={agentLoading()}>
-                <span style={{ 'font-size': '12px', color: themeColors.textMuted }}>思考中...</span>
-              </Show>
-              <div style={{ 'margin-left': 'auto', display: 'flex', gap: '6px' }}>
-                {/* 奇想模式 toggle */}
-                <button
-                  onClick={() => setIdeaMode(v => !v)}
-                  title={ideaMode() ? '切换回普通对话模式' : '切换到突发奇想模式'}
-                  style={{
-                    'font-size': '12px',
-                    padding: '3px 10px',
-                    'border-radius': '9999px',
-                    border: `1px solid ${ideaMode() ? themeColors.warningBorder : themeColors.border}`,
-                    background: ideaMode() ? themeColors.warningBg : themeColors.surface,
-                    color: ideaMode() ? themeColors.warningDark : themeColors.textSecondary,
-                    cursor: 'pointer',
-                    'font-weight': ideaMode() ? 600 : 400,
-                    transition: 'all 0.2s',
-                  }}
-                >
-                  💡 奇想
-                </button>
-              </div>
-            </div>
-
-            {/* 奇想模式提示横幅 */}
-            <Show when={ideaMode()}>
-              <div style={{ padding: '8px 16px', background: themeColors.warningBg, border: `0 0 1px 0 solid ${themeColors.warningBorder}`, 'border-bottom': `1px solid ${themeColors.warningBorder}`, 'font-size': '12px', color: themeColors.warningDark, display: 'flex', 'align-items': 'center', gap: '6px' }}>
-                <span>💡</span>
-                <span>奇想模式已开启 — AI 将自动补全假设结构并记录到「验证中」</span>
-              </div>
-            </Show>
-
-            {/* Messages */}
-            <div ref={messagesRef} style={{ flex: 1, 'overflow-y': 'auto', padding: '12px', display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
-              <For each={agentMessages()}>
-                {(msg) => {
-                  const isReqDoc = msg.role === 'assistant' && REQ_DOC_REGEX.test(msg.content);
-                  const reqDocTitle = isReqDoc ? REQ_DOC_REGEX.exec(msg.content)?.[1] : null;
-                  const displayContent = isReqDoc
-                    ? msg.content.replace(REQ_DOC_REGEX, '').trimStart()
-                    : msg.content;
-                  return (
-                    <div style={{ display: 'flex', 'flex-direction': 'column', 'align-items': msg.role === 'user' ? 'flex-end' : 'flex-start' }}>
-                      <div style={{ 'max-width': '85%', padding: '8px 12px', 'font-size': '12px', 'line-height': '1.6', 'white-space': 'pre-wrap', ...(msg.role === 'user' ? { background: themeColors.purple, color: 'white', 'border-radius': '16px 16px 4px 16px' } : { background: themeColors.purpleBg, color: themeColors.text, 'border-radius': '16px 16px 16px 4px' }) }}>
-                        {displayContent}
-                      </div>
-                      <Show when={isReqDoc}>
-                        <button
-                          style={{ 'margin-top': '6px', 'font-size': '12px', padding: '4px 12px', 'border-radius': '6px', border: `1px solid ${themeColors.border}`, background: themeColors.successBg, color: chartColors.success, cursor: 'pointer' }}
-                          onClick={() => saveReqFromAI(msg.content)}
-                        >
-                          📋 保存「{reqDocTitle}」到需求列表
-                        </button>
-                      </Show>
-                    </div>
-                  );
-                }}
-              </For>
-            </div>
-
-            {/* Quick suggestions */}
-            <div style={{ padding: '8px 12px', 'border-top': `1px solid ${themeColors.borderLight}`, display: 'flex', 'flex-wrap': 'wrap', gap: '6px' }}>
-              <Show when={!ideaMode()}>
-                <For each={['帮我写登录模块的需求', '这个功能的 MVP 边界是什么？', '当前假设的优先级合理吗？']}>
-                  {(q) => (
-                    <button style={{ 'font-size': '12px', padding: '4px 10px', background: themeColors.hover, 'border-radius': '9999px', border: `1px solid ${themeColors.border}`, cursor: 'pointer', color: themeColors.textSecondary }} onClick={() => setAgentInput(q)}>
-                      {q}
-                    </button>
-                  )}
-                </For>
-              </Show>
-              <Show when={ideaMode()}>
-                <span style={{ 'font-size': '12px', color: themeColors.textMuted, 'font-style': 'italic' }}>随手输入一个功能奇想，AI 帮你补全并保存 →</span>
-              </Show>
-            </div>
-
-            {/* Input */}
-            <div style={{ padding: '12px', display: 'flex', gap: '8px' }}>
-              <input
-                value={agentInput()}
-                onInput={(e) => setAgentInput(e.currentTarget.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') handleAgentSend(); }}
-                placeholder={ideaMode() ? '随手记下功能奇想，AI 自动补全并记录…' : '向AI产品搭档提问...'}
-                disabled={agentLoading()}
-                style={{ flex: 1, border: `1px solid ${ideaMode() ? themeColors.warningBorder : themeColors.border}`, 'border-radius': '8px', padding: '8px 12px', 'font-size': '12px', outline: 'none', background: themeColors.surface, color: themeColors.text, opacity: agentLoading() ? 0.6 : 1, transition: 'border-color 0.2s' }}
-              />
-              <button
-                onClick={handleAgentSend}
-                disabled={agentLoading()}
-                style={{ background: agentLoading() ? themeColors.textMuted : (ideaMode() ? themeColors.warningDark : themeColors.purple), color: 'white', 'border-radius': '8px', padding: '8px 12px', 'font-size': '14px', border: 'none', cursor: agentLoading() ? 'not-allowed' : 'pointer', transition: 'background 0.2s' }}
-              >
-                {ideaMode() ? '💡' : '→'}
-              </button>
-            </div>
-          </div>
-
-          {/* Toast notification */}
-          <Show when={savedIdeaToast()}>
-            <div style={{
-              position: 'absolute', bottom: '70px', left: '50%', transform: 'translateX(-50%)',
-              background: themeColors.successBg, border: `1px solid ${themeColors.successBorder}`,
-              color: chartColors.success, 'font-size': '13px', 'font-weight': 500,
-              padding: '8px 16px', 'border-radius': '9999px',
-              'box-shadow': '0 2px 12px rgba(0,0,0,0.12)',
-              'white-space': 'nowrap',
-              'z-index': 100,
-              animation: 'fadeIn 0.2s ease',
-            }}>
-              ✅ 已记录到产品假设·验证中
-            </div>
-          </Show>
+        {/* Right: Insight Agent Panel */}
+        <div style={{ width: '400px', 'flex-shrink': 0, height: 'calc(100vh - 160px)', position: 'sticky', top: '0' }}>
+          <InsightAgentPanel
+            callAgentFn={actions.callAgent}
+            productName={productStore.activeProduct()?.name}
+            workDir={productStore.activeProduct()?.workDir ?? ''}
+            productContext={`当前产品假设：\n${
+              hypotheses().map(h => `- [${h.status}] ${h.belief}`).join('\n') || '（暂无）'
+            }\n\n已有需求文档：\n${
+              requirements().map(r => `- [${r.priority}] ${r.title}`).join('\n') || '（暂无）'
+            }`}
+            onHypothesisSave={handleHypothesisSaveFromAgent}
+            onRequirementSave={handleRequirementSaveFromAgent}
+            onInsightRecord={handleInsightRecord}
+          />
         </div>
       </div>
 

@@ -13,6 +13,7 @@ import {
 import { Portal } from 'solid-js/web';
 import { Bot, Wifi, WifiOff, Loader2, ChevronDown, ChevronUp, Zap, MessageSquare, History, ChevronRight } from 'lucide-solid';
 import type { CallAgentOptions } from '../../services/opencode-client';
+import PermissionDialog, { type PermissionRequest } from '../autopilot/permission-dialog';
 import {
   type SessionRecord as PersistedSessionRecord,
   loadSessions as loadLegacySessions,
@@ -560,6 +561,21 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
     }
   });
 
+  // ─── 工具权限请求队列 ──────────────────────────────────────────
+  const [permissionQueue, setPermissionQueue] = createSignal<PermissionRequest[]>([]);
+
+  const handlePermissionAsked = (params: PermissionRequest) => {
+    setPermissionQueue((prev) => [...prev, params]);
+  };
+
+  const handlePermissionResolve = (action: 'once' | 'always' | 'reject') => {
+    const current = permissionQueue()[0];
+    if (current) {
+      current.resolve(action);
+      setPermissionQueue((prev) => prev.slice(1));
+    }
+  };
+
   const agents = () => props.isSoloMode ? SOLO_AGENTS : TEAM_AGENTS;
   const accentColor = () => props.isSoloMode ? 'var(--green-9)' : 'var(--purple-9)';
   const accentBg = () => props.isSoloMode ? 'bg-[var(--green-9)] hover:bg-[var(--green-11)]' : 'bg-[var(--purple-9)] hover:bg-[var(--purple-10)]';
@@ -659,6 +675,7 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
       userPrompt: q,
       title: `星静对话-${props.currentProductName ?? 'default'}`,
       model: getModel(),
+      onPermissionAsked: handlePermissionAsked,
       onText: (text) => {
         setMessages(prev => prev.map(m => m.id === msgId ? { ...m, content: text } : m));
       },
@@ -730,6 +747,7 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
       workDir: props.workDir,
       model: getModel(),
       callAgentFn: (opts) => props.callAgentFn(opts),
+      onPermissionAsked: handlePermissionAsked,
       onStream: (text) => {
         setMessages(prev => prev.map(m => m.id === msgId ? { ...m, content: text } : m));
       },
@@ -773,6 +791,7 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
       workDir: props.workDir,
       model: getModel(),
       callAgentFn: (opts) => props.callAgentFn(opts),
+      onPermissionAsked: handlePermissionAsked,
       onOrchestrating: (text) => {
         updateDispatch(prev => ({ ...prev, orchestratorText: text, progress: 10 }));
       },
@@ -888,6 +907,7 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
   };
 
   return (
+    <>
     <Show when={props.open}>
       <div class="fixed inset-0 z-50 flex justify-end">
         {/* Backdrop */}
@@ -1198,6 +1218,17 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
         </div>
       </div>
     </Show>
+
+      {/* 工具权限授权对话框 */}
+      <Show when={permissionQueue()[0]} keyed>
+        {(req) => (
+          <PermissionDialog
+            request={req}
+            onResolve={handlePermissionResolve}
+          />
+        )}
+      </Show>
+    </>
   );
 };
 

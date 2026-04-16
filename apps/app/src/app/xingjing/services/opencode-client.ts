@@ -575,6 +575,12 @@ export interface CallAgentOptions {
     input?: string;
     resolve: (action: 'once' | 'always' | 'reject') => void;
   }) => void;
+  /**
+   * OpenWork 全局 SSE 维护的 session 状态映射（可选）。
+   * 提供时用于 L2 完成检测：监听 status[sessionId] 变为 'idle'，
+   * 替代原来的 REST 轮询机制，零延迟、零网络请求。
+   */
+  owSessionStatusById?: () => Record<string, string>;
 }
 
 /**
@@ -710,56 +716,74 @@ async function runAgentSession(
       }, CONTENT_IDLE_TIMEOUT_MS);
     };
 
-    // ── Session 状态主动轮询 ──
-    // directory scope 的 SSE 订阅可正常接收内容事件，但 session 完成事件（session.idle/completed）
-    // 可能因 scope 不匹配而丢失。此轮询作为 L2 兜底，通过 REST API 主动查询 session 状态。
-    // 不能使用全局 SSE 订阅（会与 OpenWork 的全局订阅互斥）。
+    // ── L2 Session 完成检测 ──
+    // 优先复用 OpenWork 全局 SSE 维护的 sessionStatusById 状态，
+    // 无需独立 REST 轮询。当 status[sid] 变为 'idle' 时表示完成。
+    // 若未提供 owSessionStatusById，回退到 REST 轮询兜底。
+    let owStatusWatchTimer: ReturnType<typeof setInterval> | null = null;
     let sessionPollTimer: ReturnType<typeof setInterval> | null = null;
     let sessionPollDelayTimer: ReturnType<typeof setTimeout> | null = null;
     let pollStarted = false;
-    let pollFirstLog = false;
+
     const startSessionPoll = () => {
       if (pollStarted || done) return;
       pollStarted = true;
-      // 延迟启动：首次内容到达后等 SESSION_POLL_START_DELAY_MS 再开始轮询
-      sessionPollDelayTimer = setTimeout(() => {
-        if (done) return;
-        sessionPollDelayTimer = null;
-        sessionPollTimer = setInterval(async () => {
-          if (done) { stopSessionPoll(); return; }
-          try {
-            const result = await client.session.get({ sessionID: finalSid } as Parameters<typeof client.session.get>[0]);
-            // SDK 返回值可能是 { data: session } 或直接是 session 对象
-            const sessionData = (result?.data ?? result) as Record<string, unknown> | undefined;
-            if (!sessionData || done) return;
-            // 状态可能在 status.type（对象形式）、status（字符串形式）、或 status.status
-            const statusObj = sessionData.status;
-            let statusType = '';
-            if (typeof statusObj === 'object' && statusObj !== null) {
-              const so = statusObj as Record<string, unknown>;
-              statusType = String(so.type ?? so.status ?? '');
-            } else if (typeof statusObj === 'string') {
-              statusType = statusObj;
+
+      if (opts.owSessionStatusById) {
+        // ── 复用 OpenWork 状态：定期检查 store 值（非网络请求，极低开销） ──
+        sessionPollDelayTimer = setTimeout(() => {
+          if (done) return;
+          sessionPollDelayTimer = null;
+          console.log(`[xingjing-diag] L2 status watch started (owSessionStatusById), sid=${finalSid}`);
+          owStatusWatchTimer = setInterval(() => {
+            if (done) { stopSessionPoll(); return; }
+            const statuses = opts.owSessionStatusById!();
+            const status = statuses[finalSid];
+            if (status === 'idle') {
+              console.log(`[xingjing-diag] L2 owSessionStatusById detected idle, accLen=${acc.length}, sid=${finalSid}`);
+              finishSession('ow-status-idle');
             }
-            // 首次轮询打印完整状态结构，便于诊断
-            if (!pollFirstLog) {
-              pollFirstLog = true;
-              console.log(`[xingjing-diag] Session poll first result: keys=${Object.keys(sessionData).join(',')}, statusObj=${JSON.stringify(statusObj)}, sid=${finalSid}`);
+          }, 500); // 每 500ms 读一次 store，零网络开销
+        }, SESSION_POLL_START_DELAY_MS);
+      } else {
+        // ── 回退：REST 轮询兜底 ──
+        let pollFirstLog = false;
+        sessionPollDelayTimer = setTimeout(() => {
+          if (done) return;
+          sessionPollDelayTimer = null;
+          console.log(`[xingjing-diag] L2 REST poll started (fallback), sid=${finalSid}`);
+          sessionPollTimer = setInterval(async () => {
+            if (done) { stopSessionPoll(); return; }
+            try {
+              const result = await client.session.get({ sessionID: finalSid } as Parameters<typeof client.session.get>[0]);
+              const sessionData = (result?.data ?? result) as Record<string, unknown> | undefined;
+              if (!sessionData || done) return;
+              const statusObj = sessionData.status;
+              let statusType = '';
+              if (typeof statusObj === 'object' && statusObj !== null) {
+                const so = statusObj as Record<string, unknown>;
+                statusType = String(so.type ?? so.status ?? '');
+              } else if (typeof statusObj === 'string') {
+                statusType = statusObj;
+              }
+              if (!pollFirstLog) {
+                pollFirstLog = true;
+                console.log(`[xingjing-diag] Session poll first result: keys=${Object.keys(sessionData).join(',')}, statusObj=${JSON.stringify(statusObj)}, sid=${finalSid}`);
+              }
+              console.log(`[xingjing-diag] Session poll: statusType="${statusType}", accLen=${acc.length}, sid=${finalSid}`);
+              if (statusType === 'idle' || statusType === 'completed') {
+                finishSession('session-poll-idle');
+              }
+            } catch (e) {
+              console.warn(`[xingjing-diag] Session poll error:`, e instanceof Error ? e.message : e);
             }
-            console.log(`[xingjing-diag] Session poll: statusType="${statusType}", accLen=${acc.length}, sid=${finalSid}`);
-            if (statusType === 'idle' || statusType === 'completed') {
-              console.log(`[xingjing-diag] Session poll detected completion: statusType="${statusType}", accLen=${acc.length}, sid=${finalSid}`);
-              finishSession('session-poll-idle');
-            }
-          } catch (e) {
-            // 轮询失败不影响主流程，继续等待 SSE 事件或超时
-            console.warn(`[xingjing-diag] Session poll error:`, e instanceof Error ? e.message : e);
-          }
-        }, SESSION_POLL_INTERVAL_MS);
-      }, SESSION_POLL_START_DELAY_MS);
+          }, SESSION_POLL_INTERVAL_MS);
+        }, SESSION_POLL_START_DELAY_MS);
+      }
     };
     const stopSessionPoll = () => {
       if (sessionPollDelayTimer) { clearTimeout(sessionPollDelayTimer); sessionPollDelayTimer = null; }
+      if (owStatusWatchTimer) { clearInterval(owStatusWatchTimer); owStatusWatchTimer = null; }
       if (sessionPollTimer) { clearInterval(sessionPollTimer); sessionPollTimer = null; }
     };
 

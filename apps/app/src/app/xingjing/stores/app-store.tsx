@@ -75,6 +75,12 @@ export interface XingjingOpenworkContext {
   createWorkspaceByDir: (productDir: string, productName: string) => Promise<string | null>;
   /** 列出指定工作区的 MCP 服务器 */
   listMcp: (workspaceId: string) => Promise<Array<{ name: string; config: Record<string, unknown> }>>;
+  /**
+   * OpenWork 全局 SSE 维护的 session 状态映射。
+   * key = sessionID，value = 'idle' | 'running' | 'retry' 等。
+   * 星静复用此状态检测 session 完成，避免独立 REST 轮询。
+   */
+  sessionStatusById?: () => Record<string, string>;
 }
 
 interface AppState {
@@ -362,6 +368,8 @@ export const AppStoreProvider: ParentComponent<{
       const owClient = props.openworkCtx?.opencodeClient?.() ?? null;
       const dir = opts.directory ?? workDir;
       const model = opts.model ?? props.openworkCtx?.selectedModel?.() ?? undefined;
+      // 复用 OpenWork 全局 SSE 的 sessionStatusById 状态（L2 完成检测）
+      const owSessionStatusById = props.openworkCtx?.sessionStatusById;
       const llmCfg = state.llmConfig;
       // 当前产品名（用于日志 product 字段）
       const currentProductName = productStore.activeProduct()?.name ?? '';
@@ -393,6 +401,8 @@ export const AppStoreProvider: ParentComponent<{
         ...opts,
         directory: dir,
         model,
+        // 复用 OpenWork 全局 SSE 的 session 状态映射，用于 L2 完成检测
+        owSessionStatusById,
         // 注入全局工具白名单（如果调用方未显式指定）
         autoApproveTools: opts.autoApproveTools ?? (state.allowedTools.length ? state.allowedTools : undefined),
         onDone: (text: string) => {

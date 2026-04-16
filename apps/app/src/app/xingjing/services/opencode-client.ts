@@ -997,9 +997,17 @@ async function runAgentSession(
 
     // ── 发送 prompt（仅首次调用或 Layer 2 重试时）──
     if (sendPrompt) {
-      // 合成 prompt：system + 知识上下文 + 回忆上下文 + 用户输入
+      // 合成 prompt：system + 当前时间 + 知识上下文 + 回忆上下文 + 用户输入
       const promptParts: string[] = [];
       if (opts.systemPrompt) promptParts.push(opts.systemPrompt);
+      // 注入当前精确时间，使 LLM 能回答时间相关问题
+      const now = new Date();
+      const timeStr = now.toLocaleString('zh-CN', {
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        weekday: 'long', hour12: false,
+      });
+      promptParts.push(`## 当前系统时间\n${timeStr}`);
       if (opts.knowledgeContext) promptParts.push(`## 相关知识上下文\n${opts.knowledgeContext}`);
       if (opts.recallContext) promptParts.push(`## 相关历史上下文\n${opts.recallContext}`);
       promptParts.push(opts.userPrompt);

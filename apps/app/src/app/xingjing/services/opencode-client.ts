@@ -189,9 +189,15 @@ export async function fileRead(
   if (_owFileOps && _workspaceId) {
     try {
       const relativePath = directory ? path : toWorkspaceRelativePath(path);
+      console.debug('[xingjing] fileRead 尝试 OpenWork API, wsId:', _workspaceId, 'path:', relativePath);
       const result = await _owFileOps.read(_workspaceId, relativePath);
       if (result?.content !== undefined) return result.content;
-    } catch { /* fall through to SDK */ }
+      console.warn('[xingjing] fileRead OpenWork API 返回空内容, path:', relativePath);
+    } catch (e) {
+      console.warn('[xingjing] fileRead OpenWork API 失败:', (e as Error)?.message ?? e);
+    }
+  } else {
+    console.warn('[xingjing] fileRead OpenWork API 不可用: owFileOps=', !!_owFileOps, 'wsId=', _workspaceId);
   }
 
   // 2. OpenCode SDK 客户端

@@ -206,7 +206,25 @@ export const AppStoreProvider: ParentComponent<{
     }
     if (props.openworkCtx) {
       props.openworkCtx.resolveWorkspaceByDir(product.workDir)
-        .then((wsId: string | null) => setResolvedWorkspaceId(wsId))
+        .then((wsId: string | null) => {
+          if (wsId) {
+            setResolvedWorkspaceId(wsId);
+          } else {
+            // 工作区不存在，自动创建
+            console.warn('[xingjing] workspace 未找到，尝试自动创建:', product.workDir);
+            props.openworkCtx!.createWorkspaceByDir(product.workDir, product.name)
+              .then((newWsId: string | null) => {
+                if (newWsId) {
+                  console.log('[xingjing] workspace 自动创建成功:', newWsId);
+                  setResolvedWorkspaceId(newWsId);
+                } else {
+                  console.warn('[xingjing] workspace 自动创建失败');
+                  setResolvedWorkspaceId(null);
+                }
+              })
+              .catch(() => setResolvedWorkspaceId(null));
+          }
+        })
         .catch(() => setResolvedWorkspaceId(null));
     }
   });

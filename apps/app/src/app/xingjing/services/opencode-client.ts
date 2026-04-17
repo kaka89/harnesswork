@@ -9,6 +9,7 @@
  */
 
 import { createClient } from '../../lib/opencode';
+import { isTauriRuntime } from '../../utils';
 
 // ─── Client 管理（OpenWork 注入）────────────────────────────────────────────
 
@@ -153,15 +154,17 @@ export async function fileList(
     } catch { /* fall through */ }
   }
 
-  // 3. 最后兜底：裸 fetch（dev 模式可能被 CORS 拦截）
-  try {
-    const url = new URL('/file', _baseUrl);
-    url.searchParams.set('path', path);
-    const dir = directory ?? (_directory || '');
-    if (dir) url.searchParams.set('directory', dir);
-    const resp = await fetch(url.toString());
-    if (resp.ok) return (await resp.json()) as FileNode[];
-  } catch { /* ignore */ }
+  // 3. 最后兜底：裸 fetch（仅 Tauri 环境，浏览器 dev 模式会被 CORS 拦截）
+  if (isTauriRuntime()) {
+    try {
+      const url = new URL('/file', _baseUrl);
+      url.searchParams.set('path', path);
+      const dir = directory ?? (_directory || '');
+      if (dir) url.searchParams.set('directory', dir);
+      const resp = await fetch(url.toString());
+      if (resp.ok) return (await resp.json()) as FileNode[];
+    } catch { /* ignore */ }
+  }
   return [];
 }
 
@@ -214,18 +217,20 @@ export async function fileRead(
     console.warn('[xingjing] fileRead SDK failed:', (e as Error)?.message ?? e);
   }
 
-  // 3. 最后兜底：裸 fetch（dev 模式可能被 CORS 拦截）
-  try {
-    const url = new URL('/file/content', _baseUrl);
-    url.searchParams.set('path', path);
-    const dir = directory ?? (_directory || '');
-    if (dir) url.searchParams.set('directory', dir);
-    const resp = await fetch(url.toString());
-    if (resp.ok) {
-      const data = await resp.json();
-      return (data as FileContent).content ?? null;
-    }
-  } catch { /* ignore */ }
+  // 3. 最后兜底：裸 fetch（仅 Tauri 环境，浏览器 dev 模式会被 CORS 拦截）
+  if (isTauriRuntime()) {
+    try {
+      const url = new URL('/file/content', _baseUrl);
+      url.searchParams.set('path', path);
+      const dir = directory ?? (_directory || '');
+      if (dir) url.searchParams.set('directory', dir);
+      const resp = await fetch(url.toString());
+      if (resp.ok) {
+        const data = await resp.json();
+        return (data as FileContent).content ?? null;
+      }
+    } catch { /* ignore */ }
+  }
   return null;
 }
 
@@ -245,21 +250,22 @@ export async function fileWrite(
       return await _owFileOps.write(_workspaceId, { path: toWorkspaceRelativePath(path), content });
     } catch { /* fall through to raw fetch */ }
   }
-  // 回退到裸 fetch（过渡期）
-  const dir = directory ?? _directory;
-  try {
-    const url = `${_baseUrl}/file/content`;
-    const body = { path, content, ...(dir ? { directory: dir } : {}) };
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    return resp.ok;
-  } catch {
-    console.warn('[xingjing] fileWrite: OpenCode file write not available, operating in read-only mode');
-    return false;
+  // 回退到裸 fetch（仅 Tauri 环境，浏览器 dev 模式会被 CORS 拦截）
+  if (isTauriRuntime()) {
+    const dir = directory ?? _directory;
+    try {
+      const url = `${_baseUrl}/file/content`;
+      const body = { path, content, ...(dir ? { directory: dir } : {}) };
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      return resp.ok;
+    } catch { /* ignore */ }
   }
+  console.warn('[xingjing] fileWrite: OpenCode file write not available, operating in read-only mode');
+  return false;
 }
 
 /**
@@ -269,6 +275,10 @@ export async function fileDelete(
   path: string,
   directory?: string,
 ): Promise<boolean> {
+  if (!isTauriRuntime()) {
+    console.warn('[xingjing] fileDelete: 非 Tauri 环境，跳过裸 fetch');
+    return false;
+  }
   const dir = directory ?? _directory;
   try {
     const url = `${_baseUrl}/file/content`;

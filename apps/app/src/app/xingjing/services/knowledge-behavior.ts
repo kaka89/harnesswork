@@ -2,7 +2,12 @@
  * 行为知识管理服务
  *
  * 通过 OpenWork Skill API 管理行为知识（存为 .opencode/skills/knowledge-{id}/SKILL.md）。
- * 行为知识可团队共享、可版本控制，是知识体系中的"公共层"。
+ * 行为知识可团队共享、可版本控制，是知识体系中的“公共层”。
+ *
+ * ADR-001 R6 评估：
+ *   本文件是 OpenWork Skill API 的适配层，而非重复建设。
+ *   SkillApiAdapter 接口被 8 个文件引用，删除风险高。
+ *   待 OpenWork 提供原生 knowledge 类型区分后，可进一步精简。
  */
 
 import type { OpenworkSkillItem, OpenworkSkillContent } from '../../lib/openwork-server';

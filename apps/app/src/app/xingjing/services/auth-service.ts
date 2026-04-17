@@ -3,6 +3,13 @@
  *
  * Manages token persistence (localStorage) and exposes reactive SolidJS signals
  * for the authentication state. Calls /api/v1/auth/* on xingjing-server.
+ *
+ * ADR-001 R9 评估：
+ *   本文件负责星静 SaaS 后端（xingjing-server）的独立认证流程，
+ *   与 OpenWork 平台认证（workspace context）属于不同认证域，不构成重复建设。
+ *   currentUser / authLoading 信号被 settings、app-store、main-layout 等消费，
+ *   所有导出函数均有活跃调用方，当前无可安全删减的代码。
+ *   结论：保持现状，无需改造。
  */
 
 import { createSignal } from 'solid-js';

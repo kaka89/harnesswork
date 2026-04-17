@@ -94,9 +94,9 @@ const SoloKnowledge: Component = () => {
           }
         }
       }
-      // force=true 或缓存过期：先扫描文件系统更新 _doc-index.json，再重建索引
-      await scanWorkspaceDocs(workDir);
-      const fresh = await buildKnowledgeIndex(workDir, skillApi);
+      // force=true 或缓存过期：先扫描文件系统，再将扫描结果直接传入重建索引
+      const scannedDocs = await scanWorkspaceDocs(workDir);
+      const fresh = await buildKnowledgeIndex(workDir, skillApi, scannedDocs);
       applyIndex(fresh);
     } catch (e) {
       console.warn('[knowledge] index build failed', e);

@@ -110,6 +110,7 @@ const META_DIR = '.xingjing/solo/knowledge/_meta';
 export async function buildKnowledgeIndex(
   workDir: string,
   skillApi: SkillApiAdapter | null,
+  preloadedDocs?: WorkspaceDocKnowledge[],
 ): Promise<KnowledgeIndex> {
   const entries: KnowledgeEntry[] = [];
 
@@ -135,11 +136,18 @@ export async function buildKnowledgeIndex(
     console.warn('[knowledge-index] Failed to load private knowledge:', e);
   }
 
-  // 3. Workspace 文档知识（从 _doc-index.json 加载，由 knowledge-scanner 生成）
+  // 3. Workspace 文档知识
+  // 优先使用调用方直接传入的扫描结果（避免依赖文件中转），
+  // 回退到从 _doc-index.json 加载（由 knowledge-scanner 生成）
   try {
-    const docContent = await fileRead(DOC_INDEX_PATH, workDir);
-    if (docContent) {
-      const docItems = JSON.parse(docContent) as WorkspaceDocKnowledge[];
+    let docItems: WorkspaceDocKnowledge[] | null = preloadedDocs ?? null;
+    if (!docItems) {
+      const docContent = await fileRead(DOC_INDEX_PATH, workDir);
+      if (docContent) {
+        docItems = JSON.parse(docContent) as WorkspaceDocKnowledge[];
+      }
+    }
+    if (docItems) {
       for (const item of docItems) {
         entries.push(docToEntry(item));
       }

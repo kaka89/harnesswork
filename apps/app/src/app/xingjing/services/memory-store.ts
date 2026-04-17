@@ -1,19 +1,17 @@
 /**
- * 统一会话记忆存储服务（私有记忆层）
+ * 统一会话记忆存储服务（已迁移至 OpenCode Session API）
  *
- * 将 Chat 和 Autopilot 两套会话历史统一为一套存储模型，
- * 支持索引+详情分离、按需加载、关键词搜索和自动裁剪。
- *
- * 存储路径：
- *   .xingjing/memory/index.json          — 会话索引（轻量，含摘要）
- *   .xingjing/memory/sessions/{id}.json  — 单会话详情（按需加载）
+ * 读取通道：
+ *   会话列表 → OpenCode SDK client.session.list()
+ *   消息详情 → OpenCode SDK client.session.messages()
  *
  * 写入通道：
- *   私有记忆 → OpenCode file API（fileRead / fileWrite），
- *   因为 .xingjing/ 是 gitignored 的本地数据。
+ *   OpenCode 自动持久化会话，前端无需手动写入。
+ *   仅 sidecar 元数据（tags/goal）通过 fileWrite 写入 .xingjing/memory/sidecar.json。
  */
 
 import { fileRead, fileWrite } from './opencode-client';
+import { getXingjingClient } from './opencode-client';
 
 // ─── 类型定义 ────────────────────────────────────────────────────────────────
 
@@ -49,128 +47,126 @@ export interface MemoryIndexEntry {
 }
 
 export interface MemoryIndex {
-  version: 1;
+  /** 会话索引条目列表 */
   sessions: MemoryIndexEntry[];
 }
 
-// ─── 常量 ─────────────────────────────────────────────────────────────────────
+// ─── Sidecar 元数据（tags/goal，OpenCode 不存储的星静特有数据）────────────────
 
-const MEMORY_DIR = '.xingjing/memory';
-const INDEX_FILE = `${MEMORY_DIR}/index.json`;
-const SESSIONS_DIR = `${MEMORY_DIR}/sessions`;
-const MAX_SESSIONS = 200;
+const SIDECAR_PATH = '.xingjing/memory/sidecar.json';
 
-// ─── 索引操作 ─────────────────────────────────────────────────────────────────
+// ─── 索引操作（已迁移至 OpenCode Session SDK）──────────────────────────
 
 /**
- * 加载会话索引。失败时返回空索引。
+ * 加载会话索引。优先从 OpenCode Session API 读取，
+ * 并融合 sidecar.json 中的星静特有元数据（tags/goal）。
+ * 失败时返回空索引。
  */
 export async function loadMemoryIndex(workDir: string): Promise<MemoryIndex> {
   try {
-    const content = await fileRead(`${workDir}/${INDEX_FILE}`);
-    if (!content) return { version: 1, sessions: [] };
-    const parsed = JSON.parse(content);
-    if (parsed.version !== 1 || !Array.isArray(parsed.sessions)) {
-      return { version: 1, sessions: [] };
-    }
-    return parsed as MemoryIndex;
+    const client = getXingjingClient();
+    const result = await client.session.list({
+      ...(workDir ? { directory: workDir } : {}),
+    });
+    if (!result.data) return { sessions: [] };
+    const sessions = Array.isArray(result.data) ? result.data : [];
+
+    // 加载 sidecar 元数据（tags/goal）
+    let sidecar: Record<string, { tags?: string[]; goal?: string }> = {};
+    try {
+      const raw = await fileRead(`${workDir}/${SIDECAR_PATH}`);
+      if (raw) sidecar = JSON.parse(raw);
+    } catch { /* sidecar 可能不存在 */ }
+
+    return {
+      sessions: sessions.map((s: any) => ({
+        id: s.id ?? '',
+        type: 'chat' as const,
+        summary: s.title ?? s.description ?? '',
+        tags: sidecar[s.id]?.tags ?? [],
+        createdAt: s.createdAt ?? '',
+        messageCount: 0,
+      })),
+    };
   } catch {
-    return { version: 1, sessions: [] };
+    return { sessions: [] };
   }
 }
 
 /**
- * 保存会话索引
+ * 保存 sidecar 元数据（tags/goal）
+ * OpenCode 不存储这些星静特有数据，通过本地 sidecar 文件补充。
  */
-async function saveMemoryIndex(workDir: string, index: MemoryIndex): Promise<boolean> {
+export async function saveMemoryMeta(
+  workDir: string,
+  sessionId: string,
+  meta: { tags: string[]; goal?: string },
+): Promise<void> {
   try {
-    return await fileWrite(
-      `${workDir}/${INDEX_FILE}`,
-      JSON.stringify(index, null, 2),
-    );
-  } catch {
-    return false;
-  }
+    let sidecar: Record<string, any> = {};
+    try {
+      const raw = await fileRead(`${workDir}/${SIDECAR_PATH}`);
+      if (raw) sidecar = JSON.parse(raw);
+    } catch { /* new file */ }
+    sidecar[sessionId] = meta;
+    await fileWrite(`${workDir}/${SIDECAR_PATH}`, JSON.stringify(sidecar, null, 2));
+  } catch { /* silent */ }
 }
 
-// ─── 会话详情操作 ──────────────────────────────────────────────────────────────
+// ─── 会话详情操作（已迁移至 OpenCode Session SDK）─────────────────────
 
 /**
- * 按需加载单个会话详情
+ * 按需加载单个会话详情（通过 SDK）
  */
 export async function loadSession(
   workDir: string,
   sessionId: string,
 ): Promise<MemorySession | null> {
   try {
-    const content = await fileRead(`${workDir}/${SESSIONS_DIR}/${sessionId}.json`);
-    if (!content) return null;
-    return JSON.parse(content) as MemorySession;
+    const client = getXingjingClient();
+    const result = await client.session.messages({ sessionID: sessionId });
+    if (!result.data) return null;
+    const messages = Array.isArray(result.data) ? result.data : [];
+
+    return {
+      id: sessionId,
+      type: 'chat',
+      summary: '',
+      tags: [],
+      messages: messages.map((m: any) => ({
+        id: m.id ?? '',
+        role: m.role === 'user' ? 'user' as const : 'assistant' as const,
+        content: typeof m.content === 'string' ? m.content
+          : (m.parts?.map((p: any) => p.text ?? '').join('') ?? ''),
+        ts: m.createdAt ?? new Date().toISOString(),
+      })),
+      createdAt: messages[0]?.createdAt ?? new Date().toISOString(),
+      updatedAt: messages[messages.length - 1]?.createdAt ?? new Date().toISOString(),
+    };
   } catch {
     return null;
   }
 }
 
 /**
- * 保存会话（详情文件 + 索引更新）
- *
- * - 写入 sessions/{id}.json
- * - 更新 index.json 中对应条目（存在则更新，不存在则追加到头部）
- * - 超限时裁剪旧会话
+ * 保存会话（兼容层）
+ * @deprecated OpenCode 自动持久化会话。此函数仅将 sidecar 元数据写入。
  */
 export async function saveSession(
   workDir: string,
   session: MemorySession,
 ): Promise<boolean> {
   try {
-    // 1. 写入详情文件
-    const detailPath = `${workDir}/${SESSIONS_DIR}/${session.id}.json`;
-    const written = await fileWrite(detailPath, JSON.stringify(session, null, 2));
-    if (!written) return false;
-
-    // 2. 更新索引
-    const index = await loadMemoryIndex(workDir);
-    const entry: MemoryIndexEntry = {
-      id: session.id,
-      type: session.type,
-      summary: session.summary,
-      tags: session.tags,
-      createdAt: session.createdAt,
-      messageCount: session.messages.length,
-    };
-
-    const idx = index.sessions.findIndex(s => s.id === session.id);
-    if (idx >= 0) {
-      index.sessions[idx] = entry;
-    } else {
-      index.sessions.unshift(entry);
+    // 仅写入 sidecar 元数据（tags/goal）
+    if (session.tags.length > 0 || session.goal) {
+      await saveMemoryMeta(workDir, session.id, {
+        tags: session.tags,
+        goal: session.goal,
+      });
     }
-
-    // 3. 裁剪超限（保留索引摘要，标记删除详情文件）
-    if (index.sessions.length > MAX_SESSIONS) {
-      const removed = index.sessions.splice(MAX_SESSIONS);
-      // 异步删除详情文件（不阻塞主流程）
-      for (const r of removed) {
-        void deleteSessionFile(workDir, r.id);
-      }
-    }
-
-    return await saveMemoryIndex(workDir, index);
-  } catch (e) {
-    console.warn('[memory-store] saveSession failed:', e);
-    return false;
-  }
-}
-
-/**
- * 删除会话详情文件（尽力而为）
- */
-async function deleteSessionFile(workDir: string, sessionId: string): Promise<void> {
-  try {
-    // 写入空内容标记为已清理（OpenCode file API 不支持 delete，用空内容替代）
-    await fileWrite(`${workDir}/${SESSIONS_DIR}/${sessionId}.json`, '');
+    return true;
   } catch {
-    // silent
+    return false;
   }
 }
 
@@ -212,21 +208,15 @@ export async function searchSessions(
 }
 
 /**
- * 超限时裁剪旧会话（保留索引摘要，删除详情文件）
+ * 超限时裁剪旧会话
+ * @deprecated OpenCode 管理会话生命周期
  */
 export async function pruneOldSessions(
-  workDir: string,
-  maxCount: number = MAX_SESSIONS,
+  _workDir: string,
+  _maxCount?: number,
 ): Promise<number> {
-  const index = await loadMemoryIndex(workDir);
-  if (index.sessions.length <= maxCount) return 0;
-
-  const removed = index.sessions.splice(maxCount);
-  for (const r of removed) {
-    void deleteSessionFile(workDir, r.id);
-  }
-  await saveMemoryIndex(workDir, index);
-  return removed.length;
+  // no-op: OpenCode 管理会话生命周期
+  return 0;
 }
 
 // ─── AI 摘要生成 ──────────────────────────────────────────────────────────────

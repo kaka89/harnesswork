@@ -187,20 +187,25 @@ async function scanDocType(
         continue;
       }
 
-      // 目录路径：台账优先
+      // 目录路径：台账优先，台账无结果则降级文件系统扫描
+      let scannedFromIndex = false;
       if (docTypeDef.index) {
         const indexPath = `${fullPath}/${docTypeDef.index}`;
         const indexContent = await fileRead(indexPath);
         if (indexContent) {
           const docs = await scanFromIndex(workDir, indexContent, docTypeKey, docTypeDef, dirGraph, expanded);
-          results.push(...docs);
-          continue;
+          if (docs.length > 0) {
+            results.push(...docs);
+            scannedFromIndex = true;
+          }
         }
       }
 
-      // 降级：文件系统扫描
-      const docs = await scanFromFileSystem(workDir, fullPath, docTypeKey, docTypeDef, dirGraph, expanded);
-      results.push(...docs);
+      // 降级：台账不存在或台账无有效条目时，文件系统扫描
+      if (!scannedFromIndex) {
+        const docs = await scanFromFileSystem(workDir, fullPath, docTypeKey, docTypeDef, dirGraph, expanded);
+        results.push(...docs);
+      }
     }
   }
 
@@ -270,7 +275,11 @@ async function scanFromIndex(
     const items = Array.isArray(parsed['items']) ? parsed['items'] as Array<Record<string, unknown>> : [];
 
     for (const item of items) {
-      const filePath = item['path'] ? String(item['path']) : null;
+      // 兼容 path / id 两种定位方式：优先 path，其次从 id 推断文件名
+      let filePath = item['path'] ? String(item['path']) : null;
+      if (!filePath && item['id']) {
+        filePath = `${String(item['id'])}.md`;
+      }
       if (!filePath) continue;
 
       const fullFilePath = filePath.startsWith('/') ? filePath : `${basePath}/${filePath}`;

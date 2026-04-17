@@ -15,9 +15,10 @@ type Props = {
   renderMarkdown?: boolean;
   markdownThrottleMs?: number;
   highlightQuery?: string;
+  onOpenArtifact?: (artifactId: string) => void;
 };
 
-type LinkType = "url" | "file";
+type LinkType = "url" | "file" | "artifact";
 
 type TextSegment =
   | { kind: "text"; value: string }
@@ -29,6 +30,7 @@ type LinkDetectionOptions = {
 
 const WEB_LINK_RE = /^(?:https?:\/\/|www\.)/i;
 const FILE_URI_RE = /^file:\/\//i;
+const ARTIFACT_LINK_RE = /^artifact:\/\/([a-zA-Z0-9_-]+)$/;
 const URI_SCHEME_RE = /^[A-Za-z][A-Za-z0-9+.-]*:/;
 const WINDOWS_PATH_RE = /^[A-Za-z]:[\\/][^\s"'`\)\]\}>]+$/;
 const POSIX_PATH_RE = /^\/(?!\/)[^\s"'`\)\]\}>][^\s"'`\)\]\}>]*$/;
@@ -128,6 +130,15 @@ const parseLinkFromToken = (
 
   const value = token.slice(start, end);
   if (!value) return null;
+
+  // 检测 artifact:// 协议
+  if (ARTIFACT_LINK_RE.test(value)) {
+    return {
+      value,
+      type: "artifact",
+      href: value,
+    };
+  }
 
   if (isLikelyWebLink(value)) {
     return {
@@ -629,6 +640,13 @@ export default function PartView(props: Props) {
   const openLink = async (href: string, type: LinkType) => {
     if (type === "url") {
       platform.openLink(href);
+      return;
+    }
+
+    // 处理 artifact:// 协议
+    if (type === "artifact") {
+      const artifactId = href.replace('artifact://', '');
+      props.onOpenArtifact?.(artifactId);
       return;
     }
 

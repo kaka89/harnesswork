@@ -81,6 +81,12 @@ export interface TeamSessionOrchestratorOptions {
   availableAgents: AutopilotAgent[];
   model: () => ModelRef | null;
   skillApi: SkillApiAdapter | null;
+  onArtifactExtracted?: (artifact: {
+    agentId: string;
+    sessionId: string;
+    title: string;
+    content: string;
+  }) => void;
 }
 
 export function createTeamSessionOrchestrator(opts: TeamSessionOrchestratorOptions): TeamSessionOrchestrator {
@@ -202,6 +208,34 @@ export function createTeamSessionOrchestrator(opts: TeamSessionOrchestratorOptio
           const msgs = accumulator.messages();
           if (msgs.length > 0) {
             setStatus('done');
+          }
+        }
+      });
+
+      // 监听消息变化，提取产出物
+      createEffect(() => {
+        const messages = accumulator.messages();
+        if (messages.length === 0) return;
+
+        const lastMsg = messages[messages.length - 1];
+        if (lastMsg.info.role !== 'assistant') return;
+
+        // 提取文本内容
+        const textParts = lastMsg.parts.filter((p) => p.type === 'text');
+        const fullText = textParts.map((p) => (p as { text?: string }).text ?? '').join('');
+
+        // 解析产出物标记
+        const artifactMatch = fullText.match(/###\s*产出物[：:]\s*(.+?)\n([\s\S]*?)(?=\n##|\n---|\n###|$)/);
+        if (artifactMatch) {
+          const title = artifactMatch[1].trim();
+          const content = artifactMatch[2].trim();
+          if (content.length >= 50 && opts.onArtifactExtracted) {
+            opts.onArtifactExtracted({
+              agentId,
+              sessionId: session.id,
+              title,
+              content,
+            });
           }
         }
       });

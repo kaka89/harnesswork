@@ -55,6 +55,7 @@ export type MessageListProps = {
   ) => void;
   footer?: JSX.Element;
   variant?: "default" | "nested";
+  onOpenArtifact?: (artifactId: string) => void;
 };
 
 type StepClusterBlock = {
@@ -1108,6 +1109,7 @@ export default function MessageList(props: MessageListProps) {
                             ? props.searchHighlightQuery
                             : undefined
                         }
+                        onOpenArtifact={props.onOpenArtifact}
                       />
                     );
                   })()}

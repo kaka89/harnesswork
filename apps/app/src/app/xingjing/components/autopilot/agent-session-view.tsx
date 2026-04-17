@@ -28,6 +28,8 @@ export interface AgentSessionViewProps {
   onSendMessage: (text: string) => void;
   developerMode: boolean;
   showThinking: boolean;
+  /** 产出物打开回调 */
+  onOpenArtifact?: (artifactId: string) => void;
 }
 
 export default function AgentSessionView(props: AgentSessionViewProps) {
@@ -82,6 +84,7 @@ export default function AgentSessionView(props: AgentSessionViewProps) {
           setExpandedStepIds={setExpandedStepIds}
           scrollElement={() => scrollContainerRef}
           variant="default"
+          onOpenArtifact={props.onOpenArtifact}
         />
 
         {/* Empty State */}

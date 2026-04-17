@@ -45,6 +45,8 @@ interface ArtifactWorkspaceProps {
   onDragEnd?: (e: PointerEvent) => void;
   onResizeEdge?: (e: PointerEvent, direction: string) => void;
   onCollapse?: () => void;
+  activeArtifactId?: string | null;
+  onActiveArtifactIdChange?: (id: string | null) => void;
 }
 
 type ViewMode = 'edit' | 'preview';
@@ -129,6 +131,18 @@ const ArtifactWorkspace = (props: ArtifactWorkspaceProps) => {
   const [activeTabId, setActiveTabId] = createSignal<string | null>(null);
   const [viewMode, setViewMode] = createSignal<ViewMode>('preview');
   const [editContents, setEditContents] = createSignal<Record<string, string>>({});
+
+  // 同步外部控制的 activeArtifactId
+  createEffect(() => {
+    if (props.activeArtifactId !== undefined) {
+      setActiveTabId(props.activeArtifactId);
+    }
+  });
+
+  // 通知外部 Tab 变化
+  createEffect(() => {
+    props.onActiveArtifactIdChange?.(activeTabId());
+  });
 
   const activeArtifact = createMemo(() => {
     const artifacts = props.artifacts;

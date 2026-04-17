@@ -24,6 +24,7 @@ import {
 } from '../../services/autopilot-executor';
 import MentionInput from '../../components/autopilot/mention-input';
 import ArtifactWorkspace, { type ArtifactItem } from '../../components/autopilot/artifact-workspace';
+import PermissionDialog, { type PermissionRequest } from '../../components/autopilot/permission-dialog';
 import { modelOptions } from '../../mock/settings';
 import {
   loadProjectSettings,
@@ -150,6 +151,7 @@ const EnterpriseAutopilot = () => {
   const [agentExecStatuses, setAgentExecStatuses] = createSignal<Record<string, AgentExecutionStatus>>({});
   const [agentError, setAgentError] = createSignal<string | null>(null);
   const [directAnswer, setDirectAnswer] = createSignal<string | null>(null);
+  const [permissionRequest, setPermissionRequest] = createSignal<PermissionRequest | null>(null);
 
   // ─── Pipeline mode state ────────────────────────────────────────────────
   const [autopilotMode, setAutopilotMode] = createSignal<'instant' | 'pipeline'>('instant');
@@ -167,10 +169,10 @@ const EnterpriseAutopilot = () => {
     modelOptions.filter(
       (opt) => opt.providerID !== 'custom' && (providerKeys()[opt.providerID]?.trim().length ?? 0) > 0
     );
-  const getSessionModel = () => {
+  const getSessionModel = (): { providerID: string; modelID: string } | null => {
     const opt = modelOptions.find((o) => o.modelID === sessionModelId());
-    if (!opt || opt.providerID === 'custom') return undefined;
-    if (!providerKeys()[opt.providerID]) return undefined;
+    if (!opt || opt.providerID === 'custom') return null;
+    if (!providerKeys()[opt.providerID]) return null;
     return { providerID: opt.providerID, modelID: opt.modelID };
   };
 
@@ -204,6 +206,24 @@ const EnterpriseAutopilot = () => {
     setAgentStreamTexts({});
     setAgentExecStatuses({});
     setDirectAnswer(null);
+  };
+
+  const handlePermissionAsked = (params: {
+    permissionId: string;
+    sessionId: string;
+    tool?: string;
+    description?: string;
+    input?: string;
+    resolve: (action: 'once' | 'always' | 'reject') => void;
+  }) => {
+    setPermissionRequest({
+      permissionId: params.permissionId,
+      sessionId: params.sessionId,
+      tool: params.tool,
+      description: params.description,
+      input: params.input,
+      resolve: params.resolve,
+    });
   };
 
   const pushMsg = (msg: Omit<ChatMessage, 'id'>) => {
@@ -256,40 +276,43 @@ const EnterpriseAutopilot = () => {
         setRunState('idle');
         return;
       }
-      pushMsg({ type: 'ai', agentId: 'pipeline', agentName: 'Pipeline', agentEmoji: '🔗', text: `正在执行 Pipeline（${config.stages.length} 个阶段）...`, time: formatTime(), isStreaming: true });
+
       const initStatuses: Record<string, PipelineStage['outputStatus']> = {};
       config.stages.forEach((s) => { initStatuses[s.id] = 'pending'; });
       setPipelineStageStatuses(initStatuses);
       setPipelineStageOutputs({});
-      await runPipeline({
-        config, goal: goal().trim(), workDir, model,
-        callAgentFn: (o) => store.actions.callAgent(o),
+
+      // 使用新的 Session 执行器
+      const { runPipelineWithSessions } = await import('../../services/pipeline-executor');
+      await runPipelineWithSessions({
+        config,
+        goal: goal().trim(),
+        client: () => store.openworkStatus() === 'connected' ? (window as any).__openworkClient : null,
+        workspaceId: () => store.resolvedWorkspaceId(),
+        workDir: () => workDir ?? '',
+        model: getSessionModel,
         onStageStart: (stageId) => {
           setPipelineStageStatuses((prev) => ({ ...prev, [stageId]: 'running' }));
-          const stage = config.stages.find((s) => s.id === stageId);
-          pushMsg({ type: 'ai', agentId: stageId, agentName: stage?.name ?? stageId, agentEmoji: '⚙️', text: '执行中...', time: formatTime(), isStreaming: true });
         },
-        onStageStream: (stageId, text) => {
-          setPipelineStageOutputs((prev) => ({ ...prev, [stageId]: text }));
-          updateLastAiMsg(stageId, text, true);
+        onStageSessionCreated: (stageId, sessionId) => {
+          // TODO: 存储 Stage Session ID，用于 UI 绑定
+          console.log(`[Pipeline] Stage ${stageId} session created: ${sessionId}`);
         },
         onStageComplete: (stageId, result) => {
           setPipelineStageStatuses((prev) => ({ ...prev, [stageId]: 'success' }));
           setPipelineStageOutputs((prev) => ({ ...prev, [stageId]: result }));
-          updateLastAiMsg(stageId, result, false);
           const totalDone = Object.values(pipelineStageStatuses()).filter((s) => s === 'success' || s === 'failed' || s === 'skipped').length + 1;
           setProgress(Math.round((totalDone / config.stages.length) * 100));
         },
         onStageFailed: (stageId, error) => {
           setPipelineStageStatuses((prev) => ({ ...prev, [stageId]: 'failed' }));
-          updateLastAiMsg(stageId, `执行失败：${error}`, false);
         },
         onGateWaiting: (stageId, stageName) => {
           return new Promise((resolve) => {
             setPipelineGateResolver({ stageId, stageName, resolve });
           });
         },
-        onDone: () => { setProgress(100); setRunState('done'); updateLastAiMsg('pipeline', 'Pipeline 执行完成', false); },
+        onDone: () => { setProgress(100); setRunState('done'); },
         onError: (err) => { setAgentError(`Pipeline 执行失败：${err}`); setRunState('idle'); },
       });
       return;
@@ -301,7 +324,8 @@ const EnterpriseAutopilot = () => {
       setAgentStatuses((prev) => ({ ...prev, [targetAgent.id]: 'thinking' }));
       pushMsg({ type: 'ai', agentId: targetAgent.id, agentName: targetAgent.name, agentEmoji: targetAgent.emoji, text: '正在思考...', time: formatTime(), isStreaming: true });
       await runDirectAgent(targetAgent, cleanText, {
-        workDir, model,
+        workDir, model: model ?? undefined,
+        onPermissionAsked: handlePermissionAsked,
         callAgentFn: (o) => store.actions.callAgent(o),
         onStatus: (status) => {
           const m: Record<AgentExecutionStatus, AgentStatus> = { idle: 'idle', pending: 'waiting', thinking: 'thinking', working: 'working', done: 'done', error: 'done' };
@@ -320,51 +344,31 @@ const EnterpriseAutopilot = () => {
     }
 
     // Orchestrated mode
-    pushMsg({ type: 'ai', agentId: 'orchestrator', agentName: 'Orchestrator', agentEmoji: '🤖', text: '好的，我将调度多个 Agent 来协同处理这个任务...', time: formatTime(), isStreaming: true });
+    const skillApiAdapter = {
+      listSkills: () => store.actions.listOpenworkSkills(),
+      getSkill: (name: string) => store.actions.getOpenworkSkill(name),
+      upsertSkill: (name: string, content: string, desc?: string) => store.actions.upsertOpenworkSkill(name, content, desc ?? ''),
+    };
     await runOrchestratedAutopilot(cleanText, {
-      availableAgents: TEAM_AGENTS, workDir, model,
+      workDir,
+      availableAgents: TEAM_AGENTS,
+      model: model ?? undefined,
       callAgentFn: (o) => store.actions.callAgent(o),
-      onOrchestrating: (text) => { setOrchestratorText(text); updateLastAiMsg('orchestrator', text, true); setProgress(10); },
-      onOrchestratorDone: (plan) => {
-        setDispatchPlan(plan);
-        const s: Record<string, AgentExecutionStatus> = {};
-        plan.forEach(({ agentId }) => { s[agentId] = 'pending'; });
-        setAgentExecStatuses(s);
-        updateLastAiMsg('orchestrator', orchestratorText() + '\n\n已完成规划，正在调度 ' + plan.length + ' 个 Agent 执行...', false);
-        setProgress(20);
-        // Push agent placeholders
-        plan.forEach(({ agentId, task }) => {
-          const ag = TEAM_AGENTS.find((a) => a.id === agentId);
-          if (ag) pushMsg({ type: 'ai', agentId, agentName: ag.name, agentEmoji: ag.emoji, text: `正在处理：${task.slice(0, 60)}...`, time: formatTime(), isStreaming: true });
-        });
-      },
+      skillApi: skillApiAdapter,
+      onPermissionAsked: handlePermissionAsked,
+      onOrchestrating: (text) => { setOrchestratorText(text); },
+      onOrchestratorDone: (plan) => { setDispatchPlan(plan); setProgress(10); },
       onAgentStatus: (agentId, status) => {
-        setAgentExecStatuses((p) => ({ ...p, [agentId]: status }));
         const m: Record<AgentExecutionStatus, AgentStatus> = { idle: 'idle', pending: 'waiting', thinking: 'thinking', working: 'working', done: 'done', error: 'done' };
-        setAgentStatuses((p) => ({ ...p, [agentId]: m[status] }));
+        setAgentStatuses((prev) => ({ ...prev, [agentId]: m[status] }));
+        setAgentExecStatuses((prev) => ({ ...prev, [agentId]: status }));
+        const ag = TEAM_AGENTS.find((a) => a.id === agentId);
+        if (ag && status === 'thinking') pushMsg({ type: 'ai', agentId, agentName: ag.name, agentEmoji: ag.emoji, text: '正在思考...', time: formatTime(), isStreaming: true });
       },
-      onAgentStream: (agentId, text) => {
-        setAgentStreamTexts((p) => ({ ...p, [agentId]: text }));
-        updateLastAiMsg(agentId, text, true);
-        const done = Object.values(agentExecStatuses()).filter((s) => s === 'done').length;
-        setProgress(20 + Math.round((done / Math.max(dispatchPlan().length, 1)) * 70));
-      },
-      onDone: (results) => {
-        const artifactSteps: WorkflowStep[] = [];
-        Object.entries(results).forEach(([agentId, text]) => {
-          const agent = TEAM_AGENTS.find((a) => a.id === agentId);
-          updateLastAiMsg(agentId, text, false);
-          const artMatch = text.match(/###\s+产出物[：:]\s*(.+)\n([\s\S]+)/);
-          if (artMatch && agent) {
-            artifactSteps.push({ id: `real-${agentId}`, agentId, agentName: agent.name, action: '执行完成', output: '', durationMs: 0, artifact: { title: artMatch[1].trim(), content: artMatch[2].trim().slice(0, 500) } });
-          }
-        });
-        setArtifacts(artifactSteps);
-        setProgress(100);
-        setRunState('done');
-      },
+      onAgentStream: (agentId, text) => { setAgentStreamTexts((p) => ({ ...p, [agentId]: text })); updateLastAiMsg(agentId, text, true); setProgress(50); },
+      onDirectAnswer: (text) => { setDirectAnswer(text); updateLastAiMsg('orchestrator', text, false); },
+      onDone: () => { setProgress(100); setRunState('done'); },
       onError: (err) => { setAgentError(`编排执行失败：${err}`); setRunState('idle'); },
-      onDirectAnswer: (text) => { setDirectAnswer(text); updateLastAiMsg('orchestrator', text, false); setProgress(100); setRunState('done'); },
     });
   };
 
@@ -830,8 +834,64 @@ const EnterpriseAutopilot = () => {
 
           {/* Chat tab */}
           <Show when={activeTab() === 'chat'}>
-            <Show when={hasMessages()} fallback={
-              /* ── Empty state: centered input ── */
+            <Show when={!hasMessages()} fallback={
+              /* ── Has messages: scrollable bubble list ── */
+              <div ref={chatScrollRef} style={{ flex: 1, 'overflow-y': 'auto', padding: '16px' }}>
+                <div style={{ display: 'flex', 'flex-direction': 'column', gap: '12px', 'padding-bottom': '8px' }}>
+                  <For each={filteredMessages()}>
+                    {(msg) => {
+                      if (msg.type === 'user') return (
+                        <div style={{ display: 'flex', 'justify-content': 'flex-end' }}>
+                          <div style={{ 'max-width': '70%', display: 'flex', 'align-items': 'flex-start', gap: '8px', 'flex-direction': 'row-reverse' }}>
+                            <div style={{ width: '28px', height: '28px', 'border-radius': '50%', background: chartColors.primary, display: 'flex', 'align-items': 'center', 'justify-content': 'center', color: 'white', 'font-size': '12px', 'font-weight': 600, 'flex-shrink': 0 }}>我</div>
+                            <div>
+                              <div style={{ background: '#dcf8e8', padding: '8px 12px', 'border-radius': '12px 2px 12px 12px', 'font-size': '13px', 'line-height': '1.6', color: themeColors.textPrimary }}>{msg.text}</div>
+                              <div style={{ 'font-size': '11px', color: themeColors.textMuted, 'text-align': 'right', 'margin-top': '3px' }}>{msg.time}</div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                      if (msg.type === 'ai') return (
+                        <div style={{ display: 'flex' }}>
+                          <div style={{ 'max-width': '85%', display: 'flex', 'align-items': 'flex-start', gap: '8px' }}>
+                            <div style={{ width: '28px', height: '28px', 'border-radius': '50%', background: themeColors.hover, display: 'flex', 'align-items': 'center', 'justify-content': 'center', 'font-size': '14px', 'flex-shrink': 0 }}>
+                              {msg.agentEmoji || '🤖'}
+                            </div>
+                            <div>
+                              <div style={{ 'font-size': '12px', 'font-weight': 600, color: themeColors.textSecondary, 'margin-bottom': '3px' }}>{msg.agentName}</div>
+                              <div style={{ background: themeColors.surface, border: `1px solid ${themeColors.border}`, padding: '8px 12px', 'border-radius': '2px 12px 12px 12px', 'font-size': '13px', 'line-height': '1.7', color: themeColors.textPrimary, 'white-space': 'pre-wrap' }}>
+                                {msg.text}
+                                <Show when={msg.isStreaming}>
+                                  <span style={{ display: 'inline-flex', gap: '2px', 'margin-left': '4px', 'vertical-align': 'middle' }}>
+                                    <span style={{ width: '4px', height: '4px', 'border-radius': '50%', background: chartColors.primary, animation: 'blink 1.4s infinite both', 'animation-delay': '0s' }} />
+                                    <span style={{ width: '4px', height: '4px', 'border-radius': '50%', background: chartColors.primary, animation: 'blink 1.4s infinite both', 'animation-delay': '0.2s' }} />
+                                    <span style={{ width: '4px', height: '4px', 'border-radius': '50%', background: chartColors.primary, animation: 'blink 1.4s infinite both', 'animation-delay': '0.4s' }} />
+                                  </span>
+                                </Show>
+                              </div>
+                              <div style={{ 'font-size': '11px', color: themeColors.textMuted, 'margin-top': '3px' }}>{msg.time}</div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                      return null;
+                    }}
+                  </For>
+                </div>
+                {/* Bottom input */}
+                <div style={{ 'flex-shrink': 0, padding: '12px 0 0' }}>
+                  <GoalInputPanel />
+                </div>
+                <Show when={agentError() !== null}>
+                  <div style={{ padding: '10px 14px', 'border-radius': '6px', 'font-size': '13px', background: '#fff2f0', border: '1px solid #ffccc7', color: '#cf1322', display: 'flex', gap: '8px', 'margin-top': '8px' }}>
+                    <span>⚠️</span>
+                    <div style={{ flex: 1 }}><strong>AI 调用失败</strong><br />{agentError()}</div>
+                    <button onClick={() => setAgentError(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#cf1322' }}>✕</button>
+                  </div>
+                </Show>
+              </div>
+            }>
+              {/* ── Empty state: centered input ── */}
               <div style={{ flex: 1, display: 'flex', 'flex-direction': 'column', 'align-items': 'center', 'justify-content': 'flex-start', padding: '40px 24px 24px', gap: '12px' }}>
                 <GoalInputPanel centered />
                 <Show when={agentError() !== null}>
@@ -841,69 +901,6 @@ const EnterpriseAutopilot = () => {
                     <button onClick={() => setAgentError(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#cf1322' }}>✕</button>
                   </div>
                 </Show>
-              </div>
-            }>
-              {/* ── Has messages: scrollable list + bottom input ── */}
-              <div ref={chatScrollRef} style={{ flex: 1, 'overflow-y': 'auto', padding: '16px 24px' }}>
-                <For each={filteredMessages()}>
-                  {(msg) => {
-                    if (msg.type === 'user') return (
-                      <div style={{ display: 'flex', 'justify-content': 'flex-end', 'margin-bottom': '16px' }}>
-                        <div style={{ 'max-width': '70%', display: 'flex', 'align-items': 'flex-start', gap: '8px', 'flex-direction': 'row-reverse' }}>
-                          <div style={{ width: '32px', height: '32px', 'border-radius': '50%', background: chartColors.primary, display: 'flex', 'align-items': 'center', 'justify-content': 'center', color: 'white', 'font-size': '13px', 'font-weight': 600, 'flex-shrink': 0 }}>我</div>
-                          <div>
-                            <div style={{ background: '#dcf8e8', padding: '10px 14px', 'border-radius': '12px 2px 12px 12px', 'font-size': '13px', 'line-height': '1.6', color: themeColors.textPrimary }}>{msg.text}</div>
-                            <div style={{ 'font-size': '11px', color: themeColors.textMuted, 'text-align': 'right', 'margin-top': '4px' }}>{msg.time}</div>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                    if (msg.type === 'ai') return (
-                      <div style={{ display: 'flex', 'margin-bottom': '16px' }}>
-                        <div style={{ 'max-width': '75%', display: 'flex', 'align-items': 'flex-start', gap: '8px' }}>
-                          <div style={{ width: '32px', height: '32px', 'border-radius': '50%', background: themeColors.hover, display: 'flex', 'align-items': 'center', 'justify-content': 'center', 'font-size': '14px', 'flex-shrink': 0 }}>
-                            {msg.agentEmoji || 'AI'}
-                          </div>
-                          <div>
-                            <div style={{ 'font-size': '12px', 'font-weight': 600, color: themeColors.textSecondary, 'margin-bottom': '4px' }}>{msg.agentName}</div>
-                            <div style={{ background: themeColors.surface, border: `1px solid ${themeColors.border}`, padding: '10px 14px', 'border-radius': '2px 12px 12px 12px', 'font-size': '13px', 'line-height': '1.7', color: themeColors.textPrimary, 'white-space': 'pre-wrap' }}>
-                              {msg.text}
-                              <Show when={msg.isStreaming}>
-                                <span style={{ display: 'inline-flex', gap: '2px', 'margin-left': '4px', 'vertical-align': 'middle' }}>
-                                  <span style={{ width: '4px', height: '4px', 'border-radius': '50%', background: chartColors.primary, animation: 'blink 1.4s infinite both', 'animation-delay': '0s' }} />
-                                  <span style={{ width: '4px', height: '4px', 'border-radius': '50%', background: chartColors.primary, animation: 'blink 1.4s infinite both', 'animation-delay': '0.2s' }} />
-                                  <span style={{ width: '4px', height: '4px', 'border-radius': '50%', background: chartColors.primary, animation: 'blink 1.4s infinite both', 'animation-delay': '0.4s' }} />
-                                </span>
-                              </Show>
-                            </div>
-                            <div style={{ 'font-size': '11px', color: themeColors.textMuted, 'margin-top': '4px' }}>{msg.time}</div>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                    return null;
-                  }}
-                </For>
-                {/* Inline error */}
-                <Show when={agentError() !== null}>
-                  <div style={{ padding: '10px 14px', 'border-radius': '6px', 'font-size': '13px', background: '#fff2f0', border: '1px solid #ffccc7', color: '#cf1322', 'margin-bottom': '12px', display: 'flex', gap: '8px' }}>
-                    <span>⚠️</span>
-                    <div style={{ flex: 1 }}><strong>AI 调用失败</strong> — {agentError()}</div>
-                    <button onClick={() => setAgentError(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#cf1322' }}>✕</button>
-                  </div>
-                </Show>
-                {/* Done banner */}
-                <Show when={runState() === 'done'}>
-                  <div style={{ padding: '10px 14px', background: themeColors.successBg, border: `1px solid ${themeColors.successBorder}`, 'border-radius': '8px', display: 'flex', 'align-items': 'center', gap: '8px', 'margin-bottom': '12px' }}>
-                    <CheckCircle size={16} style={{ color: chartColors.success }} />
-                    <span style={{ 'font-size': '13px', color: chartColors.success, 'font-weight': 600 }}>全部完成</span>
-                    <span style={{ 'font-size': '12px', color: themeColors.textMuted }}>— 共调度 {dispatchPlan().length || 1} 个 Agent</span>
-                  </div>
-                </Show>
-              </div>
-              {/* Bottom input */}
-              <div style={{ padding: '10px 16px', 'border-top': `1px solid ${themeColors.border}`, 'flex-shrink': 0, background: themeColors.surface }}>
-                <GoalInputPanel />
               </div>
             </Show>
           </Show>
@@ -963,6 +960,15 @@ const EnterpriseAutopilot = () => {
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         @keyframes blink { 0%,80%,100% { opacity: 0; } 40% { opacity: 1; } }
       `}</style>
+      <Show when={permissionRequest()}>
+        <PermissionDialog
+          request={permissionRequest()!}
+          onResolve={(action) => {
+            permissionRequest()?.resolve(action);
+            setPermissionRequest(null);
+          }}
+        />
+      </Show>
     </div>
   );
 };

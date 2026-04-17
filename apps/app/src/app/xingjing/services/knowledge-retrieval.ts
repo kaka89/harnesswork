@@ -22,6 +22,7 @@ import {
   type SearchContext,
 } from './knowledge-index';
 import type { SkillApiAdapter } from './knowledge-behavior';
+import { scanWorkspaceDocs } from './knowledge-scanner';
 
 // ─── 内存缓存 ─────────────────────────────────────────────────────────────────
 
@@ -145,7 +146,20 @@ async function getOrBuildIndex(
 
   // 全量构建
   try {
-    const index = await buildKnowledgeIndex(workDir, skillApi);
+    let index = await buildKnowledgeIndex(workDir, skillApi);
+
+    // 首次使用时自动触发文档扫描：如果索引中无 workspace-doc 条目，
+    // 尝试扫描一次并重建索引，确保首次检索时有基础知识可用
+    const hasDocEntries = index.entries.some(e => e.source === 'workspace-doc');
+    if (!hasDocEntries) {
+      try {
+        const scanned = await scanWorkspaceDocs(workDir);
+        if (scanned.length > 0) {
+          index = await buildKnowledgeIndex(workDir, skillApi);
+        }
+      } catch { /* 扫描失败不影响主流程 */ }
+    }
+
     _cachedIndex = index;
     _cacheWorkDir = workDir;
     _cacheTimestamp = Date.now();

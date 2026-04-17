@@ -18,7 +18,8 @@ export type BehaviorKnowledgeCategory =
   | 'best-practice'
   | 'architecture'
   | 'process'
-  | 'scenario';
+  | 'scenario'
+  | 'skill-capability';
 
 export type ApplicableScene =
   | 'product-planning'

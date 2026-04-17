@@ -6,7 +6,7 @@
  */
 
 import { createSignal, onMount, onCleanup } from 'solid-js';
-import { getBaseUrl, getAuthHeader } from '../services/opencode-client';
+import { getXingjingClient } from '../services/opencode-client';
 
 export type OpenCodeStatus = 'connected' | 'disconnected';
 
@@ -20,15 +20,9 @@ export function useOpenCodeStatus(): () => OpenCodeStatus {
 
   async function check() {
     try {
-      const authHeader = getAuthHeader();
-      const headers: Record<string, string> = {};
-      if (authHeader) headers['Authorization'] = authHeader;
-      const resp = await fetch(`${getBaseUrl()}/config/providers`, {
-        method: 'GET',
-        headers,
-        signal: AbortSignal.timeout(5_000),
-      });
-      setStatus(resp.ok ? 'connected' : 'disconnected');
+      const client = getXingjingClient();
+      const result = await client.config.providers();
+      setStatus(result.data ? 'connected' : 'disconnected');
     } catch {
       setStatus('disconnected');
     }

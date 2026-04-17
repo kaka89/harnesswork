@@ -13,6 +13,7 @@ import { themeColors, chartColors } from '../../utils/colors';
 import { callAgent, discoverAllSkills, type XingjingSkillItem, type XingjingAgentItem, type SkillPlatform } from '../../services/opencode-client';
 import { useAppStore } from '../../stores/app-store';
 import { loadAgentWorkshopData, saveAgentWorkshopData } from '../../services/file-store';
+import type { OpenworkCommandItem } from '../../../lib/openwork-server';
 
 // 平台徽章配色
 const PLATFORM_COLORS: Record<SkillPlatform, string> = {
@@ -382,6 +383,20 @@ const AgentWorkshop: Component = () => {
 
       setAllDiscoveredSkills(prev => deduplicateById([...owSkillItems, ...prev]));
       setAllDiscoveredAgents(prev => deduplicateById([...owAgentItems, ...prev]));
+    }
+
+    // 路径2b: 从 OpenWork 加载 commands 并作为只读 skill 展示
+    const commands = await actions.listCommands();
+    if (commands.length > 0) {
+      const commandSkillItems: XingjingSkillItem[] = commands.map((cmd: OpenworkCommandItem) => ({
+        id: `command:${cmd.name}`,
+        name: cmd.name,
+        description: cmd.description || `命令模板：${cmd.name}`,
+        platform: 'openwork' as SkillPlatform,
+        path: '',
+        editable: false,
+      }));
+      setAllDiscoveredSkills(prev => deduplicateById([...commandSkillItems, ...prev]));
     }
 
     // 路径3: 多平台目录扫描（.opencode/、.agents/、.claude/、.kiro/）

@@ -9,10 +9,11 @@
 
 import { createSignal, createEffect } from 'solid-js';
 import { readYaml, writeYaml } from './file-store';
-import { buildProductFileList, buildTeamProductLineFiles, buildTeamDomainFiles, buildTeamAppFiles, buildTeamRootConfig, type SoloProductType } from './product-dir-structure';
+import { buildProductFileList, buildTeamProductLineFiles, buildTeamDomainFiles, buildTeamAppFiles, buildTeamRootConfig } from './product-dir-structure';
 import { initProductDir, runGitInit, engineInfo } from '../../lib/tauri';
-import { initXingjingClient } from './opencode-client';
+import { setWorkingDirectory } from './opencode-client';
 import { isTauriRuntime } from '../../utils';
+import type { XingjingOpenworkContext } from '../stores/app-store';
 
 // 动态获取 OpenCode 真实 baseUrl：Tauri 运行时从 engine_info 读取，浏览器内降级到默认端口
 async function resolveOpenCodeInfo(): Promise<{ baseUrl: string; username: string; password: string }> {
@@ -84,10 +85,10 @@ export interface XingjingProduct {
   description?: string;
   /** 产品类型：team = 多仓库模式，solo = Monorepo 模式（默认，向后兼容）*/
   productType?: 'team' | 'solo';
-  /** Solo 产品类型：web = 纯 Web / saas = SaaS 全栈 / h5 = H5 移动端 */
-  soloProductType?: SoloProductType;
   /** 仅 team 类型产品有此字段 */
   teamStructure?: TeamStructure;
+  /** OpenWork workspace ID（运行时填充，不持久化）*/
+  _workspaceId?: string;
 }
 
 export interface XingjingPreferences {
@@ -187,6 +188,31 @@ export function createProductStore() {
     }
   }
 
+  // ── Load from OpenWork ──
+  async function loadFromOpenWork(openworkCtx: XingjingOpenworkContext) {
+    setLoading(true);
+    try {
+      // 从本地 localStorage 读取现有产品（包含 name、description 等元数据）
+      const existingProducts = lsGetProducts();
+      const synced: XingjingProduct[] = [];
+
+      // 逐一验证每个已知产品是否在 OpenWork 中注册
+      for (const p of existingProducts) {
+        const wsId = await openworkCtx.resolveWorkspaceByDir(p.workDir);
+        synced.push({ ...p, _workspaceId: wsId ?? undefined });
+      }
+
+      if (synced.length > 0) {
+        setProducts(synced);
+        lsSetProducts(synced);
+      }
+    } catch (e) {
+      console.warn('[product-store] loadFromOpenWork failed, fallback to file', e);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   // ── Save to file ──
   async function saveProducts(updatedProducts: XingjingProduct[]) {
     lsSetProducts(updatedProducts);
@@ -208,6 +234,67 @@ export function createProductStore() {
       createdAt: now,
       updatedAt: now,
     };
+    const updated = [...products(), newProduct];
+    setProducts(updated);
+    await saveProducts(updated);
+
+    // Set as active if it's the first product
+    if (updated.length === 1) {
+      await switchProduct(newProduct.id);
+    }
+
+    return newProduct;
+  }
+
+  /**
+   * 创建产品并同时在 OpenWork 中注册工作区。
+   * 若 OpenWork 创建失败，仍然在本地创建产品（兜底）。
+   */
+  async function addProductWithOpenwork(
+    product: Omit<XingjingProduct, 'id' | 'createdAt' | 'updatedAt' | '_workspaceId'>,
+    openworkCtx: XingjingOpenworkContext,
+  ) {
+    const now = new Date().toISOString();
+    const newProduct: XingjingProduct = {
+      ...product,
+      id: `prod-${Date.now()}`,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    // 尝试在 OpenWork 中创建工作区
+    try {
+      const wsId = await openworkCtx.createWorkspaceByDir(product.workDir, product.name);
+      if (wsId) {
+        newProduct._workspaceId = wsId;
+
+        // 在工作区创建后，安装一个名为 xingjing-context 的 Skill，记录产品上下文
+        const skillContent = `# 星静产品上下文
+
+## 产品信息
+- 名称：${product.name}
+- 编码：${product.code ?? 'N/A'}
+- 工作目录：${product.workDir}
+- 产品类型：${product.productType ?? 'solo'}
+- 创建时间：${now}
+${product.description ? `\n## 描述\n${product.description}` : ''}
+`;
+        try {
+          await openworkCtx.upsertSkill(
+            wsId,
+            'xingjing-context',
+            skillContent,
+            `产品 ${product.name} 的星静上下文`
+          );
+          console.info(`[product-store] Created xingjing-context skill for workspace ${wsId}`);
+        } catch (e) {
+          console.warn(`[product-store] Failed to upsert xingjing-context skill:`, e);
+        }
+      }
+    } catch (e) {
+      console.warn('[product-store] Failed to create workspace in OpenWork, fallback to local only', e);
+    }
+
     const updated = [...products(), newProduct];
     setProducts(updated);
     await saveProducts(updated);
@@ -257,8 +344,8 @@ export function createProductStore() {
     await savePreferences(updatedPrefs);
 
     // Re-initialize OpenCode client with the new product's workDir
-    const { baseUrl, username, password } = await resolveOpenCodeInfo();
-    initXingjingClient(baseUrl, product.workDir, { username, password });
+    const { baseUrl } = await resolveOpenCodeInfo();
+    setWorkingDirectory(product.workDir, baseUrl);
   }
 
   async function setViewMode(mode: 'team' | 'solo') {
@@ -306,9 +393,8 @@ export function createProductStore() {
     workDir: string,
     productName: string,
     productCode: string,
-    soloProductType?: SoloProductType,
   ) {
-    const fileList = buildProductFileList(productName, productCode, soloProductType ?? 'web');
+    const fileList = buildProductFileList(productName, productCode);
     const result = await initProductDir(workDir, fileList);
     if (!result.ok) {
       throw new Error(result.error ?? '目录初始化失败');
@@ -491,8 +577,8 @@ export function createProductStore() {
   createEffect(() => {
     const product = activeProduct();
     if (product) {
-      resolveOpenCodeInfo().then(({ baseUrl, username, password }) => {
-        initXingjingClient(baseUrl, product.workDir, { username, password });
+      resolveOpenCodeInfo().then(({ baseUrl }) => {
+        setWorkingDirectory(product.workDir, baseUrl);
       });
     }
   });
@@ -508,7 +594,9 @@ export function createProductStore() {
     XINGJING_DIR_STRUCTURE,
     // Actions
     loadFromFile,
+    loadFromOpenWork,
     addProduct,
+    addProductWithOpenwork,
     removeProduct,
     switchProduct,
     setViewMode,

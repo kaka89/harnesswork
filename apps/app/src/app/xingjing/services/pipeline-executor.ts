@@ -48,6 +48,8 @@ export interface PipelineRunOpts {
   onStageFailed?: (stageId: string, error: string) => void;
   /** 门控等待审批（返回 approve 继续，reject 跳过） */
   onGateWaiting?: (stageId: string, stageName: string) => Promise<'approve' | 'reject'>;
+  /** Stage Session 创建回调（用于 UI 绑定） */
+  onStageSessionCreated?: (stageId: string, sessionId: string) => void;
   /** 全部完成 */
   onDone?: (results: Record<string, string>) => void;
   /** 整体失败 */
@@ -137,6 +139,221 @@ export async function runPipeline(opts: PipelineRunOpts): Promise<void> {
   }
 
   opts.onDone?.(results);
+}
+
+// ─── Pipeline Session 执行器（使用 OpenWork 原生 Session）──────
+
+export interface PipelineSessionRunOpts {
+  /** Pipeline 配置 */
+  config: PipelineConfig;
+  /** 用户目标 */
+  goal: string;
+  /** OpenWork Client */
+  client: () => ReturnType<typeof import('../../lib/opencode').createClient> | null;
+  /** Workspace ID */
+  workspaceId: () => string | null;
+  /** 工作目录 */
+  workDir: () => string;
+  /** 使用的模型 */
+  model: () => { providerID: string; modelID: string } | null;
+
+  // ── 回调 ──
+  /** 阶段开始执行 */
+  onStageStart?: (stageId: string, stage: PipelineStage) => void;
+  /** Stage Session 创建回调 */
+  onStageSessionCreated?: (stageId: string, sessionId: string) => void;
+  /** 阶段执行完成 */
+  onStageComplete?: (stageId: string, result: string) => void;
+  /** 阶段执行失败 */
+  onStageFailed?: (stageId: string, error: string) => void;
+  /** 门控等待审批 */
+  onGateWaiting?: (stageId: string, stageName: string) => Promise<'approve' | 'reject'>;
+  /** 全部完成 */
+  onDone?: (results: Record<string, string>) => void;
+  /** 整体失败 */
+  onError?: (err: string) => void;
+}
+
+/**
+ * 使用 OpenWork 原生 Session 执行 Pipeline。
+ * 每个 Stage 创建一个真实的 Session，支持完整的消息渲染、权限、提问等。
+ */
+export async function runPipelineWithSessions(opts: PipelineSessionRunOpts): Promise<void> {
+  const { config, goal, client, workspaceId, workDir, model } = opts;
+  const maxRetries = config.maxRetries ?? 2;
+
+  const clientInstance = client();
+  const wsId = workspaceId();
+  if (!clientInstance || !wsId) {
+    opts.onError?.('OpenWork client 或 workspace ID 未就绪');
+    return;
+  }
+
+  // 拓扑排序分层
+  const layers = topologicalSort(config.stages);
+  if (layers.length === 0 && config.stages.length > 0) {
+    opts.onError?.('Pipeline 配置存在循环依赖，无法执行');
+    return;
+  }
+
+  // 聚合结果
+  const results: Record<string, string> = {};
+  const sessionIds: Record<string, string> = {};
+
+  // 逐层执行
+  for (const layer of layers) {
+    const parallelStages = layer.filter((s) => s.parallel);
+    const sequentialStages = layer.filter((s) => !s.parallel);
+
+    // 并行执行
+    if (parallelStages.length > 0) {
+      await Promise.all(
+        parallelStages.map((stage) =>
+          executeStageWithSession(stage, {
+            goal,
+            client: clientInstance,
+            workspaceId: wsId,
+            workDir: workDir(),
+            model: model(),
+            maxRetries,
+            results,
+            sessionIds,
+            opts,
+          }),
+        ),
+      );
+    }
+
+    // 顺序执行
+    for (const stage of sequentialStages) {
+      await executeStageWithSession(stage, {
+        goal,
+        client: clientInstance,
+        workspaceId: wsId,
+        workDir: workDir(),
+        model: model(),
+        maxRetries,
+        results,
+        sessionIds,
+        opts,
+      });
+    }
+  }
+
+  opts.onDone?.(results);
+}
+
+// ─── 单阶段 Session 执行 ──────────────────────────────────────
+
+interface StageSessionExecContext {
+  goal: string;
+  client: ReturnType<typeof import('../../lib/opencode').createClient>;
+  workspaceId: string;
+  workDir: string;
+  model: { providerID: string; modelID: string } | null;
+  maxRetries: number;
+  results: Record<string, string>;
+  sessionIds: Record<string, string>;
+  opts: PipelineSessionRunOpts;
+}
+
+async function executeStageWithSession(
+  stage: PipelineStage,
+  ctx: StageSessionExecContext,
+): Promise<void> {
+  const { goal, client, workspaceId, workDir, model, maxRetries, results, sessionIds, opts } = ctx;
+
+  // 1. 门控检查
+  if (stage.gate === 'await-approval') {
+    if (opts.onGateWaiting) {
+      const decision = await opts.onGateWaiting(stage.id, stage.name);
+      if (decision === 'reject') {
+        stage.outputStatus = 'skipped';
+        results[stage.id] = `[已跳过] ${stage.name}`;
+        return;
+      }
+    }
+  }
+
+  // 2. 构建上下文 prompt
+  const contextParts: string[] = [`## 用户目标\n${goal}`];
+  if (stage.description) {
+    contextParts.push(`## 当前阶段任务\n${stage.description}`);
+  }
+
+  // 注入前置阶段的产出
+  if (stage.dependsOn.length > 0) {
+    const depOutputs = stage.dependsOn
+      .filter((depId) => results[depId])
+      .map((depId) => `### ${depId} 产出\n${results[depId]}`);
+    if (depOutputs.length > 0) {
+      contextParts.push(`## 前置阶段产出\n${depOutputs.join('\n\n')}`);
+    }
+  }
+
+  const userPrompt = contextParts.join('\n\n');
+
+  // 3. 带重试执行
+  let lastError = '';
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      opts.onStageStart?.(stage.id, stage);
+      stage.outputStatus = 'running';
+
+      // 创建 Session
+      const sessionResult = await client.session.create({
+        directory: workDir,
+      });
+
+      if (!sessionResult.data) {
+        throw new Error('Failed to create session');
+      }
+
+      const session = sessionResult.data;
+      sessionIds[stage.id] = session.id;
+      opts.onStageSessionCreated?.(stage.id, session.id);
+
+      // 发送 prompt
+      await (client.session as any).promptAsync({
+        sessionID: session.id,
+        directory: workDir,
+        parts: [{ type: 'text', text: userPrompt }],
+      });
+
+      // 等待 Session 完成（简化版，实际应该通过 SSE 监听）
+      // TODO: 集成 MessageAccumulator 监听 Session 状态
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+
+      // 获取 Session 消息
+      const messagesResult = await client.session.messages({ sessionID: session.id });
+      const messages = messagesResult.data ?? [];
+
+      // 提取最后一条消息的文本内容
+      const lastMessage = messages[messages.length - 1];
+      let stageResult = '';
+      if (lastMessage && lastMessage.parts) {
+        const textParts = lastMessage.parts.filter((p: any) => p.type === 'text');
+        stageResult = textParts.map((p: any) => p.text ?? '').join('');
+      }
+
+      // 成功
+      stage.outputStatus = 'success';
+      results[stage.id] = stageResult;
+      opts.onStageComplete?.(stage.id, stageResult);
+
+      return;
+    } catch (e) {
+      lastError = e instanceof Error ? e.message : String(e);
+      if (attempt < maxRetries) {
+        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+      }
+    }
+  }
+
+  // 重试耗尽
+  stage.outputStatus = 'failed';
+  results[stage.id] = `[失败] ${lastError}`;
+  opts.onStageFailed?.(stage.id, lastError);
 }
 
 // ─── 单阶段执行 ──────────────────────────────────────────────

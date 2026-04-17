@@ -14,7 +14,7 @@ import { AppStoreProvider, type XingjingOpenworkContext } from '../xingjing/stor
 import MainLayout, { BackNavigationContext } from '../xingjing/components/layouts/main-layout';
 import { checkAuth, currentUser } from '../xingjing/services/auth-service';
 import AuthPage from '../xingjing/pages/auth';
-import type { OpenworkServerClient } from '../lib/openwork-server';
+import type { OpenworkServerClient, OpenworkCommandItem, OpenworkAuditEntry } from '../lib/openwork-server';
 import type { createClient } from '../lib/opencode';
 
 // 团队版页面
@@ -105,6 +105,30 @@ export default function XingjingNativePage(props: XingjingNativePageProps) {
           listMcp: (workspaceId) =>
             props.openworkServerClient!.listMcp(workspaceId)
               .then((r) => r.items.map((i) => ({ name: i.name, config: i.config }))).catch(() => []),
+          readWorkspaceFile: (workspaceId, path) =>
+            props.openworkServerClient!.readWorkspaceFile(workspaceId, path)
+              .then((r) => ({ content: r.content })).catch(() => null),
+          writeWorkspaceFile: (workspaceId, payload) =>
+            props.openworkServerClient!.writeWorkspaceFile(workspaceId, payload)
+              .then((r) => r.ok).catch(() => false),
+          deleteSession: (workspaceId, sessionId) =>
+            props.openworkServerClient!.deleteSession(workspaceId, sessionId)
+              .then((r) => r.ok).catch(() => false),
+          listHubSkills: () =>
+            props.openworkServerClient!.listHubSkills()
+              .then((r) => r.items.map((i) => ({ name: i.name, description: i.description }))).catch(() => []),
+          installHubSkill: (workspaceId, name) =>
+            props.openworkServerClient!.installHubSkill(workspaceId, name)
+              .then((r) => r.ok).catch(() => false),
+          reloadEngine: (workspaceId) =>
+            props.openworkServerClient!.reloadEngine(workspaceId)
+              .then((r) => r.ok).catch(() => false),
+          listCommands: (workspaceId: string) =>
+            props.openworkServerClient!.listCommands(workspaceId)
+              .then((r) => r.items as OpenworkCommandItem[]).catch(() => []),
+          listAudit: (workspaceId: string, limit?: number) =>
+            props.openworkServerClient!.listAudit(workspaceId, limit)
+              .then((r) => r.items as OpenworkAuditEntry[]).catch(() => []),
         }
       : undefined
   );

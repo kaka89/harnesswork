@@ -10,16 +10,41 @@
 
 import { createClient } from '../../lib/opencode';
 import { createSignal, onCleanup } from 'solid-js';
-import { engineInfo } from '../../lib/tauri';
-import { isTauriRuntime } from '../../utils';
 
-// ─── Client 单例 ────────────────────────────────────────────────────────────
+// ─── Client 管理（OpenWork 注入）────────────────────────────────────────────
 
-let _client: ReturnType<typeof createClient> | null = null;
+let _owClient: ReturnType<typeof createClient> | null = null;
+let _sharedClient: ReturnType<typeof createClient> | null = null;
 let _baseUrl = 'http://127.0.0.1:4096';
 let _directory = '';
-let _username = '';
-let _password = '';
+
+// ─── OpenWork 文件操作注入 ─────────────────────────────────────────
+
+let _owFileOps: {
+  read: (wsId: string, path: string) => Promise<{ content: string } | null>;
+  write: (wsId: string, payload: { path: string; content: string; force?: boolean }) => Promise<boolean>;
+} | null = null;
+let _workspaceId: string | null = null;
+
+/**
+ * 由 app-store 在初始化后注入 shared client。
+ * 优先返回此 client，避免维护独立单例。
+ */
+export function setSharedClient(client: ReturnType<typeof createClient> | null) {
+  _sharedClient = client;
+}
+
+/**
+ * 注入 OpenWork 文件操作能力。
+ * 由 AppStoreProvider 在 OpenWork 上下文和 workspace 解析完成后调用。
+ */
+export function setOpenworkFileOps(
+  ops: typeof _owFileOps,
+  workspaceId: string | null,
+) {
+  _owFileOps = ops;
+  _workspaceId = workspaceId;
+}
 
 /** 断线重试退避时间（ms）：1s / 2s / 5s */
 const RETRY_DELAYS = [1000, 2000, 5000] as const;
@@ -33,14 +58,10 @@ const SSE_FIRST_EVENT_TIMEOUT_MS = 30_000;
 
 /** 内容空闲超时（ms）：已有累积内容后，若指定时间内无新内容增长，
  *  视为模型已完成输出但 OpenCode 未发 completion 信号，直接判定完成。
- *  注：此值为兜底上限，正常情况下 session 状态轮询会更早检测到完成。 */
+ *  注：此值为兜底上限，正常情况下 owSessionStatusById 会更早检测到完成。 */
 const CONTENT_IDLE_TIMEOUT_MS = 8_000;
 
-/** 内容停止后 session 状态轮询间隔（ms）：每 2 秒通过 REST API 主动查询 session 状态，
- *  解决 OpenCode 对 deny-all session 不发 idle/completed SSE 事件的问题 */
-const SESSION_POLL_INTERVAL_MS = 2_000;
-
-/** 首次内容到达后延迟多久开始轮询（ms）：避免模型还在生成时过早轮询 */
+/** 首次内容到达后延迟多久开始检柡（ms）：避免模型还在生成时过早检测 */
 const SESSION_POLL_START_DELAY_MS = 1_000;
 
 /** 不应重置无活动计时器的 SSE 事件类型（服务器级 keep-alive，非会话进度） */
@@ -49,59 +70,34 @@ const NON_ACTIVITY_EVENT_TYPES = new Set(['server.heartbeat', 'server.connected'
 /** 异步等待指定毫秒 */
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-export function initXingjingClient(baseUrl: string, directory: string, auth?: { username?: string; password?: string }) {
-  _baseUrl = baseUrl;
+/**
+ * 注入 OpenWork 提供的 OpenCode Client。
+ * 由 AppStoreProvider 在 OpenWork 上下文就绪时调用。
+ */
+export function setOpenworkClient(client: ReturnType<typeof createClient>) {
+  _owClient = client;
+}
+
+/**
+ * 设置当前工作目录（产品切换时调用）。
+ * @param baseUrl 可选，同时更新 baseUrl（用于过渡期内 fileWrite/fileDelete 的裸 fetch）
+ */
+export function setWorkingDirectory(directory: string, baseUrl?: string) {
   _directory = directory;
-  _username = auth?.username ?? '';
-  _password = auth?.password ?? '';
-  _client = createClient(baseUrl, directory, _username && _password ? { username: _username, password: _password } : undefined);
+  if (baseUrl) _baseUrl = baseUrl;
 }
 
 /**
- * 返回 Basic Auth 请求头值（用于裸 fetch 调用的认证）
+ * 获取 OpenCode Client。
+ * 优先返回注入的 shared client（来自 OpenWork），回退到 _owClient（旧路径）。
+ * Client 未初始化时抛出明确错误。
  */
-export function getAuthHeader(): string | null {
-  if (!_username || !_password) return null;
-  try {
-    const encoded = btoa(`${_username}:${_password}`);
-    return `Basic ${encoded}`;
-  } catch {
-    return null;
+export function getXingjingClient(): ReturnType<typeof createClient> {
+  if (_sharedClient) return _sharedClient;
+  if (!_owClient) {
+    throw new Error('[xingjing] OpenWork Client 未初始化，请确认 OpenWork 服务已启动');
   }
-}
-
-export function getXingjingClient() {
-  if (!_client) {
-    _client = createClient(_baseUrl, _directory);
-  }
-  return _client;
-}
-
-/**
- * 刷新 baseUrl：Tauri 运行时从 engineInfo 动态获取最新端口，
- * 解决 OpenCode 重启后动态端口变更导致 SSE 连接失败的问题。
- */
-async function refreshBaseUrl(): Promise<string> {
-  if (isTauriRuntime()) {
-    try {
-      const info = await engineInfo();
-      if (info.running && info.baseUrl) {
-        const url = info.baseUrl.replace(/\/$/, '');
-        const username = info.opencodeUsername?.trim() ?? '';
-        const password = info.opencodePassword?.trim() ?? '';
-        const urlChanged = url !== _baseUrl;
-        const authChanged = username !== _username || password !== _password;
-        if (urlChanged || authChanged) {
-          _baseUrl = url;
-          _username = username;
-          _password = password;
-          _client = createClient(url, _directory, username && password ? { username, password } : undefined);
-        }
-        return url;
-      }
-    } catch { /* 降级到缓存值 */ }
-  }
-  return _baseUrl;
+  return _owClient;
 }
 
 // ─── 文件 API ───────────────────────────────────────────────────────────────
@@ -143,12 +139,20 @@ export async function fileList(
 
 /**
  * 读取文件内容（文本）
- * 注意：HeyAPI SDK 将 query 参数展平到 options 顶层
+ * 优先使用 OpenWork Server API，回退到 OpenCode file API。
  */
 export async function fileRead(
   path: string,
   directory?: string,
 ): Promise<string | null> {
+  // 优先使用 OpenWork Server API
+  if (_owFileOps && _workspaceId) {
+    try {
+      const result = await _owFileOps.read(_workspaceId, path);
+      return result?.content ?? null;
+    } catch { /* fall through to client SDK */ }
+  }
+  // 回退到 OpenCode file API
   const client = getXingjingClient();
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -164,14 +168,21 @@ export async function fileRead(
 }
 
 /**
- * 写入文件内容（通过直接 POST 到 OpenCode file API）
- * 若 OpenCode 不支持写入，则优雅降级（仅日志）
+ * 写入文件内容
+ * 优先使用 OpenWork Server API，回退到裸 fetch（过渡期）。
  */
 export async function fileWrite(
   path: string,
   content: string,
   directory?: string,
 ): Promise<boolean> {
+  // 优先使用 OpenWork Server API
+  if (_owFileOps && _workspaceId) {
+    try {
+      return await _owFileOps.write(_workspaceId, { path, content });
+    } catch { /* fall through to raw fetch */ }
+  }
+  // 回退到裸 fetch（过渡期）
   const dir = directory ?? _directory;
   try {
     const url = `${_baseUrl}/file/content`;
@@ -183,7 +194,6 @@ export async function fileWrite(
     });
     return resp.ok;
   } catch {
-    // OpenCode 当前版本可能不支持 file write，优雅降级
     console.warn('[xingjing] fileWrite: OpenCode file write not available, operating in read-only mode');
     return false;
   }
@@ -581,6 +591,24 @@ export interface CallAgentOptions {
    * 替代原来的 REST 轮询机制，零延迟、零网络请求。
    */
   owSessionStatusById?: () => Record<string, string>;
+  /**
+   * Session 清理回调（可选）。
+   * 会话完成后调用，通过 OpenWork deleteSession API 清理已结束的 session，
+   * 避免服务端 session 资源泄漏。
+   */
+  owDeleteSession?: (sessionId: string) => Promise<void>;
+  /**
+   * Agent 调用工具时触发（tool_use 阶段）。
+   * 参数：工具名称、工具输入参数（可能不完整，流式积累中）。
+   * 可用于 UI 展示"正在搜索..."等工具调用中间状态。
+   */
+  onToolUse?: (toolName: string, toolInput: Record<string, unknown>) => void;
+  /**
+   * Agent 获得工具执行结果时触发（tool_result 阶段）。
+   * 参数：工具名称、结果摘要文本（截断到合理长度）。
+   * 可用于 UI 展示"搜索完成，找到 N 条结果"。
+   */
+  onToolResult?: (toolName: string, result: string) => void;
 }
 
 /**
@@ -669,6 +697,10 @@ async function runAgentSession(
 
   const finalSid = sid;
 
+  // ── 工具调用追踪（用于 onToolUse / onToolResult 回调）──
+  // key: toolUseId (part.id) → { name, inputJson }
+  const pendingToolUses = new Map<string, { name: string; inputJson: string }>();
+
   // Promise 封装整个 SSE 生命周期
   return new Promise<{ status: 'done' | 'sse-fail' | 'hard-error'; accumulated: string; sessionId: string | null; error?: string }>((resolve) => {
     let done = false;
@@ -717,11 +749,10 @@ async function runAgentSession(
     };
 
     // ── L2 Session 完成检测 ──
-    // 优先复用 OpenWork 全局 SSE 维护的 sessionStatusById 状态，
+    // 复用 OpenWork 全局 SSE 维护的 sessionStatusById 状态，
     // 无需独立 REST 轮询。当 status[sid] 变为 'idle' 时表示完成。
-    // 若未提供 owSessionStatusById，回退到 REST 轮询兜底。
+    // 未提供 owSessionStatusById 时，依赖 SSE 事件和 L3 内容空闲超时。
     let owStatusWatchTimer: ReturnType<typeof setInterval> | null = null;
-    let sessionPollTimer: ReturnType<typeof setInterval> | null = null;
     let sessionPollDelayTimer: ReturnType<typeof setTimeout> | null = null;
     let pollStarted = false;
 
@@ -745,46 +776,12 @@ async function runAgentSession(
             }
           }, 500); // 每 500ms 读一次 store，零网络开销
         }, SESSION_POLL_START_DELAY_MS);
-      } else {
-        // ── 回退：REST 轮询兜底 ──
-        let pollFirstLog = false;
-        sessionPollDelayTimer = setTimeout(() => {
-          if (done) return;
-          sessionPollDelayTimer = null;
-          console.log(`[xingjing-diag] L2 REST poll started (fallback), sid=${finalSid}`);
-          sessionPollTimer = setInterval(async () => {
-            if (done) { stopSessionPoll(); return; }
-            try {
-              const result = await client.session.get({ sessionID: finalSid } as Parameters<typeof client.session.get>[0]);
-              const sessionData = (result?.data ?? result) as Record<string, unknown> | undefined;
-              if (!sessionData || done) return;
-              const statusObj = sessionData.status;
-              let statusType = '';
-              if (typeof statusObj === 'object' && statusObj !== null) {
-                const so = statusObj as Record<string, unknown>;
-                statusType = String(so.type ?? so.status ?? '');
-              } else if (typeof statusObj === 'string') {
-                statusType = statusObj;
-              }
-              if (!pollFirstLog) {
-                pollFirstLog = true;
-                console.log(`[xingjing-diag] Session poll first result: keys=${Object.keys(sessionData).join(',')}, statusObj=${JSON.stringify(statusObj)}, sid=${finalSid}`);
-              }
-              console.log(`[xingjing-diag] Session poll: statusType="${statusType}", accLen=${acc.length}, sid=${finalSid}`);
-              if (statusType === 'idle' || statusType === 'completed') {
-                finishSession('session-poll-idle');
-              }
-            } catch (e) {
-              console.warn(`[xingjing-diag] Session poll error:`, e instanceof Error ? e.message : e);
-            }
-          }, SESSION_POLL_INTERVAL_MS);
-        }, SESSION_POLL_START_DELAY_MS);
       }
+      // 无 owSessionStatusById 时不启动轮询，依赖 SSE 事件和 L3 内容空闲超时
     };
     const stopSessionPoll = () => {
       if (sessionPollDelayTimer) { clearTimeout(sessionPollDelayTimer); sessionPollDelayTimer = null; }
       if (owStatusWatchTimer) { clearInterval(owStatusWatchTimer); owStatusWatchTimer = null; }
-      if (sessionPollTimer) { clearInterval(sessionPollTimer); sessionPollTimer = null; }
     };
 
     /** 统一完成处理：清理所有计时器并 resolve */
@@ -861,6 +858,54 @@ async function runAgentSession(
             }
 
             if (partMsgId) sessionMsgIds.add(partMsgId);
+
+            // ── 工具调用（tool-use）部分 ──
+            if (part.type === 'tool-use' || part.type === 'tool_use') {
+              const toolId = String(part.id ?? partMsgId ?? '');
+              const toolName = String(part.name ?? part.tool ?? '');
+              if (toolId && toolName && opts.onToolUse) {
+                // 积累 input JSON（可能分多个事件到达）
+                const existingJson = pendingToolUses.get(toolId)?.inputJson ?? '';
+                const inputRaw = part.input ?? part.arguments ?? part.parameters;
+                const newJson = typeof inputRaw === 'string'
+                  ? inputRaw
+                  : (typeof inputRaw === 'object' ? JSON.stringify(inputRaw) : existingJson);
+                pendingToolUses.set(toolId, { name: toolName, inputJson: newJson });
+                // 尝试解析输入参数
+                let parsedInput: Record<string, unknown> = {};
+                try { parsedInput = JSON.parse(newJson) as Record<string, unknown>; } catch { /* partial */ }
+                opts.onToolUse(toolName, parsedInput);
+              }
+              resetContentIdleTimer();
+              startSessionPoll();
+              continue;
+            }
+
+            // ── 工具结果（tool-result）部分 ──
+            if (part.type === 'tool-result' || part.type === 'tool_result') {
+              const toolUseId = String(part.toolUseID ?? part.tool_use_id ?? part.id ?? '');
+              const pending = pendingToolUses.get(toolUseId);
+              const toolName = pending?.name ?? String(part.name ?? part.tool ?? '');
+              if (toolName && opts.onToolResult) {
+                const content = part.content;
+                let resultText = '';
+                if (typeof content === 'string') {
+                  resultText = content.slice(0, 500);
+                } else if (Array.isArray(content)) {
+                  resultText = (content as Array<Record<string, unknown>>)
+                    .filter(c => c.type === 'text')
+                    .map(c => String(c.text ?? ''))
+                    .join('\n')
+                    .slice(0, 500);
+                }
+                if (toolUseId) pendingToolUses.delete(toolUseId);
+                opts.onToolResult(toolName, resultText);
+              }
+              resetContentIdleTimer();
+              startSessionPoll();
+              continue;
+            }
+
             if (part.type === 'text') {
               const fullText = String(part.text ?? '');
               if (fullText.length >= acc.length) {
@@ -1083,8 +1128,6 @@ export async function callAgentWithClient(
   client: ReturnType<typeof createClient>,
   opts: CallAgentOptions,
 ): Promise<void> {
-  await refreshBaseUrl();
-
   const getClient = () => client;
   let sessionId: string | null = null;
   let accumulated = '';
@@ -1109,6 +1152,7 @@ export async function callAgentWithClient(
     if (r.status === 'done') {
       console.log(`[xingjing-diag] callAgentWithClient Layer1 DONE, calling onDone with accLen=${accumulated.length}`);
       opts.onDone?.(accumulated);
+      if (sessionId) opts.owDeleteSession?.(sessionId).catch(() => {});
       return;
     }
     if (r.status === 'hard-error' && !r.error?.includes('无法创建')) break;
@@ -1129,6 +1173,7 @@ export async function callAgentWithClient(
     if (r.status === 'done') {
       console.log(`[xingjing-diag] callAgentWithClient Layer2 DONE, calling onDone with accLen=${accumulated.length}`);
       opts.onDone?.(accumulated);
+      if (sessionId) opts.owDeleteSession?.(sessionId).catch(() => {});
       return;
     }
 
@@ -1150,8 +1195,6 @@ export async function callAgentWithClient(
  * 支持两层静默重试：Layer 1 复用 sessionId 重连 SSE，Layer 2 全新调用。
  */
 export async function callAgent(opts: CallAgentOptions): Promise<void> {
-  await refreshBaseUrl();
-
   const getClient = () => getXingjingClient();
   let sessionId: string | null = null;
   let accumulated = '';
@@ -1176,6 +1219,7 @@ export async function callAgent(opts: CallAgentOptions): Promise<void> {
     if (r.status === 'done') {
       console.log(`[xingjing-diag] callAgent Layer1 DONE, calling onDone with accLen=${accumulated.length}`);
       opts.onDone?.(accumulated);
+      if (sessionId) opts.owDeleteSession?.(sessionId).catch(() => {});
       return;
     }
     // 服务端硬错误（session.error）：不做 Layer 1 重试，直接进 Layer 2
@@ -1207,6 +1251,7 @@ export async function callAgent(opts: CallAgentOptions): Promise<void> {
     if (r.status === 'done') {
       console.log(`[xingjing-diag] callAgent Layer2 DONE, calling onDone with accLen=${accumulated.length}`);
       opts.onDone?.(accumulated);
+      if (sessionId) opts.owDeleteSession?.(sessionId).catch(() => {});
       return;
     }
 

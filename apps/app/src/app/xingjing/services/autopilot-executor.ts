@@ -14,6 +14,7 @@ import { retrieveKnowledge } from './knowledge-retrieval';
 import { recallRelevantContext } from './memory-recall';
 import type { SkillApiAdapter } from './knowledge-behavior';
 import { sinkAgentOutput } from './knowledge-sink';
+import { injectSkillContext } from './skill-manager';
 
 // ─── Agent 定义 ─────────────────────────────────────────────────
 
@@ -269,6 +270,7 @@ export async function runOrchestratedAutopilot(
       systemPrompt: orchestratorSystemPrompt,
       userPrompt: goal,
       model,
+      agentId: 'orchestrator',
       knowledgeContext,
       recallContext,
       onPermissionAsked: opts.onPermissionAsked,
@@ -315,11 +317,15 @@ export async function runOrchestratedAutopilot(
   const results: Record<string, string> = {};
 
   await Promise.all(
-    plan.map(({ agentId, task }) => {
+    plan.map(async ({ agentId, task }) => {
       const agentDef = availableAgents.find((a) => a.id === agentId);
-      if (!agentDef) return Promise.resolve();
+      if (!agentDef) return;
 
       opts.onAgentStatus?.(agentId, 'thinking');
+
+      // 动态注入 Agent 关联的 Skill 上下文
+      const skillContext = await injectSkillContext(agentDef.skills, opts.skillApi ?? null);
+      const enrichedSystemPrompt = agentDef.systemPrompt + skillContext;
 
       return new Promise<void>((resolve) => {
         let resolved = false;
@@ -327,7 +333,7 @@ export async function runOrchestratedAutopilot(
         invoke({
           title: `xingjing-agent-${agentId}-${Date.now()}`,
           directory: workDir,
-          systemPrompt: agentDef.systemPrompt,
+          systemPrompt: enrichedSystemPrompt,
           userPrompt: task,
           model,
           knowledgeContext,
@@ -390,6 +396,8 @@ export async function runDirectAgent(
     model?: { providerID: string; modelID: string };
     /** 注入 callAgent 实现，优先使用 store.actions.callAgent（复用 OpenWork client）*/
     callAgentFn?: (options: CallAgentOptions) => Promise<void>;
+    /** OpenWork Skill API 适配器（用于动态 Skill 注入） */
+    skillApi?: SkillApiAdapter | null;
     /** 工具权限请求回调，透传给 callAgent */
     onPermissionAsked?: CallAgentOptions['onPermissionAsked'];
     onStatus?: (status: AgentExecutionStatus) => void;
@@ -400,13 +408,18 @@ export async function runDirectAgent(
 ): Promise<void> {
   const invoke = opts.callAgentFn ?? callAgent;
   opts.onStatus?.('thinking');
+
+  // 动态注入 Agent 关联的 Skill 上下文
+  const skillContext = await injectSkillContext(agent.skills, opts.skillApi ?? null);
+  const enrichedSystemPrompt = agent.systemPrompt + skillContext;
+
   await new Promise<void>((resolve) => {
     let resolved = false;
     const safeResolve = () => { if (!resolved) { resolved = true; resolve(); } };
     invoke({
       title: `xingjing-direct-${agent.id}-${Date.now()}`,
       directory: opts.workDir,
-      systemPrompt: agent.systemPrompt,
+      systemPrompt: enrichedSystemPrompt,
       userPrompt: prompt,
       model: opts.model,
       // 传递 OpenCode Agent ID（若来自文件发现则有值）
@@ -442,4 +455,164 @@ export async function runDirectAgent(
       }
     });
   });
+}
+
+// ─── 原生 Session 调用（接入 OpenCode Agents 原语）─────────────────────────────
+
+/**
+ * 通过 OpenCode 原生 agentID 创建 session 并执行任务
+ * OpenCode 会自动加载 .opencode/agents/{agentID}.md 作为 system prompt
+ *
+ * @param agentID  .opencode/agents/ 目录下的文件名（不含 .md）
+ * @param task     发送给 Agent 的任务描述
+ * @param workDir  产品工作目录
+ * @param opts     回调选项
+ */
+export async function runAgentByNativeId(
+  agentID: string,
+  task: string,
+  workDir: string,
+  opts: {
+    onToken?: (token: string) => void;
+    onDone?: (fullText: string) => void;
+    onError?: (err: string) => void;
+  } = {},
+): Promise<void> {
+  await callAgent({
+    agentId: agentID,           // 传给 session.create（OpenCode 原生加载对应 .md 文件）
+    userPrompt: task,
+    directory: workDir,
+    onText: opts.onToken,
+    onDone: opts.onDone,
+    onError: opts.onError,
+  });
+}
+
+/**
+ * 两阶段 Autopilot：先用 orchestrator agent 解析意图，再并发调用各专业 agent
+ *
+ * 如果 .opencode/agents/orchestrator.md 存在，使用原生 orchestrator agent；
+ * 否则降级到内置 Orchestrator prompt（现有行为）
+ */
+export async function runAutopilotWithNativeAgents(
+  goal: string,
+  isSoloMode: boolean,
+  opts: OrchestratedRunOpts,
+): Promise<void> {
+  // 尝试使用原生 orchestrator agent
+  try {
+    const { fileRead } = await import('./opencode-client');
+    const orchestratorFile = await fileRead('.opencode/agents/orchestrator.md', opts.workDir);
+    if (orchestratorFile) {
+      // orchestrator.md 存在，直接用原生 agent
+      await runAgentByNativeId('orchestrator', goal, opts.workDir ?? '', {
+        onToken: (token) => opts.onOrchestrating?.(token),
+        onDone: (text) => {
+          // 解析 orchestrator 输出的调度计划
+          const plan = parseDispatchPlan(text);
+          opts.onOrchestratorDone?.(plan);
+
+          // 如果有有效的调度计划，继续并发调用各 Agent
+          if (plan.length > 0) {
+            void executeDispatchedAgents(goal, isSoloMode, plan, opts);
+          } else if (text.trim()) {
+            // orchestrator 直接回答（未生成 DISPATCH）
+            opts.onDirectAnswer?.(text);
+          } else {
+            opts.onError?.('Orchestrator 未输出有效内容');
+          }
+        },
+        onError: (err) => opts.onError?.(`Orchestrator 调用失败: ${err}`),
+      });
+      return;
+    }
+  } catch {
+    // 降级到原有两阶段编排
+  }
+
+  // 降级：使用原有的 runOrchestratedAutopilot
+  return runOrchestratedAutopilot(goal, opts);
+}
+
+/**
+ * 执行已解析的调度计划（内部辅助函数）
+ */
+async function executeDispatchedAgents(
+  goal: string,
+  isSoloMode: boolean,
+  plan: DispatchItem[],
+  opts: OrchestratedRunOpts,
+): Promise<void> {
+  const results: Record<string, string> = {};
+  const availableAgents = isSoloMode ? SOLO_AGENTS : TEAM_AGENTS;
+
+  await Promise.all(
+    plan.map(async ({ agentId, task }) => {
+      const agentDef = availableAgents.find((a) => a.id === agentId);
+      if (!agentDef) return;
+
+      opts.onAgentStatus?.(agentId, 'thinking');
+
+      // 动态注入 Skill 上下文
+      const skillContext = await injectSkillContext(agentDef.skills, opts.skillApi ?? null);
+      const enrichedSystemPrompt = agentDef.systemPrompt + skillContext;
+
+      return new Promise<void>((resolve) => {
+        let resolved = false;
+        const safeResolve = () => {
+          if (!resolved) {
+            resolved = true;
+            resolve();
+          }
+        };
+
+        callAgent({
+          agentId, // 若内置 Agent 需要文件支持，可设为 agent.id；否则省略
+          userPrompt: task,
+          systemPrompt: enrichedSystemPrompt,
+          directory: opts.workDir,
+          model: opts.model,
+          onText: (accumulated) => {
+            opts.onAgentStatus?.(agentId, 'working');
+            opts.onAgentStream?.(agentId, accumulated);
+          },
+          onDone: (fullText) => {
+            try {
+              results[agentId] = fullText;
+              opts.onAgentStatus?.(agentId, 'done');
+              // 异步沉淀产出
+              void sinkAgentOutput({
+                output: fullText,
+                agentId,
+                sessionId: `autopilot-${Date.now()}`,
+                workDir: opts.workDir ?? '',
+                skillApi: opts.skillApi ?? null,
+                goal,
+              });
+            } finally {
+              safeResolve();
+            }
+          },
+          onError: (err) => {
+            try {
+              results[agentId] = `执行错误: ${err}`;
+              opts.onAgentStatus?.(agentId, 'error');
+            } finally {
+              safeResolve();
+            }
+          },
+        }).catch((err: unknown) => {
+          try {
+            const msg = err instanceof Error ? err.message : String(err);
+            results[agentId] = `执行异常: ${msg}`;
+            opts.onAgentStatus?.(agentId, 'error');
+          } finally {
+            safeResolve();
+          }
+        });
+      });
+    }),
+  );
+
+  opts.onDone?.(results);
 }

@@ -424,6 +424,35 @@ export async function updateReferenceMeta(
   }
 }
 
+/**
+ * 根据 filePath 在索引中查找对应的 KnowledgeEntry
+ */
+export function getEntryByFilePath(index: KnowledgeIndex, filePath: string): KnowledgeEntry | undefined {
+  return index.entries.find((e) => e.filePath === filePath);
+}
+
+/**
+ * 从索引构建文档树节点列表（按来源分组）
+ */
+export interface KnowledgeTreeGroup {
+  id: string;
+  label: string;
+  source: 'workspace-doc' | 'private' | 'behavior';
+  entries: KnowledgeEntry[];
+}
+
+export function groupEntriesForTree(index: KnowledgeIndex): KnowledgeTreeGroup[] {
+  const workspaceDocs = index.entries.filter((e) => e.source === 'workspace-doc');
+  const privateNotes = index.entries.filter((e) => e.source === 'private');
+  const behaviorItems = index.entries.filter((e) => e.source === 'behavior');
+
+  return [
+    { id: 'workspace-docs', label: '产品文档', source: 'workspace-doc', entries: workspaceDocs },
+    { id: 'private-notes', label: '个人笔记', source: 'private', entries: privateNotes },
+    { id: 'behavior', label: '行为知识', source: 'behavior', entries: behaviorItems },
+  ];
+}
+
 // ─── 类型转换工具 ──────────────────────────────────────────────────────────────
 
 function behaviorToEntry(item: BehaviorKnowledge): KnowledgeEntry {

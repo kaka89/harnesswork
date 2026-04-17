@@ -1,6 +1,6 @@
 import { createSignal, Show, For, onCleanup, onMount, createEffect } from 'solid-js';
 import { useNavigate } from '@solidjs/router';
-import { FileText, PlayCircle, CheckCircle, Clock, Zap, Loader2, Settings, Maximize2, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, MessageSquare, Activity } from 'lucide-solid';
+import { FileText, PlayCircle, CheckCircle, Clock, Zap, Loader2, Settings, Maximize2, ChevronDown, ChevronUp, ChevronLeft, ChevronRight } from 'lucide-solid';
 import CreateProductModal from '../../../components/product/new-product-modal';
 import { useAppStore } from '../../../stores/app-store';
 import { themeColors, chartColors } from '../../../utils/colors';
@@ -12,17 +12,18 @@ import { getHealthScore } from '../../../services/knowledge-health';
 import { buildKnowledgeIndex } from '../../../services/knowledge-index';
 import {
   SOLO_AGENTS,
-  runOrchestratedAutopilot,
   runDirectAgent,
   parseMention,
   type AutopilotAgent,
-  type DispatchItem,
   type AgentExecutionStatus,
 } from '../../../services/autopilot-executor';
 import MentionInput from '../../../components/autopilot/mention-input';
 import ArtifactWorkspace, { type ArtifactItem, detectArtifactFormat } from '../../../components/autopilot/artifact-workspace';
-import ExpandableOverlay from '../../../components/autopilot/expandable-overlay';
 import PermissionDialog, { type PermissionRequest } from '../../../components/autopilot/permission-dialog';
+import { createTeamSessionOrchestrator } from '../../../services/team-session-orchestrator';
+import AgentSessionView from '../../../components/autopilot/agent-session-view';
+import SessionTabBar from '../../../components/autopilot/session-tab-bar';
+import TeamChatComposer from '../../../components/autopilot/team-chat-composer';
 
 interface AgentStatus {
   [key: string]: 'idle' | 'thinking' | 'working' | 'done' | 'waiting';
@@ -434,19 +435,8 @@ const AgentPanelSidebar = (props: {
 
 type RunState = 'idle' | 'running' | 'done';
 
-type ChatMessage = {
-  id: string;
-  type: 'user' | 'ai';
-  text: string;
-  time: string;
-  agentId?: string;
-  agentName?: string;
-  agentEmoji?: string;
-  isStreaming?: boolean;
-};
-
 const SoloAutopilot = () => {
-  const { state, productStore, actions } = useAppStore();
+  const { state, productStore, actions, resolvedWorkspaceId, openworkCtx } = useAppStore();
   const navigate = useNavigate();
   const soloProducts = () => productStore.products().filter(p => (p.productType ?? 'solo') === 'solo');
   const [knowledgeHealthScore, setKnowledgeHealthScore] = createSignal<number | null>(null);
@@ -461,17 +451,11 @@ const SoloAutopilot = () => {
   const [agentDone, setAgentDone] = createSignal<AgentDone>(
     Object.fromEntries(SOLO_AGENTS.map((a) => [a.id, 0]))
   );
-  const [visibleSteps, setVisibleSteps] = createSignal<typeof soloWorkflowSteps>([]);
   const [artifacts, setArtifacts] = createSignal<typeof soloWorkflowSteps>([]);
   const [progress, setProgress] = createSignal(0);
-  const [orchestratorText, setOrchestratorText] = createSignal('');
-  const [dispatchPlan, setDispatchPlan] = createSignal<DispatchItem[]>([]);
-  const [agentStreamTexts, setAgentStreamTexts] = createSignal<Record<string, string>>({});
   const [agentExecStatuses, setAgentExecStatuses] = createSignal<Record<string, AgentExecutionStatus>>({});
   const [agentError, setAgentError] = createSignal<string | null>(null);
   const [artifactsData, setArtifactsData] = createSignal<ArtifactItem[]>([]);
-  const [showExpandOverlay, setShowExpandOverlay] = createSignal(false);
-  const [directAnswer, setDirectAnswer] = createSignal<string | null>(null);
   const [saving, setSaving] = createSignal(false);
   const [saveMsg, setSaveMsg] = createSignal<string | null>(null);
 
@@ -498,9 +482,6 @@ const SoloAutopilot = () => {
   const [expandedSteps, setExpandedSteps] = createSignal<Record<string, boolean>>({});
   // 步骤出现时间戳：key = step.id 或 agentId
   const [stepTimes, setStepTimes] = createSignal<Record<string, string>>({});
-  const [chatMessages, setChatMessages] = createSignal<ChatMessage[]>([]);
-  let chatScrollRef: HTMLDivElement | undefined;
-  const [activeTab, setActiveTab] = createSignal<'chat' | 'flow'>('chat');
   const [artifactFloatWidth, setArtifactFloatWidth] = createSignal(420);
   const [artifactFloatHeight, setArtifactFloatHeight] = createSignal(Math.round(window.innerHeight * 0.78));
 
@@ -574,6 +555,20 @@ const SoloAutopilot = () => {
   let timelineRef: HTMLDivElement | undefined;
   const timersRef: ReturnType<typeof setTimeout>[] = [];
 
+  // ─── TeamSessionOrchestrator 初始化 ───────────────────────────────────────────
+  const orchestrator = createTeamSessionOrchestrator({
+    client: () => openworkCtx?.opencodeClient?.() ?? null,
+    workspaceId: () => resolvedWorkspaceId(),
+    workDir: () => productStore.activeProduct()?.workDir ?? '',
+    availableAgents: SOLO_AGENTS,
+    model: () => {
+      const m = getSessionModel();
+      if (!m) return null;
+      return { providerID: m.providerID, modelID: m.modelID };
+    },
+    skillApi: null,
+  });
+
   const clearTimers = () => {
     timersRef.forEach(clearTimeout);
     timersRef.length = 0;
@@ -586,19 +581,13 @@ const SoloAutopilot = () => {
     setRunState('idle');
     setAgentStatuses(Object.fromEntries(SOLO_AGENTS.map((a) => [a.id, 'idle' as const])));
     setAgentTasks({});
-    setVisibleSteps([]);
     setArtifacts([]);
     setArtifactsData([]);
     setArtifactCollapsed(true);
     setProgress(0);
-    setOrchestratorText('');
-    setDispatchPlan([]);
-    setAgentStreamTexts({});
     setAgentExecStatuses({});
-    setDirectAnswer(null);
     setExpandedSteps({});
     setStepTimes({});
-    setChatMessages([]);
     // 清理残留的权限请求：reject 所有等待中的 Promise 防止旧 SSE 循环永远卡住
     permissionQueue().forEach((req) => { try { req.resolve('reject'); } catch { /* noop */ } });
     setPermissionQueue([]);
@@ -616,311 +605,36 @@ const SoloAutopilot = () => {
     setExpandedSteps(prev => ({ ...prev, [key]: !prev[key] }));
   };
 
-  // 格式化时间 HH:MM（用于消息时间戳）
-  const formatTime = () => {
-    const d = new Date();
-    return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
-  };
-
-  // 追加会话消息
-  const pushMsg = (msg: Omit<ChatMessage, 'id'>) => {
-    setChatMessages((prev) => [...prev, { ...msg, id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}` }]);
-  };
-
-  // 更新最后一条指定 Agent 的 AI 消息
-  const updateLastAiMsg = (agentId: string, text: string, streaming: boolean) => {
-    setChatMessages((prev) => {
-      let idx = -1;
-      for (let i = prev.length - 1; i >= 0; i--) {
-        if (prev[i].type === 'ai' && prev[i].agentId === agentId) { idx = i; break; }
-      }
-      if (idx >= 0) {
-        const updated = [...prev];
-        updated[idx] = { ...updated[idx], text, isStreaming: streaming };
-        return updated;
-      }
-      return prev;
-    });
-  };
-
-  // ─── 解析流式文本为 Timeline 步骤 ───
-  const updateFromStream = (text: string) => {
-    const parts = text.split(/^## /m);
-    const steps: typeof soloWorkflowSteps = [];
-    const seenAgents: string[] = [];
-
-    for (let i = 1; i < parts.length; i++) {
-      const part = parts[i];
-      const nlIdx = part.indexOf('\n');
-      const header = (nlIdx >= 0 ? part.slice(0, nlIdx) : part).trim();
-      const body = nlIdx >= 0 ? part.slice(nlIdx + 1).trim() : '';
-
-      let agentId = '';
-      for (const [name, id] of Object.entries(agentNameToId)) {
-        if (header.includes(name)) { agentId = id; break; }
-      }
-      if (!agentId) continue;
-      if (!seenAgents.includes(agentId)) seenAgents.push(agentId);
-
-      const agent = SOLO_AGENTS.find(a => a.id === agentId);
-      const lines = body.split('\n').filter(l => l.trim());
-      const action = (lines[0] || '执行中...').replace(/^[-\d.*]+\s*/, '').slice(0, 80);
-      const outputLines = lines.slice(1);
-
-      const artIdx = outputLines.findIndex(l => /^###\s/.test(l) || l.includes('产出物'));
-      let artifact: { title: string; content: string } | undefined;
-      let output: string;
-
-      if (artIdx >= 0) {
-        output = outputLines.slice(0, artIdx).map(l => l.trim()).join('\n') || action;
-        const artTitle = outputLines[artIdx].replace(/^###\s*/, '').trim() || `${agent?.name || ''}产出`;
-        const artContent = outputLines.slice(artIdx + 1).join('\n').trim();
-        if (artContent) artifact = { title: artTitle, content: artContent.slice(0, 500) };
-      } else {
-        output = outputLines.slice(0, 3).join('\n') || '执行中...';
-      }
-
-      steps.push({
-        id: `real-${i}`, agentId, agentName: agent?.name || header,
-        action, output, durationMs: 0, artifact,
-      });
-    }
-
-    if (steps.length > 0) {
-      setVisibleSteps(steps);
-      const artSteps = steps.filter(s => s.artifact);
-      setArtifacts(artSteps);
-      // 同步构造 ArtifactItem 列表
-      const now = new Date();
-      const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
-      setArtifactsData(artSteps.map(s => {
-        const ag = SOLO_AGENTS.find(a => a.id === s.agentId);
-        const content = s.artifact!.content;
-        return {
-          id: `artifact-${s.agentId}-stream`,
-          agentId: s.agentId,
-          agentName: ag?.name ?? s.agentName,
-          agentEmoji: ag?.emoji ?? '',
-          title: s.artifact!.title,
-          content,
-          createdAt: timeStr,
-          format: detectArtifactFormat(content),
-        };
-      }));
-      const statuses: Record<string, string> = {};
-      const tasks: Record<string, string> = {};
-      SOLO_AGENTS.forEach(a => { statuses[a.id] = 'thinking'; tasks[a.id] = ''; });
-      seenAgents.forEach((id, i) => {
-        if (i < seenAgents.length - 1) {
-          statuses[id] = 'done'; tasks[id] = '';
-        } else {
-          statuses[id] = 'working';
-          const lastStep = steps.filter(s => s.agentId === id).pop();
-          tasks[id] = lastStep?.action || '执行中...';
-        }
-      });
-      setAgentStatuses(statuses as AgentStatus);
-      setAgentTasks(tasks);
-      setProgress(Math.round((seenAgents.length / SOLO_AGENTS.length) * 80));
-    } else if (text.trim()) {
-      setAgentStatuses(prev => ({ ...prev, 'product-brain': 'working' }));
-      setAgentTasks(prev => ({ ...prev, 'product-brain': '分析目标中...' }));
-      setProgress(5);
-    }
-  };
-
-  // ─── handleStart: 两阶段 Orchestrator 调度 ───
+  // ─── handleStart: 使用 TeamSessionOrchestrator ───
   const handleStart = async () => {
     if (!goal().trim()) return;
     reset();
     setAgentError(null);
     setRunState('running');
-    setActiveTab('chat');
 
-    // 推送用户消息
-    pushMsg({ type: 'user', text: goal().trim(), time: formatTime() });
-
-    const workDir = productStore.activeProduct()?.workDir;
-    const model = getSessionModel();  // 使用会话内用户选择的模型
-
-    // ── 前置校验：模型未配置时立即报错，避免等待 SSE 超时 ──
-    if (!model && configuredModels().length === 0) {
+    // ── 前置校验：模型未配置时立即报错 ──
+    if (!getSessionModel() && configuredModels().length === 0) {
       setAgentError('尚未配置可用的大模型，请先前往「设置 → 大模型配置」填写 API Key 并保存');
       setRunState('idle');
       return;
     }
+
     const { targetAgent, cleanText } = parseMention(goal(), SOLO_AGENTS);
 
-    if (targetAgent) {
-      // @mention 直接调用模式
-      setAgentStatuses((prev) => ({ ...prev, [targetAgent.id]: 'thinking' }));
-      pushMsg({ type: 'ai', agentId: targetAgent.id, agentName: targetAgent.name, agentEmoji: targetAgent.emoji, text: '正在思考...', time: formatTime(), isStreaming: true });
-      await runDirectAgent(targetAgent, cleanText, {
-        workDir,
-        model,
-        onPermissionAsked: handlePermissionAsked,
-        callAgentFn: (callOpts) => actions.callAgent(callOpts),
-        onStatus: (status) => {
-          const legacyMap: Record<AgentExecutionStatus, 'idle' | 'thinking' | 'working' | 'done' | 'waiting'> = {
-            idle: 'idle', pending: 'waiting', thinking: 'thinking',
-            working: 'working', done: 'done', error: 'done',
-          };
-          setAgentStatuses((prev) => ({ ...prev, [targetAgent.id]: legacyMap[status] }));
-        },
-        onStream: (text) => {
-          setAgentStreamTexts((prev) => ({ ...prev, [targetAgent.id]: text }));
-          updateLastAiMsg(targetAgent.id, text, true);
-          setProgress(50);
-        },
-        onDone: (fullText) => {
-          console.log(`[xingjing-diag] @mention onDone: agentId=${targetAgent.id}, fullTextLen=${fullText.length}`);
-          setAgentStreamTexts((prev) => ({ ...prev, [targetAgent.id]: fullText }));
-          updateLastAiMsg(targetAgent.id, fullText, false);
-          setAgentDone((prev) => ({ ...prev, [targetAgent.id]: (prev[targetAgent.id] || 0) + 1 }));
-          // 解析并构造产出物
-          if (fullText.trim()) {
-            const now = new Date();
-            const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
-            const titleMatch = fullText.match(/^#+\s+(.+)$/m);
-            const artTitle = titleMatch?.[1]?.trim() ?? `${targetAgent.name} 产出`;
-            setArtifactsData([{
-              id: `artifact-${targetAgent.id}-${Date.now()}`,
-              agentId: targetAgent.id,
-              agentName: targetAgent.name,
-              agentEmoji: targetAgent.emoji,
-              title: artTitle,
-              content: fullText,
-              createdAt: timeStr,
-            }]);
-          }
-          setProgress(100);
-          setRunState('done');
-        },
-        onError: (err) => {
-          console.warn(`[xingjing-diag] @mention onError: agentId=${targetAgent.id}, err=${err}`);
-          setAgentStatuses((prev) => ({ ...prev, [targetAgent.id]: 'idle' }));
-          updateLastAiMsg(targetAgent.id, `调用失败：${err}`, false);
-          setAgentError(`调用 ${targetAgent.name} 失败：${err}`);
-          setRunState('idle');
-        },
-      });
-      return;
+    try {
+      if (targetAgent) {
+        // @mention 直接调用模式
+        await orchestrator.runDirect(targetAgent.id, cleanText);
+      } else {
+        // 团队协作模式
+        await orchestrator.run(cleanText);
+      }
+      setRunState('done');
+    } catch (err) {
+      console.error('[solo-autopilot] handleStart error:', err);
+      setAgentError(`执行失败：${err}`);
+      setRunState('idle');
     }
-
-    // Orchestrated 两阶段模式
-    pushMsg({ type: 'ai', agentId: 'orchestrator', agentName: 'Orchestrator', agentEmoji: '🤖', text: '好的，我将调度多个 Agent 来协同处理这个任务...', time: formatTime(), isStreaming: true });
-    await runOrchestratedAutopilot(cleanText, {
-      availableAgents: SOLO_AGENTS,
-      workDir,
-      model,
-      onPermissionAsked: handlePermissionAsked,
-      callAgentFn: (callOpts) => actions.callAgent(callOpts),
-      onOrchestrating: (text) => {
-        setOrchestratorText(text);
-        updateLastAiMsg('orchestrator', text, true);
-        setProgress(10);
-      },
-      onOrchestratorDone: (plan) => {
-        setDispatchPlan(plan);
-        const statuses: Record<string, AgentExecutionStatus> = {};
-        const times: Record<string, string> = {};
-        plan.forEach(({ agentId }) => { statuses[agentId] = 'pending'; times[agentId] = ''; });
-        setAgentExecStatuses(statuses);
-        setStepTimes(prev => ({ ...prev, ...times }));
-        updateLastAiMsg('orchestrator', orchestratorText() + '\n\n已完成规划，正在调度 ' + plan.length + ' 个 Agent 执行...', false);
-        plan.forEach(({ agentId, task }) => {
-          const ag = SOLO_AGENTS.find((a) => a.id === agentId);
-          if (ag) pushMsg({ type: 'ai', agentId, agentName: ag.name, agentEmoji: ag.emoji, text: `正在处理：${task.slice(0, 60)}...`, time: formatTime(), isStreaming: true });
-        });
-        setProgress(20);
-      },
-      onAgentStatus: (agentId, status) => {
-        setAgentExecStatuses((prev) => ({ ...prev, [agentId]: status }));
-        // 开始思考时记录时间戳
-        if (status === 'thinking') {
-          setStepTimes(prev => ({ ...prev, [agentId]: nowTime() }));
-        }
-        const legacyMap: Record<AgentExecutionStatus, 'idle' | 'thinking' | 'working' | 'done' | 'waiting'> = {
-          idle: 'idle', pending: 'waiting', thinking: 'thinking',
-          working: 'working', done: 'done', error: 'done',
-        };
-        setAgentStatuses((prev) => ({ ...prev, [agentId]: legacyMap[status] }));
-        if (status === 'done') {
-          setAgentDone((prev) => ({ ...prev, [agentId]: (prev[agentId] || 0) + 1 }));
-        }
-      },
-      onAgentStream: (agentId, text) => {
-        setAgentStreamTexts((prev) => ({ ...prev, [agentId]: text }));
-        updateLastAiMsg(agentId, text, true);
-        const doneCount = Object.values(agentExecStatuses()).filter(
-          (s) => s === 'done',
-        ).length;
-        setProgress(
-          20 + Math.round((doneCount / Math.max(dispatchPlan().length, 1)) * 70),
-        );
-      },
-      onDone: (results) => {
-        console.log(`[xingjing-diag] orchestrated onDone: agentCount=${Object.keys(results).length}, agents=${Object.keys(results).join(',')}, textLens=${Object.entries(results).map(([id, t]) => `${id}:${t.length}`).join(',')}`);
-        // 将 Agent 结果解析为 visibleSteps 供现有 UI 展示
-        const steps: typeof soloWorkflowSteps = [];
-        const newArtifactsData: ArtifactItem[] = [];
-        const now = new Date();
-        const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
-        Object.entries(results).forEach(([agentId, text]) => {
-          const agent = SOLO_AGENTS.find((a) => a.id === agentId);
-          const actionMatch = text.match(/##\s+执行动作\s*\n([^\n]+)/);
-          const artMatch = text.match(/###\s+产出物[：:]\s*(.+)\n([\s\S]+)/);
-          // 标题回退：取正文第一个 markdown heading 或 Agent 名称
-          const firstHeadingMatch = !artMatch ? text.match(/^#+\s+(.+)$/m) : null;
-          if (agent) {
-            updateLastAiMsg(agentId, text, false);
-            const artTitle = artMatch
-              ? artMatch[1].trim()
-              : (firstHeadingMatch?.[1]?.trim() ?? `${agent.name} 产出`);
-            const artContent = artMatch ? artMatch[2].trim() : text.trim();
-            steps.push({
-              id: `real-${agentId}`,
-              agentId,
-              agentName: agent.name,
-              action: actionMatch?.[1]?.trim() ?? '执行完成',
-              output: text.slice(0, 200),
-              durationMs: 0,
-              artifact: artContent
-                ? { title: artTitle, content: artContent.slice(0, 500) }
-                : undefined,
-            });
-            if (artContent) {
-              newArtifactsData.push({
-                id: `artifact-${agentId}-${Date.now()}`,
-                agentId,
-                agentName: agent.name,
-                agentEmoji: agent.emoji,
-                title: artTitle,
-                content: artContent,
-                createdAt: timeStr,
-                format: detectArtifactFormat(artContent),
-              });
-            }
-          }
-        });
-        setVisibleSteps(steps);
-        setArtifacts(steps.filter((s) => s.artifact));
-        setArtifactsData(newArtifactsData);
-        setProgress(100);
-        setRunState('done');
-      },
-      onError: (err) => {
-        console.warn(`[xingjing-diag] orchestrated onError: err=${err}`);
-        setAgentError(`编排执行失败：${err}`);
-        setRunState('idle');
-      },
-      onDirectAnswer: (text) => {
-        setDirectAnswer(text);
-        updateLastAiMsg('orchestrator', text, false);
-        setProgress(100);
-        setRunState('done');
-      },
-    });
   };
 
   // ─── 产出物保存 ─────────────────────────────────────────────────────────────
@@ -1095,12 +809,6 @@ const SoloAutopilot = () => {
     }
   });
 
-  // 会话气泡自动滚动到底部
-  createEffect(() => {
-    chatMessages(); // track
-    requestAnimationFrame(() => { if (chatScrollRef) chatScrollRef.scrollTop = chatScrollRef.scrollHeight; });
-  });
-
   return (
     <div style={{ display: 'flex', 'align-items': 'stretch', width: '100%', height: '100%', overflow: 'hidden' }}>
       {/* 左侧 Agent 面板 */}
@@ -1181,7 +889,7 @@ const SoloAutopilot = () => {
         </div>
 
         {/* ── 居中态：无消息 & idle ── */}
-        <Show when={chatMessages().length === 0 && runState() === 'idle'}>
+        <Show when={!orchestrator.state().orchestratorSessionId && !orchestrator.state().isRunning}>
           <div style={{ flex: '1', display: 'flex', 'align-items': 'center', 'justify-content': 'center', 'padding-bottom': '40px' }}>
             <div style={{ width: '100%' }}>
               <div style={{
@@ -1284,377 +992,69 @@ const SoloAutopilot = () => {
           </div>
         </Show>
 
-        {/* ── 展开态：有消息 或 运行中 ── */}
-        <Show when={chatMessages().length > 0 || runState() !== 'idle'}>
+        {/* ── 展开态：有 session 或 运行中 ── */}
+        <Show when={orchestrator.state().orchestratorSessionId || orchestrator.state().isRunning}>
           <div style={{ flex: '1', display: 'flex', 'flex-direction': 'column', 'min-height': '0', overflow: 'hidden' }}>
 
-            {/* Tab 栏 */}
-            <div style={{
-              display: 'flex',
-              'align-items': 'center',
-              'border-bottom': `1px solid ${themeColors.border}`,
-              'flex-shrink': '0',
-            }}>
-              <button
-                onClick={() => setActiveTab('chat')}
-                style={{
-                  display: 'flex', 'align-items': 'center', gap: '5px',
-                  padding: '8px 16px',
-                  background: 'none', border: 'none', cursor: 'pointer',
-                  'font-size': '14px',
-                  color: activeTab() === 'chat' ? chartColors.primary : themeColors.textMuted,
-                  'border-bottom': activeTab() === 'chat' ? `2px solid ${chartColors.primary}` : '2px solid transparent',
-                  'margin-bottom': '-1px',
-                  'font-weight': activeTab() === 'chat' ? '500' : '400',
-                }}
-              >
-                <MessageSquare size={14} />
-                对话
-              </button>
-              <button
-                onClick={() => setActiveTab('flow')}
-                style={{
-                  display: 'flex', 'align-items': 'center', gap: '5px',
-                  padding: '8px 16px',
-                  background: 'none', border: 'none', cursor: 'pointer',
-                  'font-size': '14px',
-                  color: activeTab() === 'flow' ? chartColors.primary : themeColors.textMuted,
-                  'border-bottom': activeTab() === 'flow' ? `2px solid ${chartColors.primary}` : '2px solid transparent',
-                  'margin-bottom': '-1px',
-                  'font-weight': activeTab() === 'flow' ? '500' : '400',
-                }}
-              >
-                <Activity size={14} />
-                执行流
-              </button>
-              <div style={{ flex: '1' }} />
-              <Show when={activeTab() === 'flow' && (dispatchPlan().length > 0 || visibleSteps().length > 0)}>
-                <button
-                  onClick={() => setShowExpandOverlay(true)}
-                  style={{
-                    display: 'flex', 'align-items': 'center', gap: '4px',
-                    background: 'none', border: `1px solid ${themeColors.border}`,
-                    'border-radius': '4px', padding: '3px 8px', 'font-size': '11px',
-                    cursor: 'pointer', color: themeColors.textSecondary, 'margin-right': '8px',
-                  }}
-                >
-                  <Maximize2 size={12} />
-                  展开
-                </button>
-              </Show>
-            </div>
-
-            {/* Tab 内容区 */}
+            {/* 对话内容区 */}
             <div
-              ref={chatScrollRef}
               style={{ flex: '1', 'overflow-y': 'auto', 'min-height': '0', padding: '12px 0 0' }}
             >
-              {/* 对话 Tab */}
-              <Show when={activeTab() === 'chat'}>
-                <div style={{ display: 'flex', 'flex-direction': 'column', gap: '12px', padding: '0 0 8px' }}>
-                  <For each={chatMessages()}>
-                    {(msg) => {
-                      if (msg.type === 'user') return (
-                        <div style={{ display: 'flex', 'justify-content': 'flex-end' }}>
-                          <div style={{ 'max-width': '70%', display: 'flex', 'align-items': 'flex-start', gap: '8px', 'flex-direction': 'row-reverse' }}>
-                            <div style={{ width: '28px', height: '28px', 'border-radius': '50%', background: chartColors.primary, display: 'flex', 'align-items': 'center', 'justify-content': 'center', color: 'white', 'font-size': '12px', 'font-weight': '600', 'flex-shrink': '0' }}>我</div>
-                            <div>
-                              <div style={{ background: '#dcf8e8', padding: '8px 12px', 'border-radius': '12px 2px 12px 12px', 'font-size': '13px', 'line-height': '1.6', color: themeColors.textPrimary }}>{msg.text}</div>
-                              <div style={{ 'font-size': '11px', color: themeColors.textMuted, 'text-align': 'right', 'margin-top': '3px' }}>{msg.time}</div>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                      if (msg.type === 'ai') return (
-                        <div style={{ display: 'flex' }}>
-                          <div style={{ 'max-width': '85%', display: 'flex', 'align-items': 'flex-start', gap: '8px' }}>
-                            <div style={{ width: '28px', height: '28px', 'border-radius': '50%', background: themeColors.hover, display: 'flex', 'align-items': 'center', 'justify-content': 'center', 'font-size': '14px', 'flex-shrink': '0' }}>
-                              {msg.agentEmoji || '🤖'}
-                            </div>
-                            <div>
-                              <div style={{ 'font-size': '12px', 'font-weight': '600', color: themeColors.textSecondary, 'margin-bottom': '3px' }}>{msg.agentName}</div>
-                              <div style={{ background: themeColors.surface, border: `1px solid ${themeColors.border}`, padding: '8px 12px', 'border-radius': '2px 12px 12px 12px', 'font-size': '13px', 'line-height': '1.7', color: themeColors.textPrimary, 'white-space': 'pre-wrap' }}>
-                                {msg.text}
-                                <Show when={msg.isStreaming}>
-                                  <span style={{ display: 'inline-flex', gap: '2px', 'margin-left': '4px', 'vertical-align': 'middle' }}>
-                                    <span style={{ width: '4px', height: '4px', 'border-radius': '50%', background: chartColors.primary, animation: 'blink 1.4s infinite both', 'animation-delay': '0s' }} />
-                                    <span style={{ width: '4px', height: '4px', 'border-radius': '50%', background: chartColors.primary, animation: 'blink 1.4s infinite both', 'animation-delay': '0.2s' }} />
-                                    <span style={{ width: '4px', height: '4px', 'border-radius': '50%', background: chartColors.primary, animation: 'blink 1.4s infinite both', 'animation-delay': '0.4s' }} />
-                                  </span>
-                                </Show>
-                              </div>
-                              <div style={{ 'font-size': '11px', color: themeColors.textMuted, 'margin-top': '3px' }}>{msg.time}</div>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                      return null;
-                    }}
-                  </For>
-                </div>
-              </Show>
+                {/* Session Tab Bar */}
+                <Show when={orchestrator.state().orchestratorSessionId || orchestrator.state().agentSlots.size > 0}>
+                  <div style={{ 'margin-bottom': '12px', 'padding': '0 12px' }}>
+                    <SessionTabBar
+                      orchestratorSessionId={orchestrator.state().orchestratorSessionId}
+                      slots={Array.from(orchestrator.state().agentSlots.values())}
+                      activeTabId={orchestrator.state().activeTabId}
+                      onTabChange={orchestrator.setActiveTab}
+                      dispatchPlan={orchestrator.state().dispatchPlan}
+                    />
+                  </div>
+                </Show>
 
-              {/* 执行流 Tab */}
-              <Show when={activeTab() === 'flow'}>
-                <div>
-                  {/* Phase 1: Orchestrator 规划中 */}
-                  <Show when={orchestratorText() && dispatchPlan().length === 0}>
+                <Show
+                  when={orchestrator.state().activeTabId !== 'orchestrator' && orchestrator.getActiveSlot()}
+                  fallback={
                     <div style={{
-                      padding: '10px 12px',
-                      background: themeColors.primaryBg,
-                      border: `1px solid ${themeColors.primaryBorder}`,
-                      'border-radius': '6px',
-                      'margin-bottom': '8px',
+                      display: 'flex',
+                      'flex-direction': 'column',
+                      'align-items': 'center',
+                      'justify-content': 'center',
+                      height: '100%',
+                      color: themeColors.textMuted,
+                      'text-align': 'center',
+                      padding: '40px',
                     }}>
-                      <div style={{ 'font-size': '12px', 'font-weight': 600, color: chartColors.primary, 'margin-bottom': '4px' }}>
-                        Orchestrator 规划中...
-                      </div>
-                      <div style={{ 'font-size': '11px', color: themeColors.textSecondary, 'white-space': 'pre-wrap', 'max-height': '100px', 'overflow-y': 'auto' }}>
-                        {orchestratorText()}
-                      </div>
-                    </div>
-                  </Show>
-
-                  {/* 直接回答模式 */}
-                  <Show when={directAnswer()}>
-                    <div style={{
-                      padding: '12px 14px',
-                      background: themeColors.successBg,
-                      border: `1px solid ${themeColors.successBorder}`,
-                      'border-radius': '8px',
-                      'margin-bottom': '8px',
-                    }}>
-                      <div style={{ display: 'flex', 'align-items': 'center', gap: '6px', 'margin-bottom': '8px' }}>
-                        <div style={{
-                          width: '24px', height: '24px', 'border-radius': '50%',
-                          background: chartColors.success,
-                          display: 'flex', 'align-items': 'center', 'justify-content': 'center',
-                          'flex-shrink': 0, 'font-size': '14px',
-                        }}>
-                          🤖
-                        </div>
-                        <span style={{ 'font-size': '12px', 'font-weight': 600, color: chartColors.success }}>
-                          AI 直接回答
-                        </span>
-                        <span style={{ 'font-size': '11px', color: themeColors.textMuted }}>
-                          （未找到匹配的专业 Agent，已降级为大模型回答）
-                        </span>
-                      </div>
-                      <div style={{
-                        'font-size': '12px',
-                        color: themeColors.textPrimary,
-                        'white-space': 'pre-wrap',
-                        'line-height': '1.7',
-                        'max-height': '380px',
-                        'overflow-y': 'auto',
-                      }}>
-                        {directAnswer()}
+                      <div style={{ 'font-size': '48px', 'margin-bottom': '16px' }}>💬</div>
+                      <div style={{ 'font-size': '16px', 'font-weight': 500 }}>开始对话</div>
+                      <div style={{ 'font-size': '13px', 'margin-top': '8px' }}>
+                        输入目标或使用 @ 提及特定 Agent
                       </div>
                     </div>
-                  </Show>
-
-                  {/* Phase 2: Agent 执行时间轴 */}
-                  <Show when={dispatchPlan().length > 0}>
-                    <div style={{ display: 'flex', 'flex-direction': 'column' }}>
-                      <For each={dispatchPlan()}>
-                        {(item, idx) => {
-                          const agent = SOLO_AGENTS.find((a) => a.id === item.agentId);
-                          const text = () => agentStreamTexts()[item.agentId] ?? '';
-                          const execStatus = () => agentExecStatuses()[item.agentId] ?? 'pending';
-                          const isPending = () => execStatus() === 'pending';
-                          const isActive = () => execStatus() === 'thinking' || execStatus() === 'working';
-                          const isDone = () => execStatus() === 'done';
-                          const isExpanded = () => expandedSteps()[item.agentId] ?? false;
-                          const time = () => stepTimes()[item.agentId] || '';
-                          const isLast = () => idx() === dispatchPlan().length - 1;
-                          const hasDetail = () => text().length > 0;
-                          const summaryText = () => text() ? text().split('\n')[0].slice(0, 100) : '';
-                          if (!agent) return null;
-                          return (
-                            <div style={{ display: 'flex', 'align-items': 'stretch' }}>
-                              {/* 左側：状态圆圈 + 竖线 */}
-                              <div style={{
-                                'flex-shrink': '0', display: 'flex', 'flex-direction': 'column',
-                                'align-items': 'center', width: '28px',
-                              }}>
-                                <div style={{
-                                  width: '20px', height: '20px', 'border-radius': '50%', 'flex-shrink': '0',
-                                  background: isDone() ? chartColors.success : isActive() ? '#f97316' : 'transparent',
-                                  border: isPending() ? `2px solid ${themeColors.border}` : isDone() ? `2px solid ${chartColors.success}` : '2px solid #f97316',
-                                  display: 'flex', 'align-items': 'center', 'justify-content': 'center',
-                                  'margin-top': '14px', 'z-index': '1',
-                                }}>
-                                  <Show when={isActive()}>
-                                    <Loader2 size={10} style={{ color: 'white', animation: 'spin 1s linear infinite' }} />
-                                  </Show>
-                                  <Show when={isDone()}>
-                                    <span style={{ color: 'white', 'font-size': '10px', 'font-weight': 'bold', 'line-height': '1' }}>&#10003;</span>
-                                  </Show>
-                                </div>
-                                <Show when={!isLast()}>
-                                  <div style={{
-                                    flex: '1', width: '2px', 'min-height': '8px',
-                                    background: isDone() ? chartColors.success + '50' : themeColors.border,
-                                  }} />
-                                </Show>
-                              </div>
-                              {/* 右側：卡片 */}
-                              <div style={{
-                                flex: '1', 'padding-left': '8px',
-                                'padding-top': '8px',
-                                'padding-bottom': isLast() ? '0' : '8px',
-                              }}>
-                                <div style={{
-                                  border: `1px solid ${isActive() ? '#f9731640' : themeColors.border}`,
-                                  'border-radius': '8px',
-                                  background: isActive() ? '#f9731605' : themeColors.surface,
-                                  overflow: 'hidden',
-                                }}>
-                                  {/* Header行 */}
-                                  <div
-                                    style={{
-                                      display: 'flex', 'align-items': 'center', gap: '6px',
-                                      padding: '8px 10px',
-                                      cursor: hasDetail() ? 'pointer' : 'default',
-                                    }}
-                                    onClick={() => hasDetail() && toggleStep(item.agentId)}
-                                  >
-                                    <span style={{
-                                      'font-size': '12px', 'font-weight': '600', flex: '1',
-                                      color: isPending() ? themeColors.textMuted : themeColors.textPrimary,
-                                      overflow: 'hidden', 'text-overflow': 'ellipsis', 'white-space': 'nowrap',
-                                    }}>
-                                      {item.task.slice(0, 50)}
-                                    </span>
-                                    <div style={{
-                                      display: 'inline-flex', 'align-items': 'center',
-                                      padding: '1px 6px', 'border-radius': '4px', 'font-size': '10px',
-                                      background: agent.color + '20', color: agent.color, 'flex-shrink': '0',
-                                    }}>
-                                      {agent.name}
-                                    </div>
-                                    <span style={{
-                                      'font-size': '10px', color: themeColors.textMuted,
-                                      'flex-shrink': '0', 'min-width': '52px', 'text-align': 'right',
-                                    }}>
-                                      {isPending() ? '—' : time()}
-                                    </span>
-                                    <Show when={hasDetail()}>
-                                      <button
-                                        onClick={(e) => { e.stopPropagation(); toggleStep(item.agentId); }}
-                                        style={{
-                                          background: 'none', border: 'none', cursor: 'pointer',
-                                          padding: '0', color: themeColors.textMuted,
-                                          'flex-shrink': '0', display: 'flex', 'align-items': 'center',
-                                        }}
-                                      >
-                                        <Show when={isExpanded()} fallback={<ChevronDown size={14} />}>
-                                          <ChevronUp size={14} />
-                                        </Show>
-                                      </button>
-                                    </Show>
-                                    <Show when={!hasDetail()}>
-                                      <span style={{ 'font-size': '10px', color: themeColors.textMuted, 'flex-shrink': '0' }}>—</span>
-                                    </Show>
-                                  </div>
-                                  {/* Summary行 */}
-                                  <Show when={(isActive() || isDone()) && (summaryText() || isActive())}>
-                                    <div style={{
-                                      'border-left': `3px solid ${agent.color}`,
-                                      margin: '0 10px 8px 10px', 'padding-left': '8px',
-                                      'font-size': '11px', color: themeColors.textSecondary, 'line-height': '1.5',
-                                    }}>
-                                      <Show when={summaryText()} fallback={
-                                        <span style={{ color: '#f97316' }}>执行中...</span>
-                                      }>
-                                        {summaryText()}
-                                      </Show>
-                                    </div>
-                                  </Show>
-                                  {/* 展开详情 */}
-                                  <Show when={isExpanded() && hasDetail()}>
-                                    <div style={{
-                                      'border-top': `1px solid ${themeColors.border}`,
-                                      margin: '0 10px 8px 10px', 'padding-top': '6px',
-                                      'font-size': '11px', color: themeColors.textSecondary,
-                                      'white-space': 'pre-wrap', 'line-height': '1.6',
-                                      'max-height': '280px', 'overflow-y': 'auto',
-                                      background: themeColors.primaryBg,
-                                      'border-radius': '4px', padding: '8px',
-                                    }}>
-                                      {text()}
-                                    </div>
-                                  </Show>
-                                </div>
-                              </div>
-                            </div>
-                          );
-                        }}
-                      </For>
-                    </div>
-                  </Show>
-
-                  {/* visibleSteps 扁平列表 */}
-                  <Show when={dispatchPlan().length === 0 && visibleSteps().length > 0}>
-                    <div style={{ display: 'flex', 'flex-direction': 'column' }}>
-                      <For each={visibleSteps()}>
-                        {(step) => {
-                          const agent = SOLO_AGENTS.find((a) => a.id === step.agentId) ?? {
-                            color: chartColors.success, name: step.agentName, emoji: '🤖',
-                          } as any;
-                          return (
-                            <div style={{ 'padding-bottom': '12px', display: 'flex', gap: '12px' }}>
-                              <div style={{
-                                width: '20px', height: '20px', 'border-radius': '50%', 'flex-shrink': '0',
-                                'background-color': agent.color,
-                                border: `2px solid ${agent.color}`,
-                                display: 'flex', 'align-items': 'center', 'justify-content': 'center',
-                                'margin-top': '2px',
-                              }}>
-                                <span style={{ color: 'white', 'font-size': '10px', 'font-weight': 'bold', 'line-height': '1' }}>✓</span>
-                              </div>
-                              <div style={{ flex: '1' }}>
-                                <div style={{ display: 'flex', 'align-items': 'center', gap: '6px', 'margin-bottom': '4px' }}>
-                                  <span style={{ display: 'inline-block', background: agent.color, color: 'white', padding: '0 6px', 'border-radius': '4px', 'font-size': '11px' }}>{agent.name}</span>
-                                  <span style={{ 'font-size': '11px', color: themeColors.textMuted }}>{step.action.slice(0, 40)}</span>
-                                </div>
-                                <Show when={step.output}>
-                                  <div style={{ 'font-size': '11px', color: themeColors.textSecondary, 'white-space': 'pre-wrap', 'line-height': '1.6', 'max-height': '200px', 'overflow-y': 'auto', background: themeColors.hover, padding: '6px 8px', 'border-radius': '4px' }}>{step.output.slice(0, 300)}</div>
-                                </Show>
-                              </div>
-                            </div>
-                          );
-                        }}
-                      </For>
-                    </div>
-                  </Show>
-
-                  {/* 执行流空态 */}
-                  <Show when={visibleSteps().length === 0 && dispatchPlan().length === 0 && !orchestratorText() && !directAnswer()}>
-                    <div style={{ 'text-align': 'center', padding: '40px 0', color: themeColors.textMuted }}>
-                      <PlayCircle size={36} style={{ 'margin-bottom': '10px', display: 'block', margin: '0 auto 10px' }} />
-                      <div style={{ 'font-size': '12px', color: themeColors.textMuted }}>执行过程将在此实时显示</div>
-                    </div>
-                  </Show>
-
-                  {/* 完成标识 */}
-                  <Show when={runState() === 'done'}>
-                    <div style={{
-                      'margin-top': '12px',
-                      padding: '10px 14px',
-                      background: themeColors.successBg,
-                      border: `1px solid ${themeColors.successBorder}`,
-                      'border-radius': '8px',
-                    }}>
-                      <CheckCircle size={16} style={{ color: chartColors.success, 'margin-right': '8px' }} />
-                      <strong style={{ color: chartColors.success, 'font-size': '13px' }}>全自动完成</strong>
-                      <span style={{ 'font-size': '12px', color: themeColors.textMuted, 'margin-left': '8px' }}>
-                        4 个虚拟角色并行执行，{soloWorkflowSteps.length} 步完成，节省约 6 小时
-                      </span>
-                    </div>
-                  </Show>
-                </div>
-              </Show>
+                  }
+                >
+                  {(slot) => (
+                    <AgentSessionView
+                      slot={slot()}
+                      getSessionById={orchestrator.getSessionById}
+                      getMessagesBySessionId={orchestrator.getMessagesBySessionId}
+                      ensureSessionLoaded={orchestrator.ensureSessionLoaded}
+                      sessionLoadingById={orchestrator.sessionLoadingById}
+                      onPermissionReply={(permId, action) => {
+                        orchestrator.replyPermission(slot().agentId, permId, action);
+                      }}
+                      onQuestionReply={(reqId, answers) => {
+                        orchestrator.replyQuestion(slot().agentId, reqId, answers);
+                      }}
+                      onSendMessage={(text) => {
+                        orchestrator.sendTo(slot().agentId, text);
+                      }}
+                      developerMode={false}
+                      showThinking={false}
+                    />
+                  )}
+                </Show>
             </div>
 
             {/* ── 底部输入区（置底） ── */}
@@ -1883,19 +1283,6 @@ const SoloAutopilot = () => {
             onResizeEdge={handleFloatResizeEdge}
           />
         </div>
-      </Show>
-
-      {/* 展开浮层 */}
-      <Show when={showExpandOverlay()}>
-        <ExpandableOverlay
-          show={showExpandOverlay()}
-          onClose={() => setShowExpandOverlay(false)}
-          title="执行流详情"
-          dispatchPlan={dispatchPlan()}
-          agentStreamTexts={agentStreamTexts()}
-          agentExecStatuses={agentExecStatuses()}
-          agents={SOLO_AGENTS}
-        />
       </Show>
 
       {/* 保存结果提示 */}

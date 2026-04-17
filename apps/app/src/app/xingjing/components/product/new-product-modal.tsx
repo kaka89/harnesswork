@@ -135,7 +135,6 @@ const NewProductModal: Component<Props> = (props) => {
           workDir().trim(),
           name().trim(),
           productCode().trim(),
-          soloProductType(),
         );
         const newSoloProduct = await productStore.addProduct({
           name: name().trim(),
@@ -144,7 +143,6 @@ const NewProductModal: Component<Props> = (props) => {
           gitUrl: soloGit.gitUrl().trim() || undefined,
           description: '',
           productType: 'solo',
-          soloProductType: soloProductType(),
         });
         // 非首个产品不会自动激活，确保新产品处于活跃状态
         if (productStore.activeProduct()?.id !== newSoloProduct.id) {

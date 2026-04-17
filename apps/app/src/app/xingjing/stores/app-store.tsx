@@ -11,12 +11,13 @@ import {
   loadProjectSettings,
   loadGlobalSettings, saveGlobalSettings,
 } from '../services/file-store';
-import { callAgent as _callAgent, callAgentWithClient, callAgentDirect, setProviderAuth, type CallAgentOptions } from '../services/opencode-client';
+import { callAgent as _callAgent, setProviderAuth, setOpenworkClient, setOpenworkFileOps, setSharedClient, type CallAgentOptions } from '../services/opencode-client';
+import { ensureAgentsRegistered } from '../services/agent-registry';
 import { appendAgentLog } from '../services/agent-logger';
 import { currentUser } from '../services/auth-service';
 import { DEFAULT_ALLOWED_TOOLS } from '../mock/settings';
 import type { createClient } from '../../lib/opencode';
-import type { OpenworkSkillItem, OpenworkSkillContent } from '../../lib/openwork-server';
+import type { OpenworkSkillItem, OpenworkSkillContent, OpenworkCommandItem, OpenworkAuditEntry } from '../../lib/openwork-server';
 
 export type Role = 'pm' | 'architect' | 'developer' | 'qa' | 'sre' | 'manager';
 export type AppMode = 'team' | 'solo';
@@ -75,12 +76,26 @@ export interface XingjingOpenworkContext {
   createWorkspaceByDir: (productDir: string, productName: string) => Promise<string | null>;
   /** 列出指定工作区的 MCP 服务器 */
   listMcp: (workspaceId: string) => Promise<Array<{ name: string; config: Record<string, unknown> }>>;
+  /** 列出指定工作区的 Command 列表 */
+  listCommands: (workspaceId: string) => Promise<OpenworkCommandItem[]>;
+  /** 获取指定工作区的审计日志 */
+  listAudit: (workspaceId: string, limit?: number) => Promise<OpenworkAuditEntry[]>;
   /**
    * OpenWork 全局 SSE 维护的 session 状态映射。
    * key = sessionID，value = 'idle' | 'running' | 'retry' 等。
    * 星静复用此状态检测 session 完成，避免独立 REST 轮询。
    */
   sessionStatusById?: () => Record<string, string>;
+  // ── 新增：文件操作（通过 OpenWork Server API）──
+  readWorkspaceFile?: (workspaceId: string, path: string) => Promise<{ content: string } | null>;
+  writeWorkspaceFile?: (workspaceId: string, payload: { path: string; content: string; force?: boolean }) => Promise<boolean>;
+  // ── 新增：Session 管理 ──
+  deleteSession?: (workspaceId: string, sessionId: string) => Promise<boolean>;
+  // ── 新增：Hub Skill ──
+  listHubSkills?: () => Promise<Array<{ name: string; description: string }>>;
+  installHubSkill?: (workspaceId: string, name: string) => Promise<boolean>;
+  // ── 新增：Engine 管理 ──
+  reloadEngine?: (workspaceId: string) => Promise<boolean>;
 }
 
 interface AppState {
@@ -121,6 +136,7 @@ const AppStoreContext = createContext<{
   productStore: ProductStore;
   openworkStatus: () => 'connected' | 'disconnected' | 'limited';
   resolvedWorkspaceId: () => string | null;
+  openworkCtx?: XingjingOpenworkContext;
   actions: {
     setRole: (role: Role) => void;
     setAppMode: (mode: AppMode) => void;
@@ -140,6 +156,8 @@ const AppStoreContext = createContext<{
     callAgent: (opts: CallAgentOptions) => Promise<void>;
     // OpenWork Skill/Config API
     listOpenworkSkills: () => Promise<OpenworkSkillItem[]>;
+    listCommands: () => Promise<OpenworkCommandItem[]>;
+    listAudit: (limit?: number) => Promise<OpenworkAuditEntry[]>;
     getOpenworkSkill: (name: string) => Promise<OpenworkSkillContent | null>;
     upsertOpenworkSkill: (name: string, content: string, description?: string) => Promise<boolean>;
     readOpencodeConfig: () => Promise<unknown>;
@@ -150,6 +168,7 @@ const AppStoreContext = createContext<{
      * 返回最终的 workspaceId（成功）或 null（失败/不可用）。
      */
     ensureWorkspaceForActiveProduct: () => Promise<string | null>;
+    scanKnowledgeIndex: (skillApi: import('../services/knowledge-behavior').SkillApiAdapter) => Promise<import('../services/knowledge-index').KnowledgeIndex | null>;
     getWorkDir: () => string;
   };
 }>();
@@ -189,6 +208,39 @@ export const AppStoreProvider: ParentComponent<{
       props.openworkCtx.resolveWorkspaceByDir(product.workDir)
         .then((wsId: string | null) => setResolvedWorkspaceId(wsId))
         .catch(() => setResolvedWorkspaceId(null));
+    }
+  });
+
+  // ── 注入 OpenWork Client 到 opencode-client 模块 ──
+  createEffect(() => {
+    const client = props.openworkCtx?.opencodeClient?.();
+    if (client) {
+      setOpenworkClient(client);
+      // 同时注入为 shared client，优先使用此路径
+      setSharedClient(client);
+    }
+  });
+
+  // ── 注入 OpenWork 文件操作能力 ──
+  createEffect(() => {
+    const ctx = props.openworkCtx;
+    const wsId = resolvedWorkspaceId();
+    if (ctx?.readWorkspaceFile && ctx?.writeWorkspaceFile) {
+      setOpenworkFileOps(
+        { read: ctx.readWorkspaceFile, write: ctx.writeWorkspaceFile },
+        wsId,
+      );
+    } else {
+      setOpenworkFileOps(null, null);
+    }
+  });
+
+  // ── 工作区就绪后，确保内置 Agent 已注册到 .opencode/agents/ ──
+  createEffect(() => {
+    const wsId = resolvedWorkspaceId();
+    if (wsId) {
+      const mode = state.appMode;
+      void ensureAgentsRegistered(mode);
     }
   });
 
@@ -363,16 +415,27 @@ export const AppStoreProvider: ParentComponent<{
       return props.openworkCtx.listMcp(wsId);
     },
 
+    listCommands: async (): Promise<OpenworkCommandItem[]> => {
+      const wsId = resolvedWorkspaceId();
+      if (!wsId || !props.openworkCtx?.listCommands) return [];
+      return props.openworkCtx.listCommands(wsId);
+    },
+
+    listAudit: async (limit?: number): Promise<OpenworkAuditEntry[]> => {
+      const wsId = resolvedWorkspaceId();
+      if (!wsId || !props.openworkCtx?.listAudit) return [];
+      return props.openworkCtx.listAudit(wsId, limit);
+    },
+
     callAgent: (opts: CallAgentOptions) => {
       const workDir = getWorkDir();
-      const owClient = props.openworkCtx?.opencodeClient?.() ?? null;
       const dir = opts.directory ?? workDir;
       const model = opts.model ?? props.openworkCtx?.selectedModel?.() ?? undefined;
-      // 复用 OpenWork 全局 SSE 的 sessionStatusById 状态（L2 完成检测）
       const owSessionStatusById = props.openworkCtx?.sessionStatusById;
       const llmCfg = state.llmConfig;
-      // 当前产品名（用于日志 product 字段）
       const currentProductName = productStore.activeProduct()?.name ?? '';
+      // 固定住调用时刻的 workspaceId，避免长对话中产品切换导致 session 误删
+      const workspaceIdSnapshot = resolvedWorkspaceId();
 
       const start = Date.now();
       const promptLen = (opts.systemPrompt?.length ?? 0) + opts.userPrompt.length;
@@ -385,10 +448,7 @@ export const AppStoreProvider: ParentComponent<{
         promptLen,
       };
 
-      // 标记是否遇到“session 无法创建”类错误
-      let sessionCreateFailed = false;
-
-      // ── 调用前确保 API Key 已同步到 OpenCode（解决端口变更后 key 丢失的问题）──
+      // 调用前确保 API Key 已同步到 OpenCode
       const ensureApiKey = async () => {
         const pid = model?.providerID ?? llmCfg.providerID;
         const key = llmCfg.apiKey;
@@ -401,10 +461,14 @@ export const AppStoreProvider: ParentComponent<{
         ...opts,
         directory: dir,
         model,
-        // 复用 OpenWork 全局 SSE 的 session 状态映射，用于 L2 完成检测
         owSessionStatusById,
-        // 注入全局工具白名单（如果调用方未显式指定）
         autoApproveTools: opts.autoApproveTools ?? (state.allowedTools.length ? state.allowedTools : undefined),
+        owDeleteSession: async (sessionId: string) => {
+          const wsId = workspaceIdSnapshot;
+          if (wsId && props.openworkCtx?.deleteSession) {
+            await props.openworkCtx.deleteSession(wsId, sessionId);
+          }
+        },
         onDone: (text: string) => {
           void appendAgentLog({
             ...logBase,
@@ -416,13 +480,6 @@ export const AppStoreProvider: ParentComponent<{
           opts.onDone?.(text);
         },
         onError: (errMsg: string) => {
-          // 判断是否为 session 创建失败（OpenCode 不可用）
-          if (errMsg.includes('无法创建 AI 会话')) {
-            sessionCreateFailed = true;
-            // 不立即回调，等待降级处理
-            return;
-          }
-          // 其他 OpenCode 错误：记录日志后透传
           void appendAgentLog({
             ...logBase,
             path: 'opencode',
@@ -434,70 +491,17 @@ export const AppStoreProvider: ParentComponent<{
         },
       };
 
-      const runOpenCode = (): Promise<void> => {
-        // 调用前同步 API Key 到 OpenCode，确保端口变更后仍能调用成功
-        return ensureApiKey().then(() => {
-          if (owClient) {
-            return callAgentWithClient(owClient, wrappedOpts);
-          }
-          return _callAgent({ ...wrappedOpts });
+      // 完全通过 OpenWork 注入的 Client 调用，无降级路径
+      return ensureApiKey().then(() => _callAgent(wrappedOpts)).catch((err) => {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        void appendAgentLog({
+          ...logBase,
+          path: 'opencode',
+          success: false,
+          durationMs: Date.now() - start,
+          error: errMsg,
         });
-      };
-
-      return runOpenCode().then(async () => {
-        if (!sessionCreateFailed) return;
-
-        // ── 降级：直连 LLM API ──
-        const fallbackReason = '无法创建 AI 会话';
-        if (!llmCfg.apiKey) {
-          const noKeyErr = 'OpenCode 不可用，且未配置 API Key，无法降级到直连模式';
-          void appendAgentLog({
-            ...logBase,
-            path: 'direct-api',
-            success: false,
-            durationMs: Date.now() - start,
-            fallbackReason,
-            error: noKeyErr,
-          });
-          opts.onError?.(noKeyErr);
-          return;
-        }
-
-        const fallbackStart = Date.now();
-        const fallbackLogBase = { ...logBase, ts: new Date().toISOString(), path: 'direct-api' as const, fallbackReason };
-
-        await callAgentDirect(
-          {
-            ...opts,
-            directory: dir,
-            model,
-            onDone: (text: string) => {
-              void appendAgentLog({
-                ...fallbackLogBase,
-                success: true,
-                durationMs: Date.now() - fallbackStart,
-                responseLen: text.length,
-              });
-              opts.onDone?.(text);
-            },
-            onError: (errMsg: string) => {
-              void appendAgentLog({
-                ...fallbackLogBase,
-                success: false,
-                durationMs: Date.now() - fallbackStart,
-                error: errMsg,
-              });
-              opts.onError?.(errMsg);
-            },
-            onText: opts.onText,
-          },
-          {
-            apiUrl: llmCfg.apiUrl,
-            apiKey: llmCfg.apiKey,
-            modelID: model?.modelID ?? llmCfg.modelID,
-            providerID: model?.providerID ?? llmCfg.providerID,
-          },
-        );
+        opts.onError?.(errMsg);
       });
     },
 
@@ -544,6 +548,16 @@ export const AppStoreProvider: ParentComponent<{
       }
       return newWsId;
     },
+    scanKnowledgeIndex: async (skillApi: import('../services/knowledge-behavior').SkillApiAdapter) => {
+      const workDir = getWorkDir();
+      if (!workDir) return null;
+      try {
+        const { buildKnowledgeIndex } = await import('../services/knowledge-index');
+        return await buildKnowledgeIndex(workDir, skillApi);
+      } catch {
+        return null;
+      }
+    },
     getWorkDir,
   };
 
@@ -551,7 +565,7 @@ export const AppStoreProvider: ParentComponent<{
     props.openworkCtx?.serverStatus?.() ?? 'disconnected';
 
   return (
-    <AppStoreContext.Provider value={{ state, productStore, openworkStatus, resolvedWorkspaceId, actions }}>
+    <AppStoreContext.Provider value={{ state, productStore, openworkStatus, resolvedWorkspaceId, openworkCtx: props.openworkCtx, actions }}>
       {props.children}
     </AppStoreContext.Provider>
   );

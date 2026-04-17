@@ -10,6 +10,7 @@
  * - 不依赖外部解析库，使用内置轻量 YAML/frontmatter 解析
  */
 
+import yaml from 'js-yaml';
 import { fileList, fileRead, fileWrite, fileDelete, FileNode } from './opencode-client';
 
 export type { FileNode };
@@ -17,149 +18,20 @@ export type { FileNode };
 // ─── 简单 YAML 序列化/反序列化（无外部依赖）────────────────────────────────
 
 /**
- * 极简 YAML 解析（仅支持平铺 key: value，嵌套对象，数组）
- * 对于生产环境，建议引入 js-yaml 或 yaml 库
+ * YAML 解析（使用 js-yaml）
  */
 export function parseYamlSimple(content: string): Record<string, unknown> {
-  try {
-    // 使用 JSON 兼容模式（对于标准 YAML 子集）
-    // 尝试将 YAML 转为 JSON 可解析格式
-    const lines = content.split('\n');
-    const result: Record<string, unknown> = {};
-    const indentStack: Array<{ obj: Record<string, unknown>; indent: number }> = [
-      { obj: result, indent: -1 },
-    ];
-    let currentList: unknown[] | null = null;
-    let currentListKey = '';
-
-    for (const raw of lines) {
-      const line = raw.replace(/\r$/, '');
-      if (!line.trim() || line.trim().startsWith('#')) continue;
-
-      const indent = line.search(/\S/);
-      const trimmed = line.trim();
-
-      // Array item
-      if (trimmed.startsWith('- ')) {
-        const value = trimmed.slice(2).trim();
-        if (currentList) {
-          currentList.push(parseYamlValue(value));
-        }
-        continue;
-      }
-
-      // Key-value
-      const colonIdx = trimmed.indexOf(':');
-      if (colonIdx === -1) continue;
-
-      const key = trimmed.slice(0, colonIdx).trim();
-      const rest = trimmed.slice(colonIdx + 1).trim();
-
-      // Pop stack to find parent
-      while (
-        indentStack.length > 1 &&
-        indentStack[indentStack.length - 1].indent >= indent
-      ) {
-        indentStack.pop();
-      }
-      const parent = indentStack[indentStack.length - 1].obj;
-
-      if (rest === '') {
-        // Nested object or array to follow
-        const nextObj: Record<string, unknown> = {};
-        parent[key] = nextObj;
-        currentList = null;
-        indentStack.push({ obj: nextObj, indent });
-        // Check if next line is array
-        currentListKey = key;
-        const arr: unknown[] = [];
-        // Will be replaced if next lines are "- "
-        // Preemptively set as array; will be updated
-        void currentListKey;
-        void arr;
-      } else {
-        // Array value: key: [...]
-        if (rest.startsWith('[') && rest.endsWith(']')) {
-          const items = rest
-            .slice(1, -1)
-            .split(',')
-            .map((s) => parseYamlValue(s.trim()));
-          parent[key] = items;
-          currentList = null;
-        } else {
-          parent[key] = parseYamlValue(rest);
-          currentList = null;
-        }
-      }
-
-      // Set up list tracking for array items
-      if (rest === '') {
-        const arr: unknown[] = [];
-        parent[key] = arr;
-        currentList = arr;
-      }
-    }
-
-    return result;
-  } catch {
-    return {};
-  }
-}
-
-function parseYamlValue(raw: string): unknown {
-  if (raw === 'true') return true;
-  if (raw === 'false') return false;
-  if (raw === 'null' || raw === '~') return null;
-  if (/^-?\d+$/.test(raw)) return parseInt(raw, 10);
-  if (/^-?\d+\.\d+$/.test(raw)) return parseFloat(raw);
-  // Quoted string
-  if (
-    (raw.startsWith('"') && raw.endsWith('"')) ||
-    (raw.startsWith("'") && raw.endsWith("'"))
-  ) {
-    return raw.slice(1, -1);
-  }
-  return raw;
+  return (yaml.load(content) as Record<string, unknown>) ?? {};
 }
 
 /**
- * 简单 YAML 序列化（将对象转为 YAML 字符串）
+ * YAML 序列化（使用 js-yaml）
  */
 export function stringifyYamlSimple(
   obj: Record<string, unknown>,
   indent = 0,
 ): string {
-  const prefix = '  '.repeat(indent);
-  const lines: string[] = [];
-
-  for (const [key, value] of Object.entries(obj)) {
-    if (value === null || value === undefined) {
-      lines.push(`${prefix}${key}: ~`);
-    } else if (typeof value === 'object' && !Array.isArray(value)) {
-      lines.push(`${prefix}${key}:`);
-      lines.push(
-        stringifyYamlSimple(value as Record<string, unknown>, indent + 1),
-      );
-    } else if (Array.isArray(value)) {
-      lines.push(`${prefix}${key}:`);
-      for (const item of value) {
-        if (typeof item === 'object' && item !== null) {
-          lines.push(`${prefix}  -`);
-          lines.push(
-            stringifyYamlSimple(item as Record<string, unknown>, indent + 2),
-          );
-        } else {
-          lines.push(`${prefix}  - ${item}`);
-        }
-      }
-    } else if (typeof value === 'string' && (value.includes('\n') || value.includes(':'))) {
-      lines.push(`${prefix}${key}: "${value.replace(/"/g, '\\"')}"`);
-    } else {
-      lines.push(`${prefix}${key}: ${value}`);
-    }
-  }
-
-  return lines.join('\n');
+  return yaml.dump(obj, { indent: 2 });
 }
 
 // ─── Markdown Frontmatter ─────────────────────────────────────────────────────
@@ -179,7 +51,7 @@ export function parseFrontmatter<T = Record<string, unknown>>(
   if (!match) {
     return { frontmatter: {} as T, body: content };
   }
-  const frontmatter = parseYamlSimple(match[1]) as T;
+  const frontmatter = (yaml.load(match[1]) as T) ?? ({} as T);
   const body = match[2] ?? '';
   return { frontmatter, body };
 }
@@ -190,7 +62,7 @@ export function parseFrontmatter<T = Record<string, unknown>>(
 export function stringifyFrontmatter<T extends Record<string, unknown>>(
   doc: FrontmatterDoc<T>,
 ): string {
-  const yamlStr = stringifyYamlSimple(doc.frontmatter as Record<string, unknown>);
+  const yamlStr = yaml.dump(doc.frontmatter, { indent: 2 }).trimEnd();
   return `---\n${yamlStr}\n---\n${doc.body}`;
 }
 

@@ -1,469 +1,279 @@
-import { Component, createSignal, For, Show, onMount } from 'solid-js';
-import { myKnowledge as mockKnowledge, KnowledgeItem, KnowledgeCategory } from '../../../mock/solo';
+/**
+ * 星静独立版 · 产品知识库页面
+ *
+ * 三栏布局：左侧文档树 | 中央阅读器/网格 | 右侧关联面板
+ * 支持四源统一浏览：产品文档 / 迭代记录 / 个人笔记 / 行为知识
+ * 提供 AI 使用路径：发送给AI / 启动 Autopilot / 复制引用
+ */
+import { Component, createSignal, createEffect, onMount, Show } from 'solid-js';
+import { useNavigate } from '@solidjs/router';
+import {
+  buildKnowledgeIndex, loadCachedIndex, groupEntriesForTree,
+  searchKnowledge, type KnowledgeEntry, type KnowledgeIndex, type KnowledgeTreeGroup,
+} from '../../../services/knowledge-index';
+import { checkKnowledgeHealth, type KnowledgeHealthScore } from '../../../services/knowledge-health';
 import { loadSoloKnowledge, saveSoloKnowledge } from '../../../services/file-store';
+import { invalidateKnowledgeCache } from '../../../services/knowledge-retrieval';
+import type { SkillApiAdapter } from '../../../services/knowledge-behavior';
 import { useAppStore } from '../../../stores/app-store';
 import { themeColors, chartColors } from '../../../utils/colors';
-import { BookOpen, AlertTriangle, User, Code, Search, Plus, Lightbulb } from 'lucide-solid';
-import { listBehaviorKnowledge, type BehaviorKnowledge, type SkillApiAdapter } from '../../../services/knowledge-behavior';
-import { buildKnowledgeIndex, type KnowledgeIndex } from '../../../services/knowledge-index';
-import { checkKnowledgeHealth, type KnowledgeHealthScore, type StaleEntry, type PromotionCandidate } from '../../../services/knowledge-health';
-import { invalidateKnowledgeCache } from '../../../services/knowledge-retrieval';
 
-const categoryConfig: Record<KnowledgeCategory, {
-  label: string; icon: string; color: string; bg: string; border: string; badgeBg: string;
-}> = {
-  pitfall:        { label: '踩过的坑',  icon: '⚠️', color: chartColors.error, bg: themeColors.errorBg, border: themeColors.errorBorder, badgeBg: chartColors.error },
-  'user-insight': { label: '用户洞察',  icon: '👤', color: themeColors.purple, bg: themeColors.purpleBg, border: themeColors.purpleBorder, badgeBg: themeColors.purple },
-  'tech-note':    { label: '技术笔记',  icon: '💻', color: chartColors.primary, bg: themeColors.primaryBg, border: themeColors.primaryBorder, badgeBg: chartColors.primary },
-};
+// Components
+import KnowledgeTreeNav from '../../../components/knowledge/knowledge-tree-nav';
+import KnowledgeDocViewer from '../../../components/knowledge/knowledge-doc-viewer';
+import KnowledgeGridView from '../../../components/knowledge/knowledge-grid-view';
+import DocRelationPanel from '../../../components/knowledge/doc-relation-panel';
+import KnowledgeSearchBar, { type KnowledgeSourceFilter } from '../../../components/knowledge/knowledge-search-bar';
+import KnowledgeHealthDashboard from '../../../components/knowledge/knowledge-health-dashboard';
+import QuickAITaskDialog from '../../../components/knowledge/quick-ai-task-dialog';
 
-const KnowledgeCard: Component<{ item: KnowledgeItem }> = (props) => {
-  const [expanded, setExpanded] = createSignal(false);
-  const cfg = () => categoryConfig[props.item.category];
-  const needsExpand = () => props.item.content.length > 120;
-  const displayContent = () =>
-    needsExpand() && !expanded()
-      ? props.item.content.slice(0, 120) + '...'
-      : props.item.content;
-
-  return (
-    <div
-      style={{
-        'border-radius': '12px', 'margin-bottom': '12px', overflow: 'hidden',
-        border: `1px solid ${props.item.aiAlert ? themeColors.warningBorder : cfg().border}`,
-        background: props.item.aiAlert ? themeColors.warningBg : themeColors.surface,
-      }}
-    >
-      <Show when={props.item.aiAlert}>
-        <div style={{ padding: '4px 12px', background: themeColors.warning, color: 'white', 'font-size': '12px', display: 'flex', 'align-items': 'center', gap: '6px' }}>
-          🤖 {props.item.aiAlert}
-        </div>
-      </Show>
-      <div style={{ padding: '14px' }}>
-        <div style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text, 'margin-bottom': '6px' }}>{props.item.title}</div>
-        <p style={{ 'font-size': '12px', color: themeColors.textSecondary, 'line-height': '1.6', 'margin-bottom': '8px', margin: '0 0 8px' }}>
-          {displayContent()}
-          <Show when={needsExpand()}>
-            <button
-              style={{ color: chartColors.primary, background: 'none', border: 'none', cursor: 'pointer', 'margin-left': '4px', 'font-size': '12px' }}
-              onClick={() => setExpanded(v => !v)}
-            >
-              {expanded() ? ' 收起' : ' 展开'}
-            </button>
-          </Show>
-        </p>
-        <div style={{ display: 'flex', 'align-items': 'center', gap: '6px', 'flex-wrap': 'wrap' }}>
-          <For each={props.item.tags}>
-            {(tag) => (
-              <span style={{ 'font-size': '12px', padding: '1px 6px', 'border-radius': '4px', background: cfg().bg, color: cfg().color }}>{tag}</span>
-            )}
-          </For>
-          <span style={{ 'font-size': '12px', color: themeColors.textMuted, 'margin-left': 'auto' }}>{props.item.date}</span>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-// ─── 知识源分类 Tab ───────────────────────────────────────────────
-
-type KnowledgeSourceTab = 'private' | 'behavior';
-
-// ─── 健康度徽章组件 ──────────────────────────────────────────────
-
-const HealthBadge: Component<{ score: number }> = (props) => {
-  const color = () => props.score >= 80 ? chartColors.success : props.score >= 50 ? chartColors.warning : chartColors.error;
-  const label = () => props.score >= 80 ? '健康' : props.score >= 50 ? '一般' : '待治理';
-  return (
-    <span style={{
-      'font-size': '12px', padding: '2px 8px', 'border-radius': '9999px',
-      background: color(), color: 'white', 'font-weight': 600,
-    }}>
-      {props.score}分 · {label()}
-    </span>
-  );
-};
-
-// ─── 晃升建议卡片 ──────────────────────────────────────────────
-
-const PromotionAlert: Component<{ candidates: PromotionCandidate[] }> = (props) => {
-  return (
-    <Show when={props.candidates.length > 0}>
-      <div style={{ 'margin-bottom': '16px', padding: '14px', 'border-radius': '12px', border: `1px solid ${themeColors.successBorder ?? '#b7eb8f'}`, background: themeColors.successBg ?? '#f6ffed' }}>
-        <div style={{ display: 'flex', 'align-items': 'flex-start', gap: '12px' }}>
-          <span style={{ 'font-size': '20px' }}>⬆️</span>
-          <div>
-            <div style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text, 'margin-bottom': '4px' }}>晃升建议：私有知识 → 行为知识</div>
-            <For each={props.candidates}>
-              {(c) => (
-                <div style={{ 'font-size': '12px', color: themeColors.textSecondary, padding: '2px 0' }}>
-                  · 「{c.title}」已被引用 {c.referenceCount} 次 — {c.reason}
-                </div>
-              )}
-            </For>
-          </div>
-        </div>
-      </div>
-    </Show>
-  );
-};
-
-// ─── Stale 警告 ──────────────────────────────────────────────
-
-const StaleWarning: Component<{ entries: StaleEntry[] }> = (props) => {
-  return (
-    <Show when={props.entries.length > 0}>
-      <div style={{ 'margin-bottom': '16px', padding: '14px', 'border-radius': '12px', border: `1px solid ${themeColors.warningBorder}`, background: themeColors.warningBg }}>
-        <div style={{ display: 'flex', 'align-items': 'flex-start', gap: '12px' }}>
-          <span style={{ 'font-size': '20px' }}>⏰</span>
-          <div>
-            <div style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text, 'margin-bottom': '4px' }}>{props.entries.length} 条知识已过期</div>
-            <For each={props.entries.slice(0, 5)}>
-              {(e) => (
-                <div style={{ 'font-size': '12px', color: themeColors.warning, padding: '2px 0' }}>
-                  · [{e.source === 'behavior' ? 'Skill' : e.source === 'private' ? '笔记' : '文档'}] {e.title} — {e.daysSinceUpdate} 天未更新
-                </div>
-              )}
-            </For>
-            <Show when={props.entries.length > 5}>
-              <div style={{ 'font-size': '12px', color: themeColors.textMuted, 'margin-top': '4px' }}>… 另有 {props.entries.length - 5} 条</div>
-            </Show>
-          </div>
-        </div>
-      </div>
-    </Show>
-  );
-};
-
-// ─── 行为知识卡片 ──────────────────────────────────────────────
-
-const BehaviorKnowledgeCard: Component<{ item: BehaviorKnowledge }> = (props) => {
-  const [expanded, setExpanded] = createSignal(false);
-  const needsExpand = () => props.item.content.length > 120;
-  const displayContent = () =>
-    needsExpand() && !expanded()
-      ? props.item.content.slice(0, 120) + '...'
-      : props.item.content;
-
-  return (
-    <div style={{
-      'border-radius': '12px', 'margin-bottom': '12px', overflow: 'hidden',
-      border: `1px solid ${themeColors.primaryBorder}`, background: themeColors.surface,
-    }}>
-      <div style={{ padding: '4px 12px', background: chartColors.primary, color: 'white', 'font-size': '11px', display: 'flex', 'align-items': 'center', gap: '6px' }}>
-        ✨ Skill · {props.item.category} · {props.item.lifecycle}
-      </div>
-      <div style={{ padding: '14px' }}>
-        <div style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text, 'margin-bottom': '6px' }}>{props.item.title}</div>
-        <p style={{ 'font-size': '12px', color: themeColors.textSecondary, 'line-height': '1.6', 'margin-bottom': '8px', margin: '0 0 8px' }}>
-          {displayContent()}
-          <Show when={needsExpand()}>
-            <button
-              style={{ color: chartColors.primary, background: 'none', border: 'none', cursor: 'pointer', 'margin-left': '4px', 'font-size': '12px' }}
-              onClick={() => setExpanded(v => !v)}
-            >
-              {expanded() ? ' 收起' : ' 展开'}
-            </button>
-          </Show>
-        </p>
-        <div style={{ display: 'flex', 'align-items': 'center', gap: '6px', 'flex-wrap': 'wrap' }}>
-          <For each={props.item.tags}>
-            {(tag) => (
-              <span style={{ 'font-size': '12px', padding: '1px 6px', 'border-radius': '4px', background: themeColors.primaryBg, color: chartColors.primary }}>{tag}</span>
-            )}
-          </For>
-          <Show when={props.item.applicableScenes.length > 0}>
-            <span style={{ 'font-size': '11px', color: themeColors.textMuted, 'margin-left': 'auto' }}>
-              适用: {props.item.applicableScenes.join(', ')}
-            </span>
-          </Show>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-// ─── 主组件 ──────────────────────────────────────────────
 const SoloKnowledge: Component = () => {
-  const { productStore, store } = useAppStore();
-  const [knowledge, setKnowledge] = createSignal<KnowledgeItem[]>(mockKnowledge);
-  const [behaviorItems, setBehaviorItems] = createSignal<BehaviorKnowledge[]>([]);
-  const [search, setSearch] = createSignal('');
-  const [activeCategory, setActiveCategory] = createSignal<KnowledgeCategory | 'all'>('all');
-  const [sourceTab, setSourceTab] = createSignal<KnowledgeSourceTab>('private');
-  const [healthReport, setHealthReport] = createSignal<KnowledgeHealthScore | null>(null);
+  const { productStore, actions } = useAppStore();
+  const navigate = useNavigate();
 
-  onMount(async () => {
-    const workDir = productStore.activeProduct()?.workDir;
-    if (!workDir) return;
+  // ── 核心状态 ──────────────────────────────────────────────────────────────
+  const [index, setIndex] = createSignal<KnowledgeIndex | null>(null);
+  const [groups, setGroups] = createSignal<KnowledgeTreeGroup[]>([]);
+  const [allEntries, setAllEntries] = createSignal<KnowledgeEntry[]>([]);
+  const [selectedEntry, setSelectedEntry] = createSignal<KnowledgeEntry | null>(null);
+  const [indexLoading, setIndexLoading] = createSignal(true);
 
-    // 加载私有知识
-    try {
-      const files = await loadSoloKnowledge(workDir);
-      if (files.length > 0) setKnowledge(files as unknown as KnowledgeItem[]);
-    } catch {
-      // Mock fallback
-    }
+  // ── 搜索状态 ──────────────────────────────────────────────────────────────
+  const [searchQuery, setSearchQuery] = createSignal('');
+  const [sourceFilter, setSourceFilter] = createSignal<KnowledgeSourceFilter>('all');
+  const [searchResults, setSearchResults] = createSignal<KnowledgeEntry[]>([]);
 
-    // 加载行为知识 + 健康报告
-    try {
-      const skillApi: SkillApiAdapter = {
-        listSkills: () => store.actions.listOpenworkSkills(),
-        getSkill: (name: string) => store.actions.getOpenworkSkill(name),
-        upsertSkill: (name: string, content: string, desc?: string) => store.actions.upsertOpenworkSkill(name, content, desc),
-      };
-      const items = await listBehaviorKnowledge(skillApi);
-      setBehaviorItems(items);
+  // ── 健康度 ────────────────────────────────────────────────────────────────
+  const [health, setHealth] = createSignal<KnowledgeHealthScore | null>(null);
+  const [healthLoading, setHealthLoading] = createSignal(false);
 
-      try {
-        const index = await buildKnowledgeIndex(workDir, skillApi);
-        const report = await checkKnowledgeHealth(workDir, index);
-        setHealthReport(report);
-      } catch {
-        // health check is best-effort
-      }
-    } catch {
-      // Skill API not available
-    }
-  });
+  // ── AI 任务对话框 ─────────────────────────────────────────────────────────
+  const [autopilotEntry, setAutopilotEntry] = createSignal<KnowledgeEntry | null>(null);
 
-  const filtered = () => knowledge().filter((item) => {
-    const matchCat = activeCategory() === 'all' || item.category === activeCategory();
-    const s = search().toLowerCase();
-    const matchSearch = !s
-      || item.title.toLowerCase().includes(s)
-      || item.content.toLowerCase().includes(s)
-      || item.tags.some((t) => t.toLowerCase().includes(s));
-    return matchCat && matchSearch;
-  });
-
-  const filteredBehavior = () => {
-    const s = search().toLowerCase();
-    if (!s) return behaviorItems();
-    return behaviorItems().filter(item =>
-      item.title.toLowerCase().includes(s)
-      || item.content.toLowerCase().includes(s)
-      || item.tags.some(t => t.toLowerCase().includes(s))
-    );
+  // ── 通知 toast ────────────────────────────────────────────────────────────
+  const [toast, setToast] = createSignal<string | null>(null);
+  let toastTimer: ReturnType<typeof setTimeout> | undefined;
+  const showToast = (msg: string) => {
+    setToast(msg);
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => setToast(null), 2500);
   };
 
-  const byCategory = (cat: KnowledgeCategory) => filtered().filter((i) => i.category === cat);
+  // ── SkillApiAdapter ───────────────────────────────────────────────────────
+  const skillApi: SkillApiAdapter = {
+    listSkills: () => actions.listOpenworkSkills(),
+    getSkill: (name) => actions.getOpenworkSkill(name),
+    upsertSkill: (name, content, desc) => actions.upsertOpenworkSkill(name, content, desc),
+  };
 
-  const pitfalls = () => byCategory('pitfall');
-  const insights = () => byCategory('user-insight');
-  const notes = () => byCategory('tech-note');
+  // ── 索引加载 ──────────────────────────────────────────────────────────────
+  const loadIndex = async (force = false) => {
+    const workDir = productStore.activeProduct()?.workDir;
+    if (!workDir) { setIndexLoading(false); return; }
 
-  const alertItems = () => knowledge().filter((i) => i.aiAlert);
+    setIndexLoading(true);
+    try {
+      // 尝试缓存
+      if (!force) {
+        const cached = await loadCachedIndex(workDir);
+        if (cached) {
+          applyIndex(cached);
+          setIndexLoading(false);
+          return;
+        }
+      }
+      const fresh = await buildKnowledgeIndex(workDir, skillApi);
+      applyIndex(fresh);
+    } catch (e) {
+      console.warn('[knowledge] index build failed', e);
+    } finally {
+      setIndexLoading(false);
+    }
+  };
 
-  const showCol = (cat: KnowledgeCategory) =>
-    activeCategory() === 'all' || activeCategory() === cat;
+  const applyIndex = (idx: KnowledgeIndex) => {
+    setIndex(idx);
+    setAllEntries(idx.entries);
+    setGroups(groupEntriesForTree(idx));
+  };
+
+  const handleRefresh = async () => {
+    const workDir = productStore.activeProduct()?.workDir;
+    if (!workDir) return;
+    invalidateKnowledgeCache();
+    await loadIndex(true);
+    // 健康度也刷新
+    if (index()) {
+      setHealthLoading(true);
+      checkKnowledgeHealth(workDir, index()!).then(setHealth).finally(() => setHealthLoading(false));
+    }
+  };
+
+  // ── 健康度检查 ────────────────────────────────────────────────────────────
+  createEffect(() => {
+    const idx = index();
+    const workDir = productStore.activeProduct()?.workDir;
+    if (!idx || !workDir) return;
+    setHealthLoading(true);
+    checkKnowledgeHealth(workDir, idx).then(setHealth).finally(() => setHealthLoading(false));
+  });
+
+  // ── 搜索 ──────────────────────────────────────────────────────────────────
+  createEffect(() => {
+    const q = searchQuery();
+    const idx = index();
+    if (!q.trim() || !idx) {
+      setSearchResults([]);
+      return;
+    }
+    const results = searchKnowledge(idx, { query: q }, 50);
+    setSearchResults(results);
+  });
+
+  // ── onMount ───────────────────────────────────────────────────────────────
+  onMount(() => { loadIndex(); });
+
+  // ── 显示的条目列表（搜索 or 全量） ────────────────────────────────────────
+  const displayEntries = () =>
+    searchQuery().trim() ? searchResults() : allEntries();
+
+  // ── 选中一个条目 ──────────────────────────────────────────────────────────
+  const handleSelect = (entry: KnowledgeEntry) => {
+    setSelectedEntry(entry);
+    setSearchQuery(''); // 选中后清除搜索
+  };
+
+  // ── AI 路径处理 ───────────────────────────────────────────────────────────
+  const handleSendToAI = (entry: KnowledgeEntry) => {
+    navigate('/solo/autopilot', { state: { preloadKnowledge: `[${entry.docType ?? entry.category}] ${entry.title}\n\n${entry.summary}` } });
+  };
+
+  const handleStartAutopilot = (entry: KnowledgeEntry) => {
+    setAutopilotEntry(entry);
+  };
+
+  const handleAutopilotConfirm = (prompt: string, entry: KnowledgeEntry) => {
+    setAutopilotEntry(null);
+    navigate('/solo/autopilot', { state: { goal: prompt, preloadKnowledge: `[${entry.docType ?? entry.category}] ${entry.title}\n\n${entry.summary}` } });
+  };
+
+  const handleCopyRef = (entry: KnowledgeEntry) => {
+    const ref = `[${entry.docType ?? entry.category}@${entry.layer ?? 'app'} ${entry.title}]`;
+    navigator.clipboard.writeText(ref).then(() => showToast('引用已复制')).catch(() => showToast(ref));
+  };
+
+  // ── 创建笔记（保留原有能力） ───────────────────────────────────────────────
+  const handleCreateNote = (_category: 'pitfall' | 'user-insight' | 'tech-note') => {
+    // TODO: 弹出创建笔记 Modal（复用原有逻辑，此处预留）
+    showToast('创建笔记功能即将上线');
+  };
 
   return (
-    <div style={{ background: themeColors.surface }}>
-      {/* Header */}
-      <div style={{ display: 'flex', 'justify-content': 'space-between', 'align-items': 'center', 'margin-bottom': '16px' }}>
-        <h2 style={{ margin: 0, 'font-size': '18px', 'font-weight': 600, color: themeColors.text, display: 'flex', 'align-items': 'center', gap: '8px' }}>
-          <span style={{ color: chartColors.primary }}>📚</span>
-          知识中心
-          <Show when={healthReport()}>
-            <HealthBadge score={healthReport()!.overall} />
-          </Show>
-        </h2>
-        <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
-          <span style={{ 'font-size': '12px', padding: '4px 8px', background: themeColors.hover, color: themeColors.textSecondary, 'border-radius': '9999px' }}>
-            {sourceTab() === 'private' ? knowledge().length : behaviorItems().length} 条记录
-          </span>
-          <button style={{ 'font-size': '12px', padding: '4px 12px', background: chartColors.primary, color: 'white', 'border-radius': '8px', border: 'none', cursor: 'pointer' }}>
-            + 添加笔记
-          </button>
-        </div>
-      </div>
+    <div style={{ display: 'flex', 'flex-direction': 'column', height: '100%', background: '#f8f9fa', overflow: 'hidden' }}>
 
-      {/* Source Tab Switcher */}
-      <div style={{ display: 'flex', gap: '4px', 'margin-bottom': '16px', padding: '4px', background: themeColors.hover, 'border-radius': '10px', width: 'fit-content' }}>
-        <button
-          style={{ padding: '6px 16px', 'font-size': '13px', 'border-radius': '8px', border: 'none', cursor: 'pointer', 'font-weight': sourceTab() === 'private' ? 600 : 400, background: sourceTab() === 'private' ? themeColors.surface : 'transparent', color: sourceTab() === 'private' ? themeColors.text : themeColors.textSecondary, 'box-shadow': sourceTab() === 'private' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none' }}
-          onClick={() => setSourceTab('private')}
-        >
-          📝 私有知识
-        </button>
-        <button
-          style={{ padding: '6px 16px', 'font-size': '13px', 'border-radius': '8px', border: 'none', cursor: 'pointer', 'font-weight': sourceTab() === 'behavior' ? 600 : 400, background: sourceTab() === 'behavior' ? themeColors.surface : 'transparent', color: sourceTab() === 'behavior' ? themeColors.text : themeColors.textSecondary, 'box-shadow': sourceTab() === 'behavior' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none' }}
-          onClick={() => setSourceTab('behavior')}
-        >
-          ✨ 行为知识 (Skill)
-        </button>
-      </div>
-
-      {/* Health Alerts: Promotion + Stale */}
-      <Show when={healthReport()}>
-        <PromotionAlert candidates={healthReport()!.promotionCandidates} />
-        <StaleWarning entries={healthReport()!.staleEntries} />
-      </Show>
-
-      {/* Contrast note */}
-      <Show when={sourceTab() === 'private'}>
-        <div style={{ padding: '12px', background: themeColors.warningBg, border: `1px solid ${themeColors.warningBorder}`, 'border-radius': '8px', 'margin-bottom': '16px', 'font-size': '12px', color: themeColors.warning }}>
-          <strong>💡 对比团队版：</strong> 团队版是五层组织知识树（公司/平台/产品线/领域/应用），解决多人知识不一致问题。独立版是个人第二大脑，核心价值是：<strong>AI 能引用这些知识辅助决策，并在类似场景主动提醒你。</strong>
-        </div>
-      </Show>
-
-      {/* AI Alert */}
-      <Show when={alertItems().length > 0}>
-        <div style={{ 'margin-bottom': '16px', padding: '14px', 'border-radius': '12px', border: `1px solid ${themeColors.warningBorder}`, background: themeColors.warningBg }}>
-          <div style={{ display: 'flex', 'align-items': 'flex-start', gap: '12px' }}>
-            <span style={{ color: themeColors.warning, 'font-size': '20px' }}>🤖</span>
-            <div>
-              <div style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text, 'margin-bottom': '4px' }}>AI 知识关联提醒</div>
-              <For each={alertItems()}>
-                {(item) => (
-                  <div style={{ 'font-size': '14px', color: themeColors.warning, padding: '2px 0' }}>
-                    · 检测到「{item.title}」与当前任务相关 —{' '}
-                    <span style={{ 'font-weight': 500 }}>{item.aiAlert}</span>
-                  </div>
-                )}
-              </For>
-            </div>
-          </div>
-        </div>
-      </Show>
-
-      {/* Search + Filter */}
-      <div style={{ display: 'flex', gap: '12px', 'margin-bottom': '16px' }}>
-        <div style={{ flex: 1, position: 'relative' }}>
-          <span style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: themeColors.textMuted }}>🔍</span>
-          <input
-            value={search()}
-            onInput={(e) => setSearch(e.currentTarget.value)}
-            placeholder="搜索知识库..."
-            style={{ width: '100%', 'padding-left': '36px', 'padding-right': '16px', padding: '8px 16px 8px 36px', border: `1px solid ${themeColors.border}`, 'border-radius': '12px', 'font-size': '14px', outline: 'none', background: themeColors.surface, color: themeColors.text, 'box-sizing': 'border-box' }}
+      {/* ── 顶部搜索 + 健康度 ─────────────────────────────────────────────── */}
+      <div style={{ display: 'flex', 'align-items': 'center', gap: '8px', 'flex-shrink': 0 }}>
+        <div style={{ flex: 1 }}>
+          <KnowledgeSearchBar
+            value={searchQuery()}
+            sourceFilter={sourceFilter()}
+            onSearch={setSearchQuery}
+            onSourceChange={setSourceFilter}
+            onClear={() => setSearchQuery('')}
+            totalCount={allEntries().length}
+            resultCount={searchResults().length}
           />
         </div>
-        <div style={{ display: 'flex', gap: '6px' }}>
-          <button
-            style={{ padding: '4px 12px', 'font-size': '12px', 'border-radius': '8px', border: `1px solid ${activeCategory() === 'all' ? chartColors.primary : themeColors.border}`, background: activeCategory() === 'all' ? chartColors.primary : themeColors.surface, color: activeCategory() === 'all' ? 'white' : themeColors.textSecondary, cursor: 'pointer' }}
-            onClick={() => setActiveCategory('all')}
+        <div style={{ padding: '0 12px', 'flex-shrink': 0 }}>
+          <KnowledgeHealthDashboard health={health()} loading={healthLoading()} />
+        </div>
+      </div>
+
+      {/* ── 三栏主体 ─────────────────────────────────────────────────────── */}
+      <div style={{ display: 'flex', flex: 1, overflow: 'hidden', 'min-height': 0 }}>
+
+        {/* 左侧：文档树 (240px) */}
+        <div style={{
+          width: '240px', 'flex-shrink': 0,
+          background: 'white', 'border-right': `1px solid ${themeColors.border}`,
+          display: 'flex', 'flex-direction': 'column', overflow: 'hidden',
+        }}>
+          <KnowledgeTreeNav
+            groups={groups()}
+            selectedId={selectedEntry()?.id ?? null}
+            loading={indexLoading()}
+            onSelect={handleSelect}
+            onCreateNote={handleCreateNote}
+            onRefresh={handleRefresh}
+          />
+        </div>
+
+        {/* 中央：阅读器 or 网格 (flex-1) */}
+        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', 'flex-direction': 'column', 'min-width': 0 }}>
+          <Show
+            when={selectedEntry()}
+            fallback={
+              <KnowledgeGridView
+                entries={displayEntries()}
+                sourceFilter={sourceFilter()}
+                onSelect={handleSelect}
+                onSendToAI={handleSendToAI}
+              />
+            }
           >
-            全部
-          </button>
-          <For each={Object.keys(categoryConfig) as KnowledgeCategory[]}>
-            {(cat) => (
-              <button
-                style={{ padding: '4px 12px', 'font-size': '12px', 'border-radius': '8px', border: `1px solid ${activeCategory() === cat ? chartColors.primary : themeColors.border}`, background: activeCategory() === cat ? chartColors.primary : themeColors.surface, color: activeCategory() === cat ? 'white' : themeColors.textSecondary, cursor: 'pointer' }}
-                onClick={() => setActiveCategory(cat)}
-              >
-                {categoryConfig[cat].icon} {categoryConfig[cat].label}
-              </button>
-            )}
-          </For>
+            <KnowledgeDocViewer
+              entry={selectedEntry()!}
+              workDir={productStore.activeProduct()?.workDir ?? ''}
+              allEntries={allEntries()}
+              onNavigate={(id) => {
+                const e = allEntries().find((x) => x.id === id);
+                if (e) setSelectedEntry(e);
+              }}
+              onBack={() => setSelectedEntry(null)}
+            />
+          </Show>
+        </div>
+
+        {/* 右侧：关联面板 (280px) */}
+        <div style={{
+          width: '260px', 'flex-shrink': 0,
+          background: 'white', 'border-left': `1px solid ${themeColors.border}`,
+          overflow: 'hidden',
+        }}>
+          <DocRelationPanel
+            entry={selectedEntry()}
+            allEntries={allEntries()}
+            onNavigate={(id) => {
+              const e = allEntries().find((x) => x.id === id);
+              if (e) setSelectedEntry(e);
+            }}
+            onSendToAI={handleSendToAI}
+            onStartAutopilot={handleStartAutopilot}
+            onCopyRef={handleCopyRef}
+          />
         </div>
       </div>
 
-      {/* Empty State */}
-      <Show when={filtered().length === 0}>
-        <div style={{ 'text-align': 'center', padding: '64px 0', color: themeColors.textMuted }}>
-          <div style={{ 'font-size': '48px', 'margin-bottom': '12px' }}>📭</div>
-          <div>没有找到匹配的记录</div>
+      {/* ── Toast 通知 ──────────────────────────────────────────────────── */}
+      <Show when={toast()}>
+        <div style={{
+          position: 'fixed', bottom: '24px', left: '50%', transform: 'translateX(-50%)',
+          background: '#1f2937', color: 'white', padding: '8px 16px', 'border-radius': '8px',
+          'font-size': '13px', 'z-index': 9999, 'box-shadow': '0 4px 12px rgba(0,0,0,0.2)',
+        }}>
+          {toast()}
         </div>
       </Show>
 
-      {/* Three columns - Private Knowledge */}
-      <Show when={sourceTab() === 'private' && filtered().length > 0}>
-        <div style={{ display: 'grid', 'grid-template-columns': 'repeat(3, 1fr)', gap: '16px' }}>
-          <Show when={showCol('pitfall') && pitfalls().length > 0}>
-            <div>
-              <div style={{ display: 'flex', 'align-items': 'center', gap: '8px', 'margin-bottom': '12px', padding: '8px 12px', 'border-radius': '8px', border: `1px solid ${categoryConfig.pitfall.border}`, background: categoryConfig.pitfall.bg }}>
-                <span>⚠️</span>
-                <span style={{ 'font-weight': 600, 'font-size': '14px', color: categoryConfig.pitfall.color }}>踩过的坑</span>
-                <span style={{ 'margin-left': 'auto', 'font-size': '12px', padding: '1px 6px', background: categoryConfig.pitfall.badgeBg, color: 'white', 'border-radius': '9999px' }}>{pitfalls().length}</span>
-              </div>
-              <For each={pitfalls()}>
-                {(item) => <KnowledgeCard item={item} />}
-              </For>
-              <button style={{ width: '100%', padding: '8px', border: `2px dashed ${themeColors.border}`, 'border-radius': '8px', 'font-size': '14px', color: themeColors.textMuted, background: 'transparent', cursor: 'pointer' }}>
-                + 记录新踩坑
-              </button>
-            </div>
-          </Show>
-
-          <Show when={showCol('user-insight') && insights().length > 0}>
-            <div>
-              <div style={{ display: 'flex', 'align-items': 'center', gap: '8px', 'margin-bottom': '12px', padding: '8px 12px', 'border-radius': '8px', border: `1px solid ${categoryConfig['user-insight'].border}`, background: categoryConfig['user-insight'].bg }}>
-                <span>👤</span>
-                <span style={{ 'font-weight': 600, 'font-size': '14px', color: categoryConfig['user-insight'].color }}>用户洞察</span>
-                <span style={{ 'margin-left': 'auto', 'font-size': '12px', padding: '1px 6px', background: categoryConfig['user-insight'].badgeBg, color: 'white', 'border-radius': '9999px' }}>{insights().length}</span>
-              </div>
-              <For each={insights()}>
-                {(item) => <KnowledgeCard item={item} />}
-              </For>
-              <button style={{ width: '100%', padding: '8px', border: `2px dashed ${themeColors.border}`, 'border-radius': '8px', 'font-size': '14px', color: themeColors.textMuted, background: 'transparent', cursor: 'pointer' }}>
-                + 记录用户洞察
-              </button>
-            </div>
-          </Show>
-
-          <Show when={showCol('tech-note') && notes().length > 0}>
-            <div>
-              <div style={{ display: 'flex', 'align-items': 'center', gap: '8px', 'margin-bottom': '12px', padding: '8px 12px', 'border-radius': '8px', border: `1px solid ${categoryConfig['tech-note'].border}`, background: categoryConfig['tech-note'].bg }}>
-                <span>💻</span>
-                <span style={{ 'font-weight': 600, 'font-size': '14px', color: categoryConfig['tech-note'].color }}>技术笔记</span>
-                <span style={{ 'margin-left': 'auto', 'font-size': '12px', padding: '1px 6px', background: categoryConfig['tech-note'].badgeBg, color: 'white', 'border-radius': '9999px' }}>{notes().length}</span>
-              </div>
-              <For each={notes()}>
-                {(item) => <KnowledgeCard item={item} />}
-              </For>
-              <button style={{ width: '100%', padding: '8px', border: `2px dashed ${themeColors.border}`, 'border-radius': '8px', 'font-size': '14px', color: themeColors.textMuted, background: 'transparent', cursor: 'pointer' }}>
-                + 记录技术笔记
-              </button>
-            </div>
-          </Show>
-        </div>
+      {/* ── Autopilot 快速任务对话框 ────────────────────────────────────── */}
+      <Show when={autopilotEntry()}>
+        <QuickAITaskDialog
+          entry={autopilotEntry()!}
+          onConfirm={handleAutopilotConfirm}
+          onClose={() => setAutopilotEntry(null)}
+        />
       </Show>
 
-      {/* Behavior Knowledge List */}
-      <Show when={sourceTab() === 'behavior'}>
-        <Show when={filteredBehavior().length === 0}>
-          <div style={{ 'text-align': 'center', padding: '64px 0', color: themeColors.textMuted }}>
-            <div style={{ 'font-size': '48px', 'margin-bottom': '12px' }}>✨</div>
-            <div>暂无行为知识（Skill）</div>
-            <p style={{ 'font-size': '12px', color: themeColors.textMuted, 'margin-top': '8px' }}>
-              Agent 执行后会自动提取可复用的知识并存储为 Skill，或者私有知识被多次引用后会建议晃升。
-            </p>
-          </div>
-        </Show>
-        <Show when={filteredBehavior().length > 0}>
-          <div style={{ display: 'grid', 'grid-template-columns': 'repeat(2, 1fr)', gap: '16px' }}>
-            <For each={filteredBehavior()}>
-              {(item) => <BehaviorKnowledgeCard item={item} />}
-            </For>
-          </div>
-        </Show>
-      </Show>
-
-      {/* Glossary Consistency Issues */}
-      <Show when={healthReport() && healthReport()!.consistency.glossaryIssues.length > 0}>
-        <div style={{ 'margin-top': '16px', padding: '14px', 'border-radius': '12px', border: `1px solid ${themeColors.warningBorder}`, background: themeColors.warningBg }}>
-          <div style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text, 'margin-bottom': '4px' }}>🔍 术语一致性问题</div>
-          <For each={healthReport()!.consistency.glossaryIssues}>
-            {(issue) => (
-              <div style={{ 'font-size': '12px', color: themeColors.warning, padding: '2px 0' }}>
-                · 术语「{issue.term}」在 {issue.conflictingEntries.length} 个文档中存在不同定义
-              </div>
-            )}
-          </For>
-        </div>
-      </Show>
-      <div style={{ 'margin-top': '16px', padding: '16px', 'border-radius': '12px', border: `1px solid ${themeColors.primaryBorder}`, background: themeColors.primaryBg }}>
-        <div style={{ display: 'flex', 'align-items': 'flex-start', gap: '12px' }}>
-          <span style={{ color: chartColors.primary, 'font-size': '20px' }}>💡</span>
-          <div>
-            <div style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text, 'margin-bottom': '4px' }}>知识中心如何帮助 AI 做得更好</div>
-            <p style={{ 'font-size': '12px', color: themeColors.textSecondary, margin: 0, 'line-height': '1.6' }}>
-              每条知识都会被 AI 虚拟团队自动检索并引用。私有知识被引用超过 5 次会建议晃升为行为知识（Skill），让全局复用。超过 90 天未更新且无引用的知识会被标记为过期，可更新或废弃。
-            </p>
-          </div>
-        </div>
-      </div>
     </div>
   );
 };

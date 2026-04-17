@@ -17,6 +17,15 @@ import {
 } from './file-store';
 import { discoverAgents } from './agent-registry';
 
+// ─── Helper functions ─────────────────────────────────────────────
+
+const normalizeSentence = (value: string) => {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  if (/[.!?]$/.test(trimmed)) return trimmed;
+  return `${trimmed}.`;
+};
+
 // ─── 类型定义 ─────────────────────────────────────────────────
 
 /**
@@ -205,11 +214,17 @@ export async function createScheduledTask(
   }
 
   // 构建 opencode-scheduler prompt（让调用方通过 session 发送）
-  const promptParts = [`Schedule a job named "${input.name}" with cron "${input.cron}"`];
-  if (input.prompt) promptParts.push(`to ${input.prompt}`);
-  if (input.agentId) promptParts.push(`Run with agent ${input.agentId}.`);
-  if (workDir) promptParts.push(`Run from ${workDir}.`);
-  const schedulerPrompt = isTauriRuntime() ? promptParts.join(' ') : undefined;
+  // 格式遵循 automations.ts 的 buildCreateAutomationPrompt 约定
+  let schedulerPrompt: string | undefined;
+  if (isTauriRuntime()) {
+    const name = input.name.trim();
+    const cron = input.cron.trim();
+    const prompt = normalizeSentence(input.prompt);
+    const workdir = (workDir ?? "").trim();
+    const nameSegment = name ? ` named "${name}"` : "";
+    const workdirSegment = workdir ? ` Run from ${workdir}.` : "";
+    schedulerPrompt = `Schedule a job${nameSegment} with cron "${cron}" to ${prompt}${workdirSegment}`.trim();
+  }
 
   return { task, schedulerPrompt };
 }

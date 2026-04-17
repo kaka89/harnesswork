@@ -1,0 +1,463 @@
+/**
+ * Team Session Orchestrator
+ *
+ * 核心编排器：为 Orchestrator 和每个 Agent 创建真实 OpenWork Session，
+ * 通过 createMessageAccumulator 订阅每个 Session 的 SSE 流，
+ * 对外暴露响应式的 TeamRunState。
+ */
+
+import { createSignal, createEffect, Accessor, batch } from 'solid-js';
+import { createStore, produce } from 'solid-js/store';
+import type { Client, MessageWithParts, PendingPermission, PendingQuestion, ModelRef } from '../../types';
+import type { Session } from '@opencode-ai/sdk/v2/client';
+import { createMessageAccumulator, type MessageAccumulator } from './message-accumulator';
+import { parseDispatchPlan, type DispatchItem, type AutopilotAgent, type AgentExecutionStatus } from './autopilot-executor';
+import type { SkillApiAdapter } from './knowledge-behavior';
+
+export interface AgentSessionSlot {
+  agentId: string;
+  sessionId: string;
+  status: () => AgentExecutionStatus;
+  /** OpenWork Session 对象（从 store 读取） */
+  session: () => Session | null;
+  /** 该 Session 的所有消息（live，响应式） */
+  messages: () => MessageWithParts[];
+  /** 该 Session 当前是否有待处理的权限请求 */
+  pendingPermission: () => PendingPermission | null;
+  /** 该 Session 当前是否有待处理的提问 */
+  pendingQuestion: () => PendingQuestion | null;
+  /** 该 Session 是否正在 streaming */
+  isStreaming: () => boolean;
+  /** 内部累积器（用于清理） */
+  _accumulator: MessageAccumulator;
+}
+
+export interface TeamRunState {
+  orchestratorSessionId: string | null;
+  agentSlots: Map<string, AgentSessionSlot>;
+  activeTabId: string; // 'orchestrator' | agentId
+  isRunning: boolean;
+  dispatchPlan: DispatchItem[] | null;
+}
+
+export interface TeamSessionOrchestrator {
+  state: Accessor<TeamRunState>;
+
+  /** 发起一次团队执行（Orchestrator → 并行 Agents） */
+  run(goal: string): Promise<void>;
+
+  /** 在指定 Agent 的 Session 中追加消息（多轮对话） */
+  sendTo(agentId: string, message: string): Promise<void>;
+
+  /** 直接派发给特定 Agent（@mention bypass） */
+  runDirect(agentId: string, task: string): Promise<void>;
+
+  /** 取消当前运行 */
+  abort(): void;
+
+  /** 切换活动 tab */
+  setActiveTab(tabId: string): void;
+
+  /** 获取当前活动的 Agent Session Slot */
+  getActiveSlot(): AgentSessionSlot | null;
+
+  /** 回复某个 Agent Session 的权限申请 */
+  replyPermission(agentId: string, permissionId: string, action: 'once' | 'always' | 'reject'): void;
+
+  /** 回复某个 Agent Session 的提问 */
+  replyQuestion(agentId: string, requestId: string, answers: string[][]): void;
+
+  /** 跨 Session 查询（支持嵌套 task 线程） */
+  getSessionById(id: string | null): Session | null;
+  getMessagesBySessionId(id: string | null): MessageWithParts[];
+  ensureSessionLoaded(id: string): Promise<void>;
+  sessionLoadingById(id: string | null): boolean;
+}
+
+export interface TeamSessionOrchestratorOptions {
+  client: () => ReturnType<typeof import('../../lib/opencode').createClient> | null;
+  workspaceId: () => string | null;
+  workDir: () => string;
+  availableAgents: AutopilotAgent[];
+  model: () => ModelRef | null;
+  skillApi: SkillApiAdapter | null;
+}
+
+export function createTeamSessionOrchestrator(opts: TeamSessionOrchestratorOptions): TeamSessionOrchestrator {
+  const [state, setState] = createStore<TeamRunState>({
+    orchestratorSessionId: null,
+    agentSlots: new Map(),
+    activeTabId: 'orchestrator',
+    isRunning: false,
+    dispatchPlan: null,
+  });
+
+  // 存储每个 Session 的权限和提问状态
+  const [pendingPermissionsBySession, setPendingPermissionsBySession] = createSignal<
+    Record<string, PendingPermission | null>
+  >({});
+  const [pendingQuestionsBySession, setPendingQuestionsBySession] = createSignal<
+    Record<string, PendingQuestion | null>
+  >({});
+
+  // Session 缓存（用于跨 Session 查询）
+  const [sessionCache, setSessionCache] = createSignal<Record<string, Session>>({});
+  const [sessionLoadingSet, setSessionLoadingSet] = createSignal<Set<string>>(new Set());
+
+  let orchestratorAccumulator: MessageAccumulator | null = null;
+
+  /**
+   * 创建 Orchestrator Session 并订阅
+   */
+  async function createOrchestratorSession(goal: string): Promise<string | null> {
+    const client = opts.client();
+    const workspaceId = opts.workspaceId();
+    if (!client || !workspaceId) return null;
+
+    try {
+      const result = await client.session.create({
+        directory: opts.workDir(),
+      });
+
+      if (!result.data) return null;
+      const session = result.data;
+
+      // 创建消息累积器
+      orchestratorAccumulator = createMessageAccumulator({
+        client: opts.client,
+        sessionId: () => session.id,
+        onPermissionAsked: (p) => {
+          setPendingPermissionsBySession((prev) => ({ ...prev, [session.id]: p }));
+        },
+        onQuestionAsked: (q) => {
+          setPendingQuestionsBySession((prev) => ({ ...prev, [session.id]: q }));
+        },
+      });
+
+      // 发送 prompt
+      await (client.session as any).promptAsync({
+        sessionID: session.id,
+        directory: opts.workDir(),
+        parts: [{ type: 'text', text: goal }],
+      });
+
+      setState('orchestratorSessionId', session.id);
+      setSessionCache((prev) => ({ ...prev, [session.id]: session }));
+
+      return session.id;
+    } catch (err) {
+      console.error('[team-orchestrator] Failed to create orchestrator session:', err);
+      return null;
+    }
+  }
+
+  /**
+   * 为指定 Agent 创建 Session 并订阅
+   */
+  async function createAgentSession(
+    agentId: string,
+    task: string,
+    agentDef: AutopilotAgent,
+  ): Promise<AgentSessionSlot | null> {
+    const client = opts.client();
+    const workspaceId = opts.workspaceId();
+    if (!client || !workspaceId) return null;
+
+    try {
+      const result = await client.session.create({
+        directory: opts.workDir(),
+      });
+
+      if (!result.data) return null;
+      const session = result.data;
+
+      const [status, setStatus] = createSignal<AgentExecutionStatus>('pending');
+
+      const accumulator = createMessageAccumulator({
+        client: opts.client,
+        sessionId: () => session.id,
+        onPermissionAsked: (p) => {
+          setPendingPermissionsBySession((prev) => ({ ...prev, [session.id]: p }));
+        },
+        onQuestionAsked: (q) => {
+          setPendingQuestionsBySession((prev) => ({ ...prev, [session.id]: q }));
+        },
+      });
+
+      // 监听 streaming 状态变化
+      createEffect(() => {
+        if (accumulator.isStreaming()) {
+          setStatus('working');
+        } else {
+          const msgs = accumulator.messages();
+          if (msgs.length > 0) {
+            setStatus('done');
+          }
+        }
+      });
+
+      const slot: AgentSessionSlot = {
+        agentId,
+        sessionId: session.id,
+        status: () => status(),
+        session: () => sessionCache()[session.id] ?? null,
+        messages: accumulator.messages,
+        pendingPermission: () => pendingPermissionsBySession()[session.id] ?? null,
+        pendingQuestion: () => pendingQuestionsBySession()[session.id] ?? null,
+        isStreaming: accumulator.isStreaming,
+        _accumulator: accumulator,
+      };
+
+      setSessionCache((prev) => ({ ...prev, [session.id]: session }));
+
+      // 发送任务
+      await (client.session as any).promptAsync({
+        sessionID: session.id,
+        directory: opts.workDir(),
+        parts: [{ type: 'text', text: task }],
+      });
+
+      setStatus('thinking');
+
+      return slot;
+    } catch (err) {
+      console.error(`[team-orchestrator] Failed to create agent session for ${agentId}:`, err);
+      return null;
+    }
+  }
+
+  /**
+   * 发起一次团队执行
+   */
+  async function run(goal: string): Promise<void> {
+    setState('isRunning', true);
+    setState('dispatchPlan', null);
+
+    // 清理旧的 slots
+    const oldSlots = state.agentSlots;
+    oldSlots.forEach((slot) => slot._accumulator.cleanup());
+    setState('agentSlots', new Map());
+
+    // Phase 1: 创建 Orchestrator Session
+    const orchestratorSessionId = await createOrchestratorSession(goal);
+    if (!orchestratorSessionId) {
+      setState('isRunning', false);
+      return;
+    }
+
+    // 等待 Orchestrator 输出完成并解析 dispatch plan
+    await new Promise<void>((resolve) => {
+      const checkInterval = setInterval(() => {
+        if (!orchestratorAccumulator) return;
+        if (orchestratorAccumulator.isStreaming()) return;
+
+        clearInterval(checkInterval);
+
+        const messages = orchestratorAccumulator.messages();
+        const lastMsg = messages[messages.length - 1];
+        if (!lastMsg) {
+          resolve();
+          return;
+        }
+
+        // 提取文本内容
+        const textParts = lastMsg.parts.filter((p) => p.type === 'text');
+        const fullText = textParts.map((p) => (p as { text?: string }).text ?? '').join('');
+
+        const plan = parseDispatchPlan(fullText);
+        setState('dispatchPlan', plan);
+
+        if (plan.length === 0) {
+          setState('isRunning', false);
+          resolve();
+          return;
+        }
+
+        // Phase 2: 并发创建各 Agent Session
+        Promise.all(
+          plan.map(async ({ agentId, task }) => {
+            const agentDef = opts.availableAgents.find((a) => a.id === agentId);
+            if (!agentDef) return null;
+            return createAgentSession(agentId, task, agentDef);
+          }),
+        ).then((slots) => {
+          const newSlots = new Map<string, AgentSessionSlot>();
+          slots.forEach((slot) => {
+            if (slot) newSlots.set(slot.agentId, slot);
+          });
+          setState('agentSlots', newSlots);
+          setState('isRunning', false);
+          resolve();
+        });
+      }, 200);
+    });
+  }
+
+  /**
+   * 在指定 Agent 的 Session 中追加消息
+   */
+  async function sendTo(agentId: string, message: string): Promise<void> {
+    const slot = state.agentSlots.get(agentId);
+    if (!slot) return;
+
+    const client = opts.client();
+    if (!client) return;
+
+    await (client.session as any).promptAsync({
+      sessionID: slot.sessionId,
+      directory: opts.workDir(),
+      parts: [{ type: 'text', text: message }],
+    });
+  }
+
+  /**
+   * 直接派发给特定 Agent（@mention bypass）
+   */
+  async function runDirect(agentId: string, task: string): Promise<void> {
+    const agentDef = opts.availableAgents.find((a) => a.id === agentId);
+    if (!agentDef) return;
+
+    setState('isRunning', true);
+
+    const slot = await createAgentSession(agentId, task, agentDef);
+    if (slot) {
+      setState(
+        produce((s) => {
+          s.agentSlots.set(agentId, slot);
+        }),
+      );
+      setState('activeTabId', agentId);
+    }
+
+    setState('isRunning', false);
+  }
+
+  /**
+   * 取消当前运行
+   */
+  function abort(): void {
+    // TODO: 调用 client.session.abort() 取消各 Session
+    setState('isRunning', false);
+  }
+
+  /**
+   * 切换活动 tab
+   */
+  function setActiveTab(tabId: string): void {
+    setState('activeTabId', tabId);
+  }
+
+  /**
+   * 回复权限申请
+   */
+  function replyPermission(agentId: string, permissionId: string, action: 'once' | 'always' | 'reject'): void {
+    const slot = state.agentSlots.get(agentId);
+    if (!slot) return;
+
+    const client = opts.client();
+    if (!client) return;
+
+    client.permission.reply({
+      requestID: permissionId,
+      reply: action,
+    });
+
+    setPendingPermissionsBySession((prev) => ({ ...prev, [slot.sessionId]: null }));
+  }
+
+  /**
+   * 回复提问
+   */
+  function replyQuestion(agentId: string, requestId: string, answers: string[][]): void {
+    const slot = state.agentSlots.get(agentId);
+    if (!slot) return;
+
+    const client = opts.client();
+    if (!client) return;
+
+    client.question.reply({
+      requestID: requestId,
+      answers,
+    });
+
+    setPendingQuestionsBySession((prev) => ({ ...prev, [slot.sessionId]: null }));
+  }
+
+  /**
+   * 跨 Session 查询
+   */
+  function getSessionById(id: string | null): Session | null {
+    if (!id) return null;
+    return sessionCache()[id] ?? null;
+  }
+
+  function getMessagesBySessionId(id: string | null): MessageWithParts[] {
+    if (!id) return [];
+
+    // 检查 orchestrator
+    if (state.orchestratorSessionId === id && orchestratorAccumulator) {
+      return orchestratorAccumulator.messages();
+    }
+
+    // 检查各 agent slots
+    for (const [, slot] of state.agentSlots) {
+      if (slot.sessionId === id) {
+        return slot.messages();
+      }
+    }
+
+    return [];
+  }
+
+  async function ensureSessionLoaded(id: string): Promise<void> {
+    if (sessionCache()[id]) return;
+    if (sessionLoadingSet().has(id)) return;
+
+    setSessionLoadingSet((prev) => new Set(prev).add(id));
+
+    const client = opts.client();
+    if (!client) return;
+
+    try {
+      const result = await client.session.get({ sessionID: id });
+      if (result.data) {
+        setSessionCache((prev) => ({ ...prev, [id]: result.data! }));
+      }
+    } catch (err) {
+      console.error(`[team-orchestrator] Failed to load session ${id}:`, err);
+    } finally {
+      setSessionLoadingSet((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  }
+
+  function sessionLoadingById(id: string | null): boolean {
+    if (!id) return false;
+    return sessionLoadingSet().has(id);
+  }
+
+  function getActiveSlot(): AgentSessionSlot | null {
+    const activeId = state.activeTabId;
+    if (activeId === 'orchestrator') return null;
+    return state.agentSlots.get(activeId) ?? null;
+  }
+
+  return {
+    state: () => state,
+    run,
+    sendTo,
+    runDirect,
+    abort,
+    setActiveTab,
+    getActiveSlot,
+    replyPermission,
+    replyQuestion,
+    getSessionById,
+    getMessagesBySessionId,
+    ensureSessionLoaded,
+    sessionLoadingById,
+  };
+}

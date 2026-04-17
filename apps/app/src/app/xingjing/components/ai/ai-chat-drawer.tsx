@@ -1192,13 +1192,15 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
               <DrawerMentionInput
                 value={input()}
                 onChange={setInput}
-                disabled={loading()}
+                disabled={loading() || props.openworkStatus === 'disconnected'}
                 placeholder={
-                  loading()
-                    ? 'AI 正在回复中...'
-                    : dispatchMode()
-                      ? '描述你的目标，Agent 将并行执行...'
-                      : '问我任何问题，或输入 @ 召唤 Agent...'
+                  props.openworkStatus === 'disconnected'
+                    ? 'OpenWork 服务未连接，AI 功能暂不可用'
+                    : loading()
+                      ? 'AI 正在回复中...'
+                      : dispatchMode()
+                        ? '描述你的目标，Agent 将并行执行...'
+                        : '问我任何问题，或输入 @ 召唤 Agent...'
                 }
                 agents={agents()}
                 onSubmit={handleSend}
@@ -1206,7 +1208,7 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
               />
               <button
                 onClick={handleSend}
-                disabled={loading() || !input().trim()}
+                disabled={loading() || !input().trim() || props.openworkStatus === 'disconnected'}
                 class={`flex-shrink-0 rounded-lg px-3 py-2 text-sm transition-colors text-white disabled:opacity-50 ${accentBg()}`}
               >
                 <Show when={loading()} fallback="→">

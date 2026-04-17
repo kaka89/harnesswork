@@ -13,12 +13,8 @@ import { createClient } from '../../lib/opencode';
 // ─── Client 管理（OpenWork 注入）────────────────────────────────────────────
 
 let _sharedClient: ReturnType<typeof createClient> | null = null;
-let _fallbackClient: ReturnType<typeof createClient> | null = null;
 let _baseUrl = 'http://127.0.0.1:4096';
 let _directory = '';
-
-/** 当 OpenWork 注入的 SDK 客户端不可用时，裸 fetch 兜底到默认端口 */
-const FALLBACK_OPENCODE_URL = 'http://127.0.0.1:4096';
 
 // ─── OpenWork 文件操作注入 ─────────────────────────────────────────
 
@@ -30,12 +26,10 @@ let _workspaceId: string | null = null;
 
 /**
  * 由 app-store 在初始化后注入 shared client。
- * 优先返回此 client，避免维护独立单例。
+ * 星静完全依赖 OpenWork 的 client 管理，不再维护独立的 fallback 逻辑。
  */
 export function setSharedClient(client: ReturnType<typeof createClient> | null) {
   _sharedClient = client;
-  // 注入新 client 时，清除兜底缓存，避免后续误用旧兜底实例
-  _fallbackClient = null;
 }
 
 /**
@@ -85,17 +79,28 @@ export function setWorkingDirectory(directory: string, baseUrl?: string) {
 
 /**
  * 获取 OpenCode Client（来自 OpenWork 注入的统一实例）。
- * OpenWork 未连接时自动使用本地 OpenCode 地址兜底（独立版场景）。
+ *
+ * ⚠️ 重要：此函数要求在 OpenWork 环境中运行。
+ * 如果 client 未注入，说明：
+ * 1. OpenWork 尚未完成初始化（等待 workspaceStore 就绪）
+ * 2. OpenCode 服务未启动（检查 OpenWork 连接状态）
+ * 3. 配置错误（检查 app-store 的 setSharedClient 调用）
  */
 export function getXingjingClient(): ReturnType<typeof createClient> {
-  if (_sharedClient) return _sharedClient;
-  // 兜底：独立版场景下 OpenWork 未连接，直接使用本地 OpenCode
-  if (!_fallbackClient) {
-    const fallbackUrl = _baseUrl || FALLBACK_OPENCODE_URL;
-    console.warn('[xingjing] OpenWork Client 未注入，使用本地兜底地址:', fallbackUrl);
-    _fallbackClient = createClient(fallbackUrl);
+  if (!_sharedClient) {
+    throw new Error(
+      '[xingjing] OpenCode Client 未初始化。' +
+      '请确保：1) 在 OpenWork 环境中运行；2) OpenCode 服务已启动；3) workspaceStore 已就绪。'
+    );
   }
-  return _fallbackClient;
+  return _sharedClient;
+}
+
+/**
+ * 检查 client 是否已就绪（用于 UI 条件渲染）
+ */
+export function isClientReady(): boolean {
+  return _sharedClient !== null;
 }
 
 // ─── 文件 API ───────────────────────────────────────────────────────────────
@@ -134,7 +139,7 @@ export async function fileList(
 
   // 2. 兜底：裸 fetch 到默认 OpenCode 端口
   try {
-    const url = new URL('/file', FALLBACK_OPENCODE_URL);
+    const url = new URL('/file', _baseUrl);
     url.searchParams.set('path', path);
     const dir = directory ?? (_directory || '');
     if (dir) url.searchParams.set('directory', dir);
@@ -188,7 +193,7 @@ export async function fileRead(
 
   // 2. 兜底：裸 fetch 到默认 OpenCode 端口
   try {
-    const url = new URL('/file/content', FALLBACK_OPENCODE_URL);
+    const url = new URL('/file/content', _baseUrl);
     url.searchParams.set('path', path);
     const dir = directory ?? (_directory || '');
     if (dir) url.searchParams.set('directory', dir);

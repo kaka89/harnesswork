@@ -45,7 +45,7 @@ import {
   type AutopilotAgent,
   type AgentExecutionStatus,
 } from '../../../services/autopilot-executor';
-import { callAgent } from '../../../services/opencode-client';
+import { callAgent, isClientReady } from '../../../services/opencode-client';
 import ArtifactWorkspace, {
   type ArtifactItem,
   detectArtifactFormat,
@@ -554,6 +554,10 @@ const SoloAutopilot = () => {
   const { state, productStore, actions, resolvedWorkspaceId, openworkCtx } = useAppStore();
   const navigate = useNavigate();
   const soloProducts = () => productStore.products().filter((p) => (p.productType ?? 'solo') === 'solo');
+
+  // ── OpenCode Client 就绪状态（防止 client 未注入时调用 AI 功能）──────────────
+  const [clientReady, setClientReady] = createSignal(isClientReady());
+  createEffect(() => { setClientReady(isClientReady()); });
 
   // ── 基础状态 ────────────────────────────────────────────────────────────────
   const [createModalOpen, setCreateModalOpen] = createSignal(false);
@@ -1166,6 +1170,20 @@ const SoloAutopilot = () => {
   const quickSamples = () => chatMode() === 'chat' ? CHAT_SAMPLES : DISPATCH_SAMPLES;
 
   return (
+    <Show
+      when={clientReady()}
+      fallback={
+        <div style={{
+          display: 'flex', 'flex-direction': 'column', 'align-items': 'center',
+          'justify-content': 'center', height: '100%', gap: '12px',
+          background: themeColors.bg,
+        }}>
+          <Loader2 size={32} style={{ animation: 'spin 1s linear infinite', color: chartColors.primary }} />
+          <div style={{ 'font-size': '14px', color: themeColors.text }}>正在连接 OpenCode 服务...</div>
+          <div style={{ 'font-size': '12px', color: themeColors.textMuted }}>请确保 OpenWork 已启动并选择了工作区</div>
+        </div>
+      }
+    >
     <div style={{ display: 'flex', 'align-items': 'stretch', width: '100%', height: '100%', overflow: 'hidden', gap: '8px' }}>
 
       {/* ── 历史侧边栏 ── */}
@@ -1798,6 +1816,7 @@ const SoloAutopilot = () => {
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
       `}</style>
     </div>
+    </Show>
   );
 };
 

@@ -215,6 +215,13 @@ export const AppStoreProvider: ParentComponent<{
   createEffect(() => {
     const client = props.openworkCtx?.opencodeClient?.();
     setSharedClient(client ?? null);
+
+    // 诊断日志
+    if (client) {
+      console.log('[xingjing] OpenWork Client 已注入，星静 AI 功能可用');
+    } else {
+      console.warn('[xingjing] OpenWork Client 未就绪，星静 AI 功能将受限。请确保 OpenWork 已启动并选择了工作区。');
+    }
   });
 
   // ── 注入 OpenWork 文件操作能力 ──

@@ -104,10 +104,21 @@ function normalizeDirGraph(raw: Record<string, unknown>): DirGraphConfig {
   const rawDocTypes = (raw['doc-types'] ?? raw['docTypes'] ?? {}) as Record<string, Record<string, unknown>>;
   const docTypes: DirGraphConfig['docTypes'] = {};
   for (const [key, def] of Object.entries(rawDocTypes)) {
+    // 兼容 location（单数字符串）和 locations（复数数组）两种写法
+    let locations: string[];
+    if (Array.isArray(def['locations'])) {
+      locations = def['locations'].map(String);
+    } else if (typeof def['location'] === 'string') {
+      locations = [def['location']];
+    } else if (typeof def['locations'] === 'string') {
+      locations = [def['locations']];
+    } else {
+      locations = [];
+    }
     docTypes[key] = {
       category: (def['category'] ?? 'baseline') as 'baseline' | 'process-delivery' | 'process-research',
       naming: String(def['naming'] ?? ''),
-      locations: Array.isArray(def['locations']) ? def['locations'].map(String) : [],
+      locations,
       owner: String(def['owner'] ?? ''),
       upstream: Array.isArray(def['upstream']) ? def['upstream'].map(String) : undefined,
       downstream: Array.isArray(def['downstream']) ? def['downstream'].map(String) : undefined,
@@ -160,25 +171,86 @@ async function scanDocType(
 
   for (const location of docTypeDef.locations) {
     const resolvedPath = resolvePathVars(location, dirGraph.pathVars);
-    const fullPath = `${workDir}/${resolvedPath}`;
 
-    // 台账优先：检查 _index.yaml 是否存在
-    if (docTypeDef.index) {
-      const indexPath = `${fullPath}/${docTypeDef.index}`;
-      const indexContent = await fileRead(indexPath);
-      if (indexContent) {
-        const docs = await scanFromIndex(workDir, indexContent, docTypeKey, docTypeDef, dirGraph, resolvedPath);
-        results.push(...docs);
+    // 占位符通配扫描：路径中仍有未解析的 {xxx} 时，遍历父目录展开
+    const expandedPaths = resolvedPath.includes('{')
+      ? await expandWildcardPaths(workDir, resolvedPath)
+      : [resolvedPath];
+
+    for (const expanded of expandedPaths) {
+      const fullPath = `${workDir}/${expanded}`;
+
+      // 如果展开后是具体文件路径（如 product/features/phone-login/PRD.md）
+      if (/\.(md|yml|yaml)$/.test(expanded)) {
+        const doc = await extractDocKnowledge(workDir, expanded, docTypeKey, docTypeDef, dirGraph);
+        if (doc) results.push(doc);
         continue;
       }
-    }
 
-    // 降级：文件系统扫描
-    const docs = await scanFromFileSystem(workDir, fullPath, docTypeKey, docTypeDef, dirGraph, resolvedPath);
-    results.push(...docs);
+      // 目录路径：台账优先
+      if (docTypeDef.index) {
+        const indexPath = `${fullPath}/${docTypeDef.index}`;
+        const indexContent = await fileRead(indexPath);
+        if (indexContent) {
+          const docs = await scanFromIndex(workDir, indexContent, docTypeKey, docTypeDef, dirGraph, expanded);
+          results.push(...docs);
+          continue;
+        }
+      }
+
+      // 降级：文件系统扫描
+      const docs = await scanFromFileSystem(workDir, fullPath, docTypeKey, docTypeDef, dirGraph, expanded);
+      results.push(...docs);
+    }
   }
 
   return results;
+}
+
+/**
+ * 展开路径中未解析的 {placeholder} 占位符
+ *
+ * 策略：找到第一个含 {xxx} 的路径段，列出其父目录下所有子目录，
+ * 用子目录名替换占位符，递归展开剩余占位符。
+ *
+ * 示例：
+ *   "product/features/{feature}/PRD.md"
+ *   → ["product/features/phone-login/PRD.md"]
+ *
+ *   "knowledge/{category}/"
+ *   → ["knowledge/insights/", "knowledge/pitfalls/", "knowledge/tech-notes/"]
+ */
+async function expandWildcardPaths(
+  workDir: string,
+  pathTemplate: string,
+): Promise<string[]> {
+  const match = pathTemplate.match(/\{([^}]+)\}/);
+  if (!match) return [pathTemplate];
+
+  const idx = match.index!;
+  // 找到占位符所在段的父目录：截取到占位符前面最近的 /
+  const beforePlaceholder = pathTemplate.slice(0, idx);
+  const parentDir = beforePlaceholder.endsWith('/')
+    ? beforePlaceholder
+    : beforePlaceholder.slice(0, beforePlaceholder.lastIndexOf('/') + 1);
+  // 占位符之后的路径（从占位符 } 后的 / 开始）
+  const afterPlaceholder = pathTemplate.slice(idx + match[0].length);
+
+  try {
+    const items = await fileList(`${workDir}/${parentDir}`);
+    if (!items) return [];
+    const dirs = items.filter(f => f.type === 'directory' && !f.name.startsWith('.'));
+    const results: string[] = [];
+    for (const dir of dirs) {
+      const expandedPath = `${parentDir}${dir.name}${afterPlaceholder}`;
+      // 递归展开剩余占位符
+      const further = await expandWildcardPaths(workDir, expandedPath);
+      results.push(...further);
+    }
+    return results;
+  } catch {
+    return [];
+  }
 }
 
 /**

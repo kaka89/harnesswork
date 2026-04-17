@@ -128,7 +128,7 @@ export async function fileList(
   path: string,
   directory?: string,
 ): Promise<FileNode[]> {
-  // 1. 尝试 OpenWork 注入的 SDK 客户端
+  // 1. 优先：OpenWork 注入的 SDK 客户端
   try {
     const client = getXingjingClient();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -137,9 +137,23 @@ export async function fileList(
       directory: directory ?? (_directory || undefined),
     });
     if (result.data) return result.data as FileNode[];
-  } catch { /* fall through */ }
+    console.warn('[xingjing] fileList SDK returned no data, error:', (result as any)?.error?.name ?? result.error);
+  } catch (e) {
+    console.warn('[xingjing] fileList SDK failed:', (e as Error)?.message ?? e);
+  }
 
-  // 2. 兜底：裸 fetch 到默认 OpenCode 端口
+  // 2. 回退：OpenWork 文件 API（无 CORS 问题，不受 ConfigInvalidError 影响）
+  if (_owFileOps && _workspaceId) {
+    try {
+      // 路径已是相对路径，OpenWork API 以 workspace 根目录解析
+      const result = await _owFileOps.read(_workspaceId, path);
+      if (result?.content) {
+        try { return JSON.parse(result.content) as FileNode[]; } catch { /* not JSON */ }
+      }
+    } catch { /* fall through */ }
+  }
+
+  // 3. 最后兜底：裸 fetch（dev 模式可能被 CORS 拦截）
   try {
     const url = new URL('/file', _baseUrl);
     url.searchParams.set('path', path);
@@ -171,18 +185,16 @@ export async function fileRead(
   path: string,
   directory?: string,
 ): Promise<string | null> {
-  // 当显式传入 directory（且与全局工作目录不同）时，必须使用能正确携带 directory
-  // 参数的 OpenCode SDK，因为 OpenWork Server API 会忽略 directory 参数。
-  const useOpenworkApi = _owFileOps && _workspaceId && !directory;
-  if (useOpenworkApi) {
+  // 1. 优先：OpenWork 文件 API（无 CORS 问题，不受 OpenCode ConfigInvalidError 影响）
+  if (_owFileOps && _workspaceId) {
     try {
-      // 将绝对路径转为相对路径，避免 OpenWork Server 二次拼接 workspace 根目录导致路径重复
-      const result = await _owFileOps!.read(_workspaceId!, toWorkspaceRelativePath(path));
-      return result?.content ?? null;
+      const relativePath = directory ? path : toWorkspaceRelativePath(path);
+      const result = await _owFileOps.read(_workspaceId, relativePath);
+      if (result?.content !== undefined) return result.content;
     } catch { /* fall through to SDK */ }
   }
 
-  // 1. 尝试 OpenWork 注入的 SDK 客户端
+  // 2. OpenCode SDK 客户端
   try {
     const client = getXingjingClient();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -191,9 +203,12 @@ export async function fileRead(
       directory: directory ?? (_directory || undefined),
     });
     if (result.data) return (result.data as FileContent).content;
-  } catch { /* fall through */ }
+    console.warn('[xingjing] fileRead SDK returned no data, error:', (result as any)?.error?.name ?? result.error);
+  } catch (e) {
+    console.warn('[xingjing] fileRead SDK failed:', (e as Error)?.message ?? e);
+  }
 
-  // 2. 兜底：裸 fetch 到默认 OpenCode 端口
+  // 3. 最后兜底：裸 fetch（dev 模式可能被 CORS 拦截）
   try {
     const url = new URL('/file/content', _baseUrl);
     url.searchParams.set('path', path);

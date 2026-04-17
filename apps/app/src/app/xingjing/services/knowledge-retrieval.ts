@@ -21,8 +21,8 @@ import {
   type KnowledgeEntry,
   type SearchContext,
 } from './knowledge-index';
+import { fileWrite } from './opencode-client';
 import type { SkillApiAdapter } from './knowledge-behavior';
-import { scanWorkspaceDocs } from './knowledge-scanner';
 
 // ─── 内存缓存 ─────────────────────────────────────────────────────────────────
 
@@ -111,10 +111,15 @@ export async function refreshKnowledgeIndex(
 
 /**
  * 使索引缓存失效（用于文件变更时触发重建）
+ * @param workDir 可选，传入时同时清除磁盘缓存 _index.json
  */
-export function invalidateKnowledgeCache(): void {
+export function invalidateKnowledgeCache(workDir?: string): void {
   _cachedIndex = null;
   _cacheTimestamp = 0;
+  // 清除磁盘缓存
+  if (workDir) {
+    fileWrite(`${workDir}/.xingjing/solo/knowledge/_index.json`, '').catch(() => {});
+  }
 }
 
 // ─── 内部实现 ─────────────────────────────────────────────────────────────────
@@ -146,20 +151,7 @@ async function getOrBuildIndex(
 
   // 全量构建
   try {
-    let index = await buildKnowledgeIndex(workDir, skillApi);
-
-    // 首次使用时自动触发文档扫描：如果索引中无 workspace-doc 条目，
-    // 尝试扫描一次并重建索引，确保首次检索时有基础知识可用
-    const hasDocEntries = index.entries.some(e => e.source === 'workspace-doc');
-    if (!hasDocEntries) {
-      try {
-        const scanned = await scanWorkspaceDocs(workDir);
-        if (scanned.length > 0) {
-          index = await buildKnowledgeIndex(workDir, skillApi);
-        }
-      } catch { /* 扫描失败不影响主流程 */ }
-    }
-
+    const index = await buildKnowledgeIndex(workDir, skillApi);
     _cachedIndex = index;
     _cacheWorkDir = workDir;
     _cacheTimestamp = Date.now();

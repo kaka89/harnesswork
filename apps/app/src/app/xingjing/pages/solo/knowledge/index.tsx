@@ -5,15 +5,16 @@
  * 支持四源统一浏览：产品文档 / 迭代记录 / 个人笔记 / 行为知识
  * 提供 AI 使用路径：发送给AI / 启动 Autopilot / 复制引用
  */
-import { Component, createSignal, createEffect, onMount, Show } from 'solid-js';
+import { Component, createSignal, createEffect, Show } from 'solid-js';
 import { useNavigate } from '@solidjs/router';
 import {
   buildKnowledgeIndex, loadCachedIndex, groupEntriesForTree,
   searchKnowledge, type KnowledgeEntry, type KnowledgeIndex, type KnowledgeTreeGroup,
 } from '../../../services/knowledge-index';
 import { checkKnowledgeHealth, type KnowledgeHealthScore } from '../../../services/knowledge-health';
-import { loadSoloKnowledge, saveSoloKnowledge } from '../../../services/file-store';
+import { loadSoloKnowledge, saveSoloKnowledge, type SoloKnowledgeCategory, type SoloKnowledgeItem } from '../../../services/file-store';
 import { invalidateKnowledgeCache } from '../../../services/knowledge-retrieval';
+import { scanWorkspaceDocs } from '../../../services/knowledge-scanner';
 import type { SkillApiAdapter } from '../../../services/knowledge-behavior';
 import { useAppStore } from '../../../stores/app-store';
 import { themeColors, chartColors } from '../../../utils/colors';
@@ -26,6 +27,7 @@ import DocRelationPanel from '../../../components/knowledge/doc-relation-panel';
 import KnowledgeSearchBar, { type KnowledgeSourceFilter } from '../../../components/knowledge/knowledge-search-bar';
 import KnowledgeHealthDashboard from '../../../components/knowledge/knowledge-health-dashboard';
 import QuickAITaskDialog from '../../../components/knowledge/quick-ai-task-dialog';
+import CreateNoteModal from '../../../components/knowledge/create-note-modal';
 
 const SoloKnowledge: Component = () => {
   const { productStore, actions } = useAppStore();
@@ -41,6 +43,8 @@ const SoloKnowledge: Component = () => {
   // ── 搜索状态 ──────────────────────────────────────────────────────────────
   const [searchQuery, setSearchQuery] = createSignal('');
   const [sourceFilter, setSourceFilter] = createSignal<KnowledgeSourceFilter>('all');
+  const [docTypeFilter, setDocTypeFilter] = createSignal<string | null>(null);
+  const [sceneFilter, setSceneFilter] = createSignal<string | null>(null);
   const [searchResults, setSearchResults] = createSignal<KnowledgeEntry[]>([]);
 
   // ── 健康度 ────────────────────────────────────────────────────────────────
@@ -49,6 +53,9 @@ const SoloKnowledge: Component = () => {
 
   // ── AI 任务对话框 ─────────────────────────────────────────────────────────
   const [autopilotEntry, setAutopilotEntry] = createSignal<KnowledgeEntry | null>(null);
+
+  // ── 笔记创建状态 ───────────────────────────────────────────────────────────
+  const [createNoteCategory, setCreateNoteCategory] = createSignal<SoloKnowledgeCategory | null>(null);
 
   // ── 通知 toast ────────────────────────────────────────────────────────────
   const [toast, setToast] = createSignal<string | null>(null);
@@ -67,21 +74,28 @@ const SoloKnowledge: Component = () => {
   };
 
   // ── 索引加载 ──────────────────────────────────────────────────────────────
+  const DISK_CACHE_TTL_MS = 10 * 60 * 1000; // 磁盘缓存 10 分钟有效
+
   const loadIndex = async (force = false) => {
     const workDir = productStore.activeProduct()?.workDir;
     if (!workDir) { setIndexLoading(false); return; }
 
     setIndexLoading(true);
     try {
-      // 尝试缓存
+      // 尝试缓存（带 TTL 校验）
       if (!force) {
         const cached = await loadCachedIndex(workDir);
-        if (cached) {
-          applyIndex(cached);
-          setIndexLoading(false);
-          return;
+        if (cached && cached.builtAt) {
+          const cacheAge = Date.now() - new Date(cached.builtAt).getTime();
+          if (cacheAge < DISK_CACHE_TTL_MS) {
+            applyIndex(cached);
+            setIndexLoading(false);
+            return;
+          }
         }
       }
+      // force=true 或缓存过期：先扫描文件系统更新 _doc-index.json，再重建索引
+      await scanWorkspaceDocs(workDir);
       const fresh = await buildKnowledgeIndex(workDir, skillApi);
       applyIndex(fresh);
     } catch (e) {
@@ -100,7 +114,7 @@ const SoloKnowledge: Component = () => {
   const handleRefresh = async () => {
     const workDir = productStore.activeProduct()?.workDir;
     if (!workDir) return;
-    invalidateKnowledgeCache();
+    invalidateKnowledgeCache(workDir);
     await loadIndex(true);
     // 健康度也刷新
     if (index()) {
@@ -122,20 +136,33 @@ const SoloKnowledge: Component = () => {
   createEffect(() => {
     const q = searchQuery();
     const idx = index();
-    if (!q.trim() || !idx) {
+    const dt = docTypeFilter();
+    const sc = sceneFilter();
+
+    // 无查询词且无高级过滤时清空结果
+    if (!q.trim() && !dt && !sc) {
       setSearchResults([]);
       return;
     }
-    const results = searchKnowledge(idx, { query: q }, 50);
+    if (!idx) { setSearchResults([]); return; }
+
+    const results = searchKnowledge(idx, {
+      query: q || '',
+      targetDocType: dt ?? undefined,
+      scene: sc ?? undefined,
+    }, 50);
     setSearchResults(results);
   });
 
-  // ── onMount ───────────────────────────────────────────────────────────────
-  onMount(() => { loadIndex(); });
+  // ── 响应式加载（activeProduct 变化时自动刷新） ─────────────────────────────
+  createEffect(() => {
+    const workDir = productStore.activeProduct()?.workDir;
+    if (workDir) { loadIndex(); }
+  });
 
   // ── 显示的条目列表（搜索 or 全量） ────────────────────────────────────────
   const displayEntries = () =>
-    searchQuery().trim() ? searchResults() : allEntries();
+    (searchQuery().trim() || docTypeFilter() || sceneFilter()) ? searchResults() : allEntries();
 
   // ── 选中一个条目 ──────────────────────────────────────────────────────────
   const handleSelect = (entry: KnowledgeEntry) => {
@@ -162,10 +189,27 @@ const SoloKnowledge: Component = () => {
     navigator.clipboard.writeText(ref).then(() => showToast('引用已复制')).catch(() => showToast(ref));
   };
 
-  // ── 创建笔记（保留原有能力） ───────────────────────────────────────────────
-  const handleCreateNote = (_category: 'pitfall' | 'user-insight' | 'tech-note') => {
-    // TODO: 弹出创建笔记 Modal（复用原有逻辑，此处预留）
-    showToast('创建笔记功能即将上线');
+  const handleViewSession = (sessionId: string) => {
+    navigate('/solo/autopilot', { state: { viewSessionId: sessionId } });
+  };
+
+  // ── 创建笔记 ──────────────────────────────────────────────────────────────
+  const handleCreateNote = (category: SoloKnowledgeCategory) => {
+    setCreateNoteCategory(category);
+  };
+
+  const handleNoteSave = async (item: SoloKnowledgeItem) => {
+    const workDir = productStore.activeProduct()?.workDir;
+    if (!workDir) return;
+    const ok = await saveSoloKnowledge(workDir, item);
+    if (ok) {
+      setCreateNoteCategory(null);
+      showToast('笔记已保存');
+      invalidateKnowledgeCache(workDir);
+      await loadIndex(true);
+    } else {
+      showToast('保存失败');
+    }
   };
 
   return (
@@ -177,8 +221,12 @@ const SoloKnowledge: Component = () => {
           <KnowledgeSearchBar
             value={searchQuery()}
             sourceFilter={sourceFilter()}
+            docTypeFilter={docTypeFilter()}
+            sceneFilter={sceneFilter()}
             onSearch={setSearchQuery}
             onSourceChange={setSourceFilter}
+            onDocTypeChange={setDocTypeFilter}
+            onSceneChange={setSceneFilter}
             onClear={() => setSearchQuery('')}
             totalCount={allEntries().length}
             resultCount={searchResults().length}
@@ -250,6 +298,7 @@ const SoloKnowledge: Component = () => {
             onSendToAI={handleSendToAI}
             onStartAutopilot={handleStartAutopilot}
             onCopyRef={handleCopyRef}
+            onViewSession={handleViewSession}
           />
         </div>
       </div>
@@ -271,6 +320,15 @@ const SoloKnowledge: Component = () => {
           entry={autopilotEntry()!}
           onConfirm={handleAutopilotConfirm}
           onClose={() => setAutopilotEntry(null)}
+        />
+      </Show>
+
+      {/* ── 创建笔记 Modal ────────────────────────────────────────────── */}
+      <Show when={createNoteCategory()}>
+        <CreateNoteModal
+          initialCategory={createNoteCategory()!}
+          onSave={handleNoteSave}
+          onClose={() => setCreateNoteCategory(null)}
         />
       </Show>
 

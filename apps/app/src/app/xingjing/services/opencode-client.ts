@@ -16,6 +16,9 @@ let _sharedClient: ReturnType<typeof createClient> | null = null;
 let _baseUrl = 'http://127.0.0.1:4096';
 let _directory = '';
 
+/** 当 OpenWork 注入的 SDK 客户端不可用时，裸 fetch 兜底到默认端口 */
+const FALLBACK_OPENCODE_URL = 'http://127.0.0.1:4096';
+
 // ─── OpenWork 文件操作注入 ─────────────────────────────────────────
 
 let _owFileOps: {
@@ -111,18 +114,27 @@ export async function fileList(
   path: string,
   directory?: string,
 ): Promise<FileNode[]> {
-  const client = getXingjingClient();
+  // 1. 尝试 OpenWork 注入的 SDK 客户端
   try {
+    const client = getXingjingClient();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result = await (client.file.list as any)({
       path,
       directory: directory ?? (_directory || undefined),
     });
     if (result.data) return result.data as FileNode[];
-    return [];
-  } catch {
-    return [];
-  }
+  } catch { /* fall through */ }
+
+  // 2. 兜底：裸 fetch 到默认 OpenCode 端口
+  try {
+    const url = new URL('/file', FALLBACK_OPENCODE_URL);
+    url.searchParams.set('path', path);
+    const dir = directory ?? (_directory || '');
+    if (dir) url.searchParams.set('directory', dir);
+    const resp = await fetch(url.toString());
+    if (resp.ok) return (await resp.json()) as FileNode[];
+  } catch { /* ignore */ }
+  return [];
 }
 
 /**
@@ -147,28 +159,39 @@ export async function fileRead(
 ): Promise<string | null> {
   // 当显式传入 directory（且与全局工作目录不同）时，必须使用能正确携带 directory
   // 参数的 OpenCode SDK，因为 OpenWork Server API 会忽略 directory 参数。
-  // 这一情况主要出现在知识扫描器按产品 workDir 读取文件时。
   const useOpenworkApi = _owFileOps && _workspaceId && !directory;
   if (useOpenworkApi) {
     try {
       // 将绝对路径转为相对路径，避免 OpenWork Server 二次拼接 workspace 根目录导致路径重复
       const result = await _owFileOps!.read(_workspaceId!, toWorkspaceRelativePath(path));
       return result?.content ?? null;
-    } catch { /* fall through to client SDK */ }
+    } catch { /* fall through to SDK */ }
   }
-  // 使用 OpenCode file API（正确携带 directory 参数）
-  const client = getXingjingClient();
+
+  // 1. 尝试 OpenWork 注入的 SDK 客户端
   try {
+    const client = getXingjingClient();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result = await (client.file.read as any)({
       path,
       directory: directory ?? (_directory || undefined),
     });
     if (result.data) return (result.data as FileContent).content;
-    return null;
-  } catch {
-    return null;
-  }
+  } catch { /* fall through */ }
+
+  // 2. 兜底：裸 fetch 到默认 OpenCode 端口
+  try {
+    const url = new URL('/file/content', FALLBACK_OPENCODE_URL);
+    url.searchParams.set('path', path);
+    const dir = directory ?? (_directory || '');
+    if (dir) url.searchParams.set('directory', dir);
+    const resp = await fetch(url.toString());
+    if (resp.ok) {
+      const data = await resp.json();
+      return (data as FileContent).content ?? null;
+    }
+  } catch { /* ignore */ }
+  return null;
 }
 
 /**

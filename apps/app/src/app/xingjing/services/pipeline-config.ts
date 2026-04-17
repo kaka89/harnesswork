@@ -2,7 +2,7 @@
  * Pipeline 配置解析 — orchestrator.yaml 驱动的 DAG 长流程
  *
  * 从产品根目录读取 orchestrator.yaml，解析为 PipelineConfig 结构。
- * 使用手写 YAML 解析器（避免 js-yaml 依赖），仅支持固定结构。
+ * 使用 js-yaml 标准库解析 YAML。
  * 提供拓扑排序将 DAG 依赖图分层，供 pipeline-executor 顺序/并行执行。
  */
 
@@ -45,19 +45,6 @@ export interface PipelineConfig {
   stages: PipelineStage[];
 }
 
-// ─── YAML 解析（简单手写，仅支持 orchestrator.yaml 固定结构）────
-
-/**
- * 解析 YAML 内容为嵌套键值结构
- */
-function parseSimpleYaml(content: string): Record<string, unknown> {
-  try {
-    return (yaml.load(content) as Record<string, unknown>) ?? {};
-  } catch {
-    return {};
-  }
-}
-
 // ─── orchestrator.yaml → PipelineConfig ───────────────────────
 
 /**
@@ -82,7 +69,7 @@ export async function loadPipelineConfig(workDir: string): Promise<PipelineConfi
  */
 export function parsePipelineYaml(yamlContent: string): PipelineConfig | null {
   try {
-    const raw = parseSimpleYaml(yamlContent);
+    const raw = (yaml.load(yamlContent) as Record<string, unknown>) ?? {};
     const app = String(raw.app ?? raw.name ?? 'unknown');
     const mode = raw.mode === 'autonomous' ? 'autonomous' : 'supervised';
     const maxRetries = typeof raw.maxRetries === 'number' ? raw.maxRetries : 2;

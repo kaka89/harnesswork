@@ -15,7 +15,7 @@ import { fileList, fileRead, fileWrite, fileDelete, FileNode } from './opencode-
 
 export type { FileNode };
 
-// ─── 简单 YAML 序列化/反序列化（无外部依赖）────────────────────────────────
+// ─── YAML 工具（基于 js-yaml）────────────────────────────────────────────────
 
 /**
  * YAML 解析（使用 js-yaml）
@@ -34,37 +34,10 @@ export function stringifyYamlSimple(
   return yaml.dump(obj, { indent: 2 });
 }
 
-// ─── Markdown Frontmatter ─────────────────────────────────────────────────────
+// ─── Markdown Frontmatter（从 utils/frontmatter 统一导入）───────────────────────
 
-export interface FrontmatterDoc<T = Record<string, unknown>> {
-  frontmatter: T;
-  body: string;
-}
-
-/**
- * 解析 Markdown frontmatter（--- YAML --- 格式）
- */
-export function parseFrontmatter<T = Record<string, unknown>>(
-  content: string,
-): FrontmatterDoc<T> {
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
-  if (!match) {
-    return { frontmatter: {} as T, body: content };
-  }
-  const frontmatter = (yaml.load(match[1]) as T) ?? ({} as T);
-  const body = match[2] ?? '';
-  return { frontmatter, body };
-}
-
-/**
- * 序列化带 frontmatter 的 Markdown
- */
-export function stringifyFrontmatter<T extends Record<string, unknown>>(
-  doc: FrontmatterDoc<T>,
-): string {
-  const yamlStr = yaml.dump(doc.frontmatter, { indent: 2 }).trimEnd();
-  return `---\n${yamlStr}\n---\n${doc.body}`;
-}
+import { parseFrontmatter, stringifyFrontmatter, type FrontmatterDoc } from '../utils/frontmatter';
+export { parseFrontmatter, stringifyFrontmatter, type FrontmatterDoc };
 
 // ─── 文件服务层（高级 API）────────────────────────────────────────────────────
 

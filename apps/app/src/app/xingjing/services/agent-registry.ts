@@ -1,15 +1,12 @@
 /**
  * Agent 注册表 — 统一 Agent 发现与注册
  *
- * 支持双源发现机制：
- * 1. 文件驱动：从 .opencode/agents/*.md 读取 Agent 定义（优先）
- * 2. 内置兜底：使用 SOLO_AGENTS / TEAM_AGENTS 硬编码常量
- *
- * 文件 Agent 与内置 Agent 按 id 合并，文件优先覆盖。
- * 文件读取失败时静默回退到内置常量，保证零故障降级。
+ * Agent 发现已简化为内置常量模式：
+ * - 文件扫描已移除，OpenCode 原生在 session.create({ agentID }) 时自动加载
+ * - 前端仅通过内置 SOLO_AGENTS / TEAM_AGENTS 常量提供 UI 展示
+ * - Agent 定义通过 ensureAgentsRegistered() 写入 .opencode/agents/ 目录
  */
 
-import yaml from 'js-yaml';
 import { type AutopilotAgent, SOLO_AGENTS, TEAM_AGENTS, buildOrchestratorSystemPrompt } from './autopilot-executor';
 import { fileRead, fileWrite } from './opencode-client';
 
@@ -24,67 +21,10 @@ export interface RegisteredAgent extends AutopilotAgent {
   opencodeAgentId?: string;
 }
 
-// ─── Frontmatter 解析 ──────────────────────────────────────────
-
-/**
- * 解析 Markdown 文件的 YAML frontmatter 块。
- */
-function parseFrontmatter(content: string): Record<string, unknown> {
-  const match = content.match(/^---\n([\s\S]*?)\n---/);
-  if (!match) return {};
-  try {
-    return (yaml.load(match[1]) as Record<string, unknown>) ?? {};
-  } catch {
-    return {};
-  }
-}
-
-/**
- * 从 frontmatter 提取 body（--- 之后的内容），作为 systemPrompt
- */
-function extractBody(content: string): string {
-  const match = content.match(/^---\n[\s\S]*?\n---\n?([\s\S]*)$/);
-  return match ? match[1].trim() : content.trim();
-}
-
-// ─── Agent 定义文件加载（已移除） ──────────────────────────────────────────
+// ─── Agent 发现已简化（文件扫描已移除） ────────────────────────────────────
 //
-// 注意：文件扫描逻辑已删除。OpenCode 原生在 session.create({ agentID }) 时
-// 会自动加载 .opencode/agents/{agentID}.md。前端无需扫描文件。
-
-/**
- * 解析单个 Agent markdown 文件为 RegisteredAgent
- *
- * 注意：此函数仅用于 UI 预览和文件手动导入。
- * 在 OpenCode 原生执行时，Agent 定义由 session.create({ agentID }) 加载。
- */
-export function parseAgentMarkdown(content: string, filePath: string): RegisteredAgent | null {
-  const meta = parseFrontmatter(content);
-  const name = meta.name as string | undefined;
-  if (!name) return null;
-
-  const body = extractBody(content);
-  if (!body) return null;
-
-  // 从文件名推导 OpenCode Agent ID
-  const fileName = filePath.split('/').pop()?.replace('.md', '') ?? name;
-
-  return {
-    id: name,
-    name: (meta.description as string)?.split('—')[0]?.trim() ?? name,
-    role: (meta.description as string)?.split('—')[1]?.trim() ?? name,
-    color: (meta.color as string) ?? '#666666',
-    bgColor: (meta.bgColor as string) ?? '#f5f5f5',
-    borderColor: (meta.borderColor as string) ?? '#d9d9d9',
-    emoji: (meta.emoji as string) ?? '🤖',
-    skills: (meta.skills as string[]) ?? [],
-    description: (meta.description as string) ?? '',
-    systemPrompt: body,
-    source: 'file',
-    filePath,
-    opencodeAgentId: fileName,
-  };
-}
+// OpenCode 原生在 session.create({ agentID }) 时自动加载 .opencode/agents/{agentID}.md。
+// 前端无需扫描文件或解析 Agent Markdown。
 
 // ─── 内置 Agent 转换 ──────────────────────────────────────────
 
@@ -167,7 +107,6 @@ export async function ensureAgentsRegistered(
 
 /**
  * 将 AutopilotAgent 序列化为 Markdown 格式（frontmatter + body）。
- * 生成的格式与 parseAgentMarkdown 兼容。
  */
 function buildAgentMarkdownContent(agent: AutopilotAgent): string {
   const lines = [

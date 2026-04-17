@@ -7,6 +7,7 @@
 import { createSignal, onMount, onCleanup } from 'solid-js';
 import { ShieldQuestion, Clock } from 'lucide-solid';
 import { themeColors } from '../../utils/colors';
+import { getXingjingClient } from '../../services/opencode-client';
 
 export interface PermissionRequest {
   permissionId: string;
@@ -27,12 +28,25 @@ const COUNTDOWN_SECONDS = 30;
 const PermissionDialog = (props: PermissionDialogProps) => {
   const [countdown, setCountdown] = createSignal(COUNTDOWN_SECONDS);
 
+  // 通过 OpenCode SDK 响应权限请求，同时通知上层组件
+  const handleResolve = async (action: 'once' | 'always' | 'reject') => {
+    try {
+      const client = getXingjingClient();
+      await (client.permission as any).reply({
+        requestID: props.request.permissionId,
+        reply: action === 'reject' ? 'deny' : action,
+      });
+    } catch (e) {
+      console.warn('[xingjing] permission reply failed:', e);
+    }
+    props.onResolve(action);
+  };
+
   // 倒计时驱动：每秒递减，归零时自动允许一次
   onMount(() => {
     const timer = setInterval(() => {
       setCountdown((n: number) => {
         if (n <= 1) {
-          clearInterval(timer);
           props.onResolve('once');
           return 0;
         }
@@ -165,7 +179,7 @@ const PermissionDialog = (props: PermissionDialogProps) => {
         {/* 操作按钮 */}
         <div style={{ display: 'flex', gap: '8px', 'justify-content': 'flex-end' }}>
           <button
-            onClick={() => props.onResolve('reject')}
+            onClick={() => handleResolve('reject')}
             style={{
               padding: '7px 16px',
               'border-radius': '6px',
@@ -179,7 +193,7 @@ const PermissionDialog = (props: PermissionDialogProps) => {
             拒绝
           </button>
           <button
-            onClick={() => props.onResolve('once')}
+            onClick={() => handleResolve('once')}
             style={{
               padding: '7px 16px',
               'border-radius': '6px',
@@ -194,7 +208,7 @@ const PermissionDialog = (props: PermissionDialogProps) => {
             允许一次
           </button>
           <button
-            onClick={() => props.onResolve('always')}
+            onClick={() => handleResolve('always')}
             style={{
               padding: '7px 16px',
               'border-radius': '6px',

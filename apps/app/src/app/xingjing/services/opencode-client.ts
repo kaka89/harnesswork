@@ -13,7 +13,6 @@ import { createSignal, onCleanup } from 'solid-js';
 
 // ─── Client 管理（OpenWork 注入）────────────────────────────────────────────
 
-let _owClient: ReturnType<typeof createClient> | null = null;
 let _sharedClient: ReturnType<typeof createClient> | null = null;
 let _baseUrl = 'http://127.0.0.1:4096';
 let _directory = '';
@@ -71,16 +70,8 @@ const NON_ACTIVITY_EVENT_TYPES = new Set(['server.heartbeat', 'server.connected'
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /**
- * 注入 OpenWork 提供的 OpenCode Client。
- * 由 AppStoreProvider 在 OpenWork 上下文就绪时调用。
- */
-export function setOpenworkClient(client: ReturnType<typeof createClient>) {
-  _owClient = client;
-}
-
-/**
  * 设置当前工作目录（产品切换时调用）。
- * @param baseUrl 可选，同时更新 baseUrl（用于过渡期内 fileWrite/fileDelete 的裸 fetch）
+ * @param baseUrl 可选，同时更新 baseUrl（用于 SSE EventSource 和裸 fetch 兜底）
  */
 export function setWorkingDirectory(directory: string, baseUrl?: string) {
   _directory = directory;
@@ -88,16 +79,14 @@ export function setWorkingDirectory(directory: string, baseUrl?: string) {
 }
 
 /**
- * 获取 OpenCode Client。
- * 优先返回注入的 shared client（来自 OpenWork），回退到 _owClient（旧路径）。
+ * 获取 OpenCode Client（来自 OpenWork 注入的统一实例）。
  * Client 未初始化时抛出明确错误。
  */
 export function getXingjingClient(): ReturnType<typeof createClient> {
-  if (_sharedClient) return _sharedClient;
-  if (!_owClient) {
+  if (!_sharedClient) {
     throw new Error('[xingjing] OpenWork Client 未初始化，请确认 OpenWork 服务已启动');
   }
-  return _owClient;
+  return _sharedClient;
 }
 
 // ─── 文件 API ───────────────────────────────────────────────────────────────

@@ -11,7 +11,7 @@ import {
   loadProjectSettings,
   loadGlobalSettings, saveGlobalSettings,
 } from '../services/file-store';
-import { callAgent as _callAgent, setProviderAuth, setOpenworkClient, setOpenworkFileOps, setSharedClient, type CallAgentOptions } from '../services/opencode-client';
+import { callAgent as _callAgent, setProviderAuth, setOpenworkFileOps, setSharedClient, type CallAgentOptions } from '../services/opencode-client';
 import { ensureAgentsRegistered } from '../services/agent-registry';
 import { appendAgentLog } from '../services/agent-logger';
 import { currentUser } from '../services/auth-service';
@@ -214,11 +214,7 @@ export const AppStoreProvider: ParentComponent<{
   // ── 注入 OpenWork Client 到 opencode-client 模块 ──
   createEffect(() => {
     const client = props.openworkCtx?.opencodeClient?.();
-    if (client) {
-      setOpenworkClient(client);
-      // 同时注入为 shared client，优先使用此路径
-      setSharedClient(client);
-    }
+    setSharedClient(client ?? null);
   });
 
   // ── 注入 OpenWork 文件操作能力 ──

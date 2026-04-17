@@ -615,7 +615,7 @@ export interface CallAgentOptions {
  * 将 SDK event.subscribe() 返回的原始事件解析为 { type, props } 格式。
  * 兼容两种包装：直接 { type, properties } 或嵌套 { payload: { type, properties } }.
  */
-function normalizeRawEvent(raw: unknown): { type: string; props: Record<string, unknown> } | null {
+export function normalizeRawEvent(raw: unknown): { type: string; props: Record<string, unknown> } | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
   if (typeof r.type === 'string') {

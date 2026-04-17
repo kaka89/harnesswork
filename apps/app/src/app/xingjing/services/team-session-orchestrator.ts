@@ -116,8 +116,12 @@ export function createTeamSessionOrchestrator(opts: TeamSessionOrchestratorOptio
 
     try {
       const result = await client.session.create({
+        body: {
+          title: `xingjing-orchestrator-${Date.now()}`,
+          agent: 'orchestrator',
+        },
         directory: opts.workDir(),
-      });
+      } as Parameters<typeof client.session.create>[0]);
 
       if (!result.data) return null;
       const session = result.data;
@@ -126,6 +130,7 @@ export function createTeamSessionOrchestrator(opts: TeamSessionOrchestratorOptio
       orchestratorAccumulator = createMessageAccumulator({
         client: opts.client,
         sessionId: () => session.id,
+        directory: () => opts.workDir() || undefined,
         onPermissionAsked: (p) => {
           setPendingPermissionsBySession((prev) => ({ ...prev, [session.id]: p }));
         },
@@ -165,8 +170,12 @@ export function createTeamSessionOrchestrator(opts: TeamSessionOrchestratorOptio
 
     try {
       const result = await client.session.create({
+        body: {
+          title: `xingjing-${agentId}-${Date.now()}`,
+          agent: agentDef.id,
+        },
         directory: opts.workDir(),
-      });
+      } as Parameters<typeof client.session.create>[0]);
 
       if (!result.data) return null;
       const session = result.data;
@@ -176,6 +185,7 @@ export function createTeamSessionOrchestrator(opts: TeamSessionOrchestratorOptio
       const accumulator = createMessageAccumulator({
         client: opts.client,
         sessionId: () => session.id,
+        directory: () => opts.workDir() || undefined,
         onPermissionAsked: (p) => {
           setPendingPermissionsBySession((prev) => ({ ...prev, [session.id]: p }));
         },
@@ -333,10 +343,24 @@ export function createTeamSessionOrchestrator(opts: TeamSessionOrchestratorOptio
   }
 
   /**
-   * 取消当前运行
+   * 取消当前运行：abort 所有活跃 Session 并清理 accumulator
    */
   function abort(): void {
-    // TODO: 调用 client.session.abort() 取消各 Session
+    const client = opts.client();
+    if (client) {
+      // 取消 orchestrator session
+      if (state.orchestratorSessionId) {
+        (client.session as any).abort({ sessionID: state.orchestratorSessionId }).catch(() => {});
+      }
+      // 取消所有 agent sessions
+      state.agentSlots.forEach((slot) => {
+        (client.session as any).abort({ sessionID: slot.sessionId }).catch(() => {});
+        slot._accumulator.cleanup();
+      });
+    }
+    if (orchestratorAccumulator) {
+      orchestratorAccumulator.cleanup();
+    }
     setState('isRunning', false);
   }
 

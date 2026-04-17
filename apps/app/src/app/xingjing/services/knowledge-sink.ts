@@ -88,11 +88,11 @@ export async function sinkAgentOutput(opts: SinkAgentOutputOpts): Promise<SinkRe
 
     // 4. 分流沉淀
     if (extracted.type === 'behavior' && skillApi) {
-      return await sinkAsBehaviorKnowledge(extracted, skillApi, workDir);
+      return await sinkAsBehaviorKnowledge(extracted, skillApi, workDir, agentId, sessionId);
     }
 
     // 行为知识写入失败或无 skillApi → 降级为私有知识
-    return await sinkAsPrivateKnowledge(extracted, workDir);
+    return await sinkAsPrivateKnowledge(extracted, workDir, agentId, sessionId);
   } catch (e) {
     console.warn('[knowledge-sink] sinkAgentOutput failed:', e);
     return { sunk: false, target: 'none', error: String(e) };
@@ -274,6 +274,8 @@ async function sinkAsBehaviorKnowledge(
   extracted: ExtractedKnowledge,
   skillApi: SkillApiAdapter,
   workDir: string,
+  agentId?: string,
+  sessionId?: string,
 ): Promise<SinkResult> {
   const id = `auto-${Date.now().toString(36)}`;
 
@@ -295,13 +297,15 @@ async function sinkAsBehaviorKnowledge(
   } catch (e) {
     console.warn('[knowledge-sink] behavior sink failed, falling back to private:', e);
     // 降级为私有知识
-    return await sinkAsPrivateKnowledge(extracted, workDir);
+    return await sinkAsPrivateKnowledge(extracted, workDir, agentId, sessionId);
   }
 }
 
 async function sinkAsPrivateKnowledge(
   extracted: ExtractedKnowledge,
   workDir: string,
+  agentId?: string,
+  sessionId?: string,
 ): Promise<SinkResult> {
   const id = `note-${Date.now().toString(36)}`;
 
@@ -312,6 +316,8 @@ async function sinkAsPrivateKnowledge(
     content: extracted.content,
     tags: extracted.tags,
     date: new Date().toISOString().split('T')[0],
+    sourceAgentId: agentId,
+    sourceSessionId: sessionId,
   };
 
   try {

@@ -41,6 +41,7 @@ export default defineConfig({
     dedupe: ["react", "react-dom"],
   },
   server: {
+    host: '0.0.0.0', // 绑定所有接口（IPv4+IPv6），确保 localhost/127.0.0.1 均可访问
     port: devPort,
     strictPort: true,
     ...(allowedHosts.size > 0 ? { allowedHosts: Array.from(allowedHosts) } : {}),

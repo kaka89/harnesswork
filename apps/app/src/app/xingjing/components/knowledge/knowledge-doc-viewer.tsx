@@ -8,6 +8,7 @@ import { fileRead } from '../../services/opencode-client';
 import { themeColors, chartColors } from '../../utils/colors';
 import DocMetaHeader from './doc-meta-header';
 import DocChainBreadcrumb from './doc-chain-breadcrumb';
+import { StructuredDocViewer, type StructuredDocType } from './structured-doc-viewer';
 
 interface KnowledgeDocViewerProps {
   entry: KnowledgeEntry;
@@ -48,16 +49,83 @@ function extractBody(content: string): { frontmatter: Record<string, unknown>; b
   return { frontmatter: fm, body: match[2].trim() };
 }
 
+/** 判断文件是否为 YAML 结构化文档，返回对应的 StructuredDocType */
+function detectYamlDocType(filePath?: string, docType?: string): StructuredDocType | null {
+  const fp = (filePath ?? '').toLowerCase();
+  const dt = (docType ?? '').toUpperCase();
+  if (fp.includes('/tasks/') || dt === 'TASK') return 'task';
+  if (fp.includes('/hypotheses/') || fp.includes('hypothesis')) return 'hypothesis';
+  if (fp.includes('adrs') || dt === 'ADR') return 'adr';
+  if (fp.includes('/releases/') || dt === 'RELEASE') return 'release';
+  if (fp.endsWith('.yaml') || fp.endsWith('.yml')) {
+    // 通用 YAML 文件——根据内容含有的 key 尝试推断
+    return null; // 将在内容加载后再推断
+  }
+  return null;
+}
+
+/** 简易 YAML 解析器（处理常见的平坦 key-value + 数组） */
+function parseSimpleYaml(content: string): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  const lines = content.split('\n');
+  let currentKey = '';
+  let currentArray: string[] | null = null;
+
+  for (const line of lines) {
+    // 跳过注释和空行
+    if (line.trim().startsWith('#') || line.trim() === '') continue;
+
+    // 数组项
+    const arrayMatch = line.match(/^\s+- (.+)$/);
+    if (arrayMatch && currentKey) {
+      if (!currentArray) currentArray = [];
+      currentArray.push(arrayMatch[1].trim());
+      result[currentKey] = currentArray;
+      continue;
+    }
+
+    // 普通 key: value
+    const kvMatch = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*):\s*(.*)$/);
+    if (kvMatch) {
+      // 保存前一个数组
+      currentArray = null;
+      currentKey = kvMatch[1];
+      const val = kvMatch[2].trim();
+      if (val === '' || val === '|' || val === '>') {
+        result[currentKey] = '';
+      } else {
+        // 去除引号
+        result[currentKey] = val.replace(/^['"]|['"]$/g, '');
+      }
+    }
+  }
+
+  return result;
+}
+
+/** 从解析后的 YAML 数据推断 StructuredDocType */
+function inferDocTypeFromData(data: Record<string, unknown>): StructuredDocType | null {
+  if ('dod' in data || ('est' in data && 'type' in data)) return 'task';
+  if ('belief' in data || 'method' in data) return 'hypothesis';
+  if ('decision' in data && 'question' in data) return 'adr';
+  if ('version' in data && 'deployTime' in data) return 'release';
+  return null;
+}
+
 export const KnowledgeDocViewer: Component<KnowledgeDocViewerProps> = (props) => {
   const [content, setContent] = createSignal<string | null>(null);
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const [enrichedEntry, setEnrichedEntry] = createSignal<KnowledgeEntry>(props.entry);
+  const [yamlDocType, setYamlDocType] = createSignal<StructuredDocType | null>(null);
+  const [yamlData, setYamlData] = createSignal<Record<string, unknown> | null>(null);
 
   createEffect(() => {
     const entry = props.entry;
     setContent(null);
     setError(null);
+    setYamlDocType(null);
+    setYamlData(null);
 
     if (entry.source === 'behavior') {
       // 行为知识内容已在 summary 中
@@ -74,9 +142,25 @@ export const KnowledgeDocViewer: Component<KnowledgeDocViewerProps> = (props) =>
     fileRead(entry.filePath, props.workDir)
       .then((raw) => {
         if (!raw) { setError('文件读取失败'); return; }
+
+        // 判断是否是 YAML 结构化文档
+        let ydt = detectYamlDocType(entry.filePath, entry.docType);
+        const isYaml = (entry.filePath ?? '').endsWith('.yaml') || (entry.filePath ?? '').endsWith('.yml');
+
+        if (isYaml) {
+          const parsed = parseSimpleYaml(raw);
+          if (!ydt) ydt = inferDocTypeFromData(parsed);
+          if (ydt) {
+            setYamlDocType(ydt);
+            setYamlData(parsed);
+            setContent(raw); // 保留原始内容以备回退
+            return;
+          }
+        }
+
+        // Markdown 处理
         const { frontmatter, body } = extractBody(raw);
         setContent(body);
-        // 将 frontmatter 合并回 entry 供 DocMetaHeader 使用
         setEnrichedEntry({ ...entry, frontmatter } as KnowledgeEntry & { frontmatter: Record<string, unknown> });
       })
       .catch(() => setError('文件读取失败'))
@@ -131,8 +215,12 @@ export const KnowledgeDocViewer: Component<KnowledgeDocViewerProps> = (props) =>
           </div>
         </Show>
 
-        {/* Content */}
-        <Show when={!loading() && !error() && content()}>
+        {/* Content — YAML 结构化或 Markdown */}
+        <Show when={!loading() && !error() && yamlDocType() && yamlData()}>
+          <StructuredDocViewer docType={yamlDocType()!} data={yamlData()!} />
+        </Show>
+
+        <Show when={!loading() && !error() && content() && !yamlDocType()}>
           <div
             style={{ 'font-size': '13px', 'line-height': '1.7', color: themeColors.text }}
             innerHTML={simpleMarkdownToHtml(content()!)}

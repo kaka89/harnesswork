@@ -26,7 +26,9 @@ import {
   History,
   X,
   AlertCircle,
+  Plus,
 } from 'lucide-solid';
+import { marked } from 'marked';
 import CreateProductModal from '../../../components/product/new-product-modal';
 import { useAppStore } from '../../../stores/app-store';
 import { themeColors, chartColors } from '../../../utils/colors';
@@ -36,6 +38,7 @@ import { loadProjectSettings, readYaml } from '../../../services/file-store';
 import { initProductDir } from '../../../../lib/tauri';
 import { getHealthScore } from '../../../services/knowledge-health';
 import { buildKnowledgeIndex } from '../../../services/knowledge-index';
+import { loadSession as loadMemorySession } from '../../../services/memory-store';
 import {
   SOLO_AGENTS,
   parseMention,
@@ -74,10 +77,87 @@ interface ChatMsg {
   content: string;
   ts: string;
   loading?: boolean;
+  /** 关联的产出物 ID（内容被提取为产出物后设置） */
+  artifactId?: string;
+  /** 产出物标题（展示链接时用） */
+  artifactTitle?: string;
 }
 
 const genMsgId = () => `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 const nowTimeStr = () => new Date().toTimeString().slice(0, 5);
+
+/**
+ * 从 OpenCode 存储的完整 user prompt 中提取用户实际输入。
+ *
+ * 完整 prompt 格式为 systemPrompt + 时间 + 知识上下文 + 回忆上下文 + 用户输入，
+ * 各段之间以 "\n\n---\n\n" 分隔。
+ * 检测到 "## 当前系统时间" 标记时，认为包含元上下文，取最后一段为用户输入。
+ * 未检测到标记时原样返回（兼容无 system prompt 的纯用户消息）。
+ */
+function stripSystemContext(content: string): string {
+  const SEP = '\n\n---\n\n';
+  const MARKER = '## 当前系统时间';
+  if (!content.includes(MARKER)) return content;
+  const parts = content.split(SEP);
+  // 用户输入始终在最后一段
+  const userInput = parts[parts.length - 1]?.trim();
+  return userInput || content;
+}
+
+// ─── 消息内容格式检测 ──────────────────────────────────────────────────────────
+
+type MsgFormat = 'html' | 'markdown' | 'text';
+
+/** 检测消息内容格式：html / markdown / text */
+function detectMsgFormat(content: string): MsgFormat {
+  const t = content.trimStart().toLowerCase();
+  if (t.startsWith('<!doctype html') || t.startsWith('<html')) return 'html';
+  if (/<head[\s>]/i.test(t) && /<body[\s>]/i.test(t)) return 'html';
+  const blockTags = (t.match(/<(div|section|table|style|header|footer|main|form)\b/gi) || []).length;
+  if (blockTags >= 3) return 'html';
+  // 有多个 Markdown 标记则判定为 markdown
+  const mdMarkers = [
+    /^#{1,3} /m,          // 标题
+    /\*\*.+?\*\*/,        // 加粗
+    /^[-*] /m,            // 列表
+    /```/,                // 代码块
+    /^\|.+\|/m,           // 表格
+  ].filter(re => re.test(content)).length;
+  if (mdMarkers >= 2) return 'markdown';
+  return 'text';
+}
+
+// 配置 marked 输出安全 HTML
+marked.setOptions({ async: false, breaks: true });
+
+/** 将 Markdown 字符串渲染为安全 HTML 字符串 */
+function mdToHtml(content: string): string {
+  try {
+    return marked.parse(content, { async: false }) as string;
+  } catch {
+    return content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+}
+
+// ─── 产出物自动检测阈值 ────────────────────────────────────────────────────────
+
+/** 判断 AI 回复是否构成一篇独立文档（达到产出物标准） */
+function looksLikeDocument(content: string): boolean {
+  if (content.length < 400) return false;
+  const fmt = detectMsgFormat(content);
+  if (fmt === 'html') return true;
+  // Markdown：至少有 2 个标题
+  const headings = (content.match(/^#{1,3} /gm) || []).length;
+  return headings >= 2;
+}
+
+/** 从 AI 回复中提取文档标题（取第一个标题行 or 截断） */
+function extractDocTitle(content: string): string {
+  const m = content.match(/^#{1,3} (.+)$/m);
+  if (m) return m[1].trim().slice(0, 60);
+  const line1 = content.trim().split('\n')[0].replace(/^[#*\->\s]+/, '').trim();
+  return (line1 || '对话产出物').slice(0, 60);
+}
 
 // ─── 快速示例（按模式分类） ──────────────────────────────────────────────────
 
@@ -382,6 +462,7 @@ const HistorySidebar = (props: {
   restoringId: string | null;
   onSelect: (id: string) => void;
   onClose: () => void;
+  onNewSession: () => void;
 }) => (
   <div style={{
     width: '220px', 'flex-shrink': '0', display: 'flex', 'flex-direction': 'column',
@@ -393,9 +474,25 @@ const HistorySidebar = (props: {
       padding: '10px 12px', 'border-bottom': `1px solid ${themeColors.border}`, 'flex-shrink': '0',
     }}>
       <span style={{ 'font-size': '12px', 'font-weight': '600' }}>会话历史</span>
-      <button onClick={props.onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: themeColors.textMuted, display: 'flex', 'align-items': 'center' }}>
-        <X size={14} />
-      </button>
+      <div style={{ display: 'flex', 'align-items': 'center', gap: '4px' }}>
+        {/* 新建会话按钮 */}
+        <button
+          onClick={props.onNewSession}
+          title="新建会话"
+          style={{
+            background: 'none', border: 'none', cursor: 'pointer', color: themeColors.textMuted,
+            display: 'flex', 'align-items': 'center', padding: '2px 4px', 'border-radius': '4px',
+            transition: 'color 0.15s',
+          }}
+          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#22c55e'; }}
+          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = themeColors.textMuted; }}
+        >
+          <Plus size={14} />
+        </button>
+        <button onClick={props.onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: themeColors.textMuted, display: 'flex', 'align-items': 'center' }}>
+          <X size={14} />
+        </button>
+      </div>
     </div>
     <div style={{ flex: 1, 'overflow-y': 'auto' }}>
       <Show
@@ -532,8 +629,37 @@ const SoloAutopilot = () => {
   // ── Chat 模式：普通对话消息（不走 Orchestrator，直接 callAgent）──────────────
   const [chatMessages, setChatMessages] = createSignal<ChatMsg[]>([]);
   const [chatLoading, setChatLoading] = createSignal(false);
+  /** 当前对话的 OpenCode Session ID（多轮复用同一 session） */
+  const [currentChatSessionId, setCurrentChatSessionId] = createSignal<string | null>(null);
   // 历史会话恢复中的 sessionId（用于 loading 指示）
   const [restoringSessionId, setRestoringSessionId] = createSignal<string | null>(null);
+
+  // ── 从 chat 回复中自动提取产出物 ─────────────────────────────────────────────
+  const tryExtractArtifact = (aiMsgId: string, fullText: string) => {
+    if (!looksLikeDocument(fullText)) return;
+    const title = extractDocTitle(fullText);
+    const newArtifact: ArtifactItem = {
+      id: `artifact-chat-${Date.now()}`,
+      agentId: 'chat',
+      agentName: 'AI 助手',
+      agentEmoji: '💬',
+      title,
+      content: fullText,
+      createdAt: nowTimeStr(),
+      format: detectMsgFormat(fullText) === 'html' ? 'html' : 'markdown',
+    };
+    setArtifactsData((prev) => [...prev, newArtifact]);
+    setArtifactCollapsed(false);
+    setActiveArtifactId(newArtifact.id);
+    // 在消息气泡追加产出物链接提示
+    setChatMessages((prev) =>
+      prev.map((m) =>
+        m.id === aiMsgId
+          ? { ...m, artifactId: newArtifact.id, artifactTitle: title }
+          : m
+      )
+    );
+  };
 
   // ── 产出物有内容时自动展开 ────────────────────────────────────────────────────
   createEffect(() => {
@@ -608,43 +734,35 @@ const SoloAutopilot = () => {
     } catch {}
   };
 
-  // ── 恢复历史会话：加载消息并以 chat 气泡形式展示 ───────────────────────────────
+  // ── 恢复历史会话：通过 memory-store 加载消息并以 chat 气泡形式展示 ─────────────
   const restoreHistorySession = async (item: HistoryItem) => {
-    const client = openworkCtx?.opencodeClient?.();
     const workDir = productStore.activeProduct()?.workDir;
-    if (!client || !workDir) return;
+    if (!workDir) return;
 
     setRestoringSessionId(item.id);
     try {
-      const result = await (client.session as any).messages({
-        path: { id: item.id },
-        query: { directory: workDir },
-      });
-      const rawMessages: Array<{ info: any; parts: any[] }> = Array.isArray(result.data)
-        ? result.data
-        : [];
+      const detail = await loadMemorySession(workDir, item.id);
+      if (!detail || detail.messages.length === 0) {
+        console.warn('[solo-autopilot] 会话无消息:', item.id);
+        setShowHistory(false);
+        return;
+      }
 
-      // 将 OpenCode messages 转为 ChatMsg[]，只保留有文字内容的消息
+      // 将 MemoryMessage 转为 ChatMsg[]，只保留有文字内容的消息
       const converted: ChatMsg[] = [];
-      for (const { info, parts } of rawMessages) {
-        // 提取所有 text parts 的文字
-        const textContent = (parts as any[])
-          .filter((p) => p.type === 'text' && typeof p.text === 'string' && p.text.trim())
-          .map((p) => p.text as string)
-          .join('\n\n')
-          .trim();
+      for (const m of detail.messages) {
+        const rawText = m.content?.trim();
+        const text = (rawText && m.role === 'user') ? stripSystemContext(rawText) : rawText;
+        if (!text) continue;
 
-        if (!textContent) continue; // 跳过无文字消息（工具调用等）
-
-        const tsMs = info?.time?.created ?? info?.time?.updated;
-        const tsStr = tsMs
-          ? new Date(tsMs).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+        const tsStr = m.ts
+          ? new Date(m.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
           : nowTimeStr();
 
         converted.push({
-          id: info.id ?? genMsgId(),
-          role: info.role === 'user' ? 'user' : 'assistant',
-          content: textContent,
+          id: m.id || genMsgId(),
+          role: m.role === 'user' ? 'user' : 'assistant',
+          content: text,
           ts: tsStr,
         });
       }
@@ -652,6 +770,12 @@ const SoloAutopilot = () => {
       // 用历史消息替换当前 chat 消息，并切换到 chat 模式
       setChatMessages(converted);
       setChatMode('chat');
+      // 恢复历史时，让用户可继续在同一 session 中对话
+      if (item.mode === 'chat') {
+        setCurrentChatSessionId(item.id);
+      } else {
+        setCurrentChatSessionId(null);
+      }
       setShowHistory(false);
     } catch (err) {
       console.error('[solo-autopilot] Failed to restore session:', err);
@@ -773,19 +897,30 @@ const SoloAutopilot = () => {
     await callAgent({
       userPrompt: text,
       systemPrompt: `你是「${productName}」产品的 AI 助手，精通产品策略、技术架构与增长分析。请用简洁、专业的中文回答用户的问题。`,
-      title: `solo-chat-${Date.now()}`,
+      // 首条消息用用户输入作为标题（截断 50 字），后续消息不设标题（session 已有）
+      title: currentChatSessionId()
+        ? undefined
+        : (text.length > 50 ? text.slice(0, 50) + '...' : text),
       model: getSessionModel(),
       directory: workDir,
+      // Session 复用：首条消息 undefined → 创建新 session，后续消息传 ID → 复用
+      existingSessionId: currentChatSessionId() || undefined,
+      // 传入 OpenWork session 状态表，让完成检测从 8s 超时降为 500ms 轮询
+      owSessionStatusById: openworkCtx?.sessionStatusById,
+      // 不再删除 session，保留历史记录（移除了 owDeleteSession）
+      onSessionCreated: (sid) => setCurrentChatSessionId(sid),
       onText: (accumulated) => {
         setChatMessages((prev) =>
           prev.map((m) => m.id === aiMsgId ? { ...m, content: accumulated, loading: false } : m)
         );
       },
-      onDone: () => {
+      onDone: (fullText) => {
         setChatMessages((prev) =>
-          prev.map((m) => m.id === aiMsgId ? { ...m, loading: false } : m)
+          prev.map((m) => m.id === aiMsgId ? { ...m, content: fullText || m.content, loading: false } : m)
         );
         setChatLoading(false);
+        // 产出物自动提取（见 tryExtractArtifact）
+        tryExtractArtifact(aiMsgId, fullText);
       },
       onError: (errMsg) => {
         setChatMessages((prev) =>
@@ -1038,24 +1173,78 @@ const SoloAutopilot = () => {
         <HistorySidebar
           items={historyItems()}
           activeId={orchestrator.state().orchestratorSessionId}
+          restoringId={restoringSessionId()}
           onSelect={(id) => {
             const item = historyItems().find((h) => h.id === id);
             if (item) restoreHistorySession(item);
             else setShowHistory(false);
           }}
           onClose={() => setShowHistory(false)}
+          onNewSession={() => {
+            // 新建会话：重置所有状态，关闭历史侧边栏
+            reset();
+            setChatMessages([]);
+            setCurrentChatSessionId(null);
+            setShowHistory(false);
+          }}
         />
       </Show>
 
-      {/* ── 左侧 Agent 面板 ── */}
+      {/* ── 左侧 Agent 面板（数据从 orchestrator.state() 实时派生） ── */}
       <div style={{ 'flex-shrink': '0', display: 'flex', 'flex-direction': 'column', overflow: 'hidden' }}>
         <AgentPanelSidebar
           agents={SOLO_AGENTS}
-          agentStatuses={agentStatuses()}
-          agentTasks={agentTasks()}
-          agentDone={agentDone()}
+          agentStatuses={(() => {
+            // 从 orchestrator agentSlots 派生实时状态，映射 'pending' → 'waiting'
+            const result: AgentStatus = Object.fromEntries(SOLO_AGENTS.map((a) => [a.id, 'idle' as const]));
+            orchestrator.state().agentSlots.forEach((slot, agentId) => {
+              const s = slot.status();
+              result[agentId] = s === 'pending' ? 'waiting' : (s as any);
+            });
+            return result;
+          })()}
+          agentTasks={(() => {
+            // 从各 slot 的最后一条 assistant 消息截取摘要作为当前任务描述
+            const result: AgentTasks = {};
+            orchestrator.state().agentSlots.forEach((slot, agentId) => {
+              const msgs = slot.messages();
+              const lastAssistant = [...msgs].reverse().find((m: any) => {
+                const role = m.info?.role ?? m.role;
+                return role === 'assistant';
+              });
+              if (lastAssistant) {
+                const parts: any[] = lastAssistant.parts ?? lastAssistant.info?.parts ?? [];
+                const text = parts
+                  .filter((p: any) => p.type === 'text')
+                  .map((p: any) => p.text ?? '')
+                  .join('')
+                  .trim()
+                  .slice(0, 40);
+                if (text) result[agentId] = text + (text.length >= 40 ? '…' : '');
+              }
+            });
+            return result;
+          })()}
+          agentDone={(() => {
+            // 已完成的 agent 计 1，其余 0
+            const result: AgentDone = Object.fromEntries(SOLO_AGENTS.map((a) => [a.id, 0]));
+            orchestrator.state().agentSlots.forEach((slot, agentId) => {
+              if (slot.status() === 'done') result[agentId] = 1;
+            });
+            return result;
+          })()}
           elapsedSec={elapsedSec()}
-          runState={runState()}
+          runState={(() => {
+            if (orchestrator.state().isRunning) return 'running';
+            const slots = orchestrator.state().agentSlots;
+            if (slots.size > 0) {
+              const allSettled = Array.from(slots.values()).every(
+                (s) => s.status() === 'done' || s.status() === 'error'
+              );
+              if (allSettled) return 'done';
+            }
+            return runState(); // fallback 保留本地状态
+          })()}
           artifactCount={agentArtifactCount}
           stepTimes={stepTimes()}
           progress={progress()}
@@ -1094,9 +1283,42 @@ const SoloAutopilot = () => {
             </span>
           </div>
           <div style={{ display: 'flex', 'align-items': 'center', gap: '6px' }}>
+            {/* 新建会话按钮（有内容时显示，提供返回/清空入口） */}
+            <Show when={hasContent()}>
+              <button
+                onClick={() => {
+                  reset();
+                  setChatMessages([]);
+                  setCurrentChatSessionId(null);
+                }}
+                title="新建会话"
+                style={{
+                  display: 'flex', 'align-items': 'center', gap: '4px',
+                  padding: '3px 8px', 'border-radius': '6px', 'font-size': '11px',
+                  border: `1px solid ${themeColors.border}`, background: 'transparent',
+                  color: themeColors.textMuted,
+                  cursor: 'pointer', transition: 'all 0.15s',
+                }}
+                onMouseEnter={(e) => {
+                  (e.currentTarget as HTMLElement).style.color = '#22c55e';
+                  (e.currentTarget as HTMLElement).style.borderColor = '#22c55e';
+                }}
+                onMouseLeave={(e) => {
+                  (e.currentTarget as HTMLElement).style.color = themeColors.textMuted;
+                  (e.currentTarget as HTMLElement).style.borderColor = themeColors.border;
+                }}
+              >
+                <Plus size={12} />
+                新建
+              </button>
+            </Show>
             {/* 历史按钮 */}
             <button
-              onClick={() => { setShowHistory(!showHistory()); if (!showHistory()) loadHistory(); }}
+              onClick={() => {
+                const opening = !showHistory();
+                setShowHistory(opening);
+                if (opening) loadHistory();
+              }}
               title="会话历史"
               style={{
                 display: 'flex', 'align-items': 'center', gap: '4px',
@@ -1209,13 +1431,14 @@ const SoloAutopilot = () => {
 
                   {/* 消息气泡 */}
                   <div style={{
-                    'max-width': '75%', padding: '10px 14px', 'border-radius': '14px',
+                    'max-width': msg.role === 'assistant' ? '85%' : '75%',
+                    padding: '10px 14px', 'border-radius': '14px',
                     'border-bottom-left-radius': msg.role === 'assistant' ? '4px' : '14px',
                     'border-bottom-right-radius': msg.role === 'user' ? '4px' : '14px',
                     background: msg.role === 'user' ? chartColors.success : themeColors.surface,
                     color: msg.role === 'user' ? 'white' : themeColors.text,
                     border: msg.role === 'assistant' ? `1px solid ${themeColors.border}` : 'none',
-                    'font-size': '13px', 'line-height': '1.65', 'white-space': 'pre-wrap',
+                    'font-size': '13px', 'line-height': '1.65',
                     'word-break': 'break-word',
                     'box-shadow': '0 1px 4px rgba(0,0,0,0.06)',
                   }}>
@@ -1229,7 +1452,69 @@ const SoloAutopilot = () => {
                         </span>
                       }
                     >
-                      {msg.content || <span style={{ color: themeColors.textMuted, 'font-style': 'italic' }}>正在生成...</span>}
+                      <Show when={msg.role === 'user'}>
+                        {/* 用户消息：纯文本即可 */}
+                        <span style={{ 'white-space': 'pre-wrap' }}>
+                          {msg.content || <span style={{ color: 'rgba(255,255,255,0.6)', 'font-style': 'italic' }}>空消息</span>}
+                        </span>
+                      </Show>
+                      <Show when={msg.role === 'assistant'}>
+                        {/* AI 消息：按格式渲染 */}
+                        <Show
+                          when={detectMsgFormat(msg.content) === 'html'}
+                          fallback={
+                            <Show
+                              when={detectMsgFormat(msg.content) === 'markdown'}
+                              fallback={
+                                /* 纯文本 */
+                                <span style={{ 'white-space': 'pre-wrap' }}>
+                                  {msg.content || <span style={{ color: themeColors.textMuted, 'font-style': 'italic' }}>正在生成...</span>}
+                                </span>
+                              }
+                            >
+                              {/* Markdown 渲染 */}
+                              <div
+                                class="xingjing-md"
+                                innerHTML={mdToHtml(msg.content)}
+                              />
+                            </Show>
+                          }
+                        >
+                          {/* HTML 内容：在 iframe 中安全渲染 */}
+                          <iframe
+                            srcdoc={msg.content}
+                            style={{
+                              width: '100%', 'min-height': '200px', border: 'none',
+                              'border-radius': '6px', background: 'white',
+                            }}
+                            sandbox="allow-scripts allow-same-origin"
+                          />
+                        </Show>
+                        {/* 产出物链接 */}
+                        <Show when={msg.artifactId}>
+                          <div style={{
+                            'margin-top': '10px', 'padding-top': '8px',
+                            'border-top': `1px solid ${themeColors.border}`,
+                            display: 'flex', 'align-items': 'center', gap: '6px',
+                          }}>
+                            <FileText size={12} style={{ color: chartColors.success, 'flex-shrink': '0' }} />
+                            <span style={{ 'font-size': '11px', color: themeColors.textMuted }}>已提取为产出物：</span>
+                            <button
+                              onClick={() => {
+                                setArtifactCollapsed(false);
+                                setActiveArtifactId(msg.artifactId!);
+                              }}
+                              style={{
+                                background: 'none', border: 'none', cursor: 'pointer',
+                                'font-size': '11px', color: chartColors.primary, 'font-weight': 600,
+                                padding: '0', 'text-decoration': 'underline',
+                              }}
+                            >
+                              {msg.artifactTitle || '查看产出物'}
+                            </button>
+                          </div>
+                        </Show>
+                      </Show>
                     </Show>
                   </div>
 
@@ -1251,6 +1536,25 @@ const SoloAutopilot = () => {
               0%, 80%, 100% { opacity: 0.2; transform: scale(0.8); }
               40% { opacity: 1; transform: scale(1); }
             }
+            /* Markdown 气泡样式 */
+            .xingjing-md { font-size: 13px; line-height: 1.7; word-break: break-word; }
+            .xingjing-md h1 { font-size: 16px; font-weight: 700; margin: 14px 0 6px; }
+            .xingjing-md h2 { font-size: 14px; font-weight: 700; margin: 12px 0 5px; }
+            .xingjing-md h3 { font-size: 13px; font-weight: 700; margin: 10px 0 4px; }
+            .xingjing-md p  { margin: 6px 0; }
+            .xingjing-md ul, .xingjing-md ol { padding-left: 18px; margin: 6px 0; }
+            .xingjing-md li { margin: 3px 0; }
+            .xingjing-md code { background: rgba(0,0,0,0.06); padding: 1px 5px; border-radius: 3px; font-size: 12px; font-family: monospace; }
+            .xingjing-md pre { background: rgba(0,0,0,0.06); padding: 10px 12px; border-radius: 6px; overflow-x: auto; margin: 8px 0; }
+            .xingjing-md pre code { background: none; padding: 0; }
+            .xingjing-md blockquote { border-left: 3px solid #22c55e; padding-left: 10px; margin: 8px 0; color: #666; }
+            .xingjing-md table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 12px; }
+            .xingjing-md th, .xingjing-md td { border: 1px solid #e5e7eb; padding: 5px 8px; }
+            .xingjing-md th { background: rgba(0,0,0,0.04); font-weight: 600; }
+            .xingjing-md a { color: #22c55e; text-decoration: underline; }
+            .xingjing-md strong { font-weight: 700; }
+            .xingjing-md em { font-style: italic; }
+            .xingjing-md hr { border: none; border-top: 1px solid #e5e7eb; margin: 12px 0; }
           `}</style>
         </Show>
 

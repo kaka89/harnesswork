@@ -13,6 +13,7 @@ interface DocRelationPanelProps {
   onSendToAI: (entry: KnowledgeEntry) => void;
   onStartAutopilot: (entry: KnowledgeEntry) => void;
   onCopyRef: (entry: KnowledgeEntry) => void;
+  onViewSession?: (sessionId: string) => void;
 }
 
 const sectionStyle = {
@@ -116,6 +117,11 @@ export const DocRelationPanel: Component<DocRelationPanelProps> = (props) => {
             <Show when={props.entry?.source === 'behavior'}>
               <div>📚 行为知识（OpenWork Skill）</div>
               <div style={{ color: '#9ca3af', 'font-size': '11px' }}>由团队协作共享</div>
+              <Show when={props.entry?.lifecycle}>
+                <div style={{ 'margin-top': '4px', 'font-size': '11px' }}>
+                  生命周期: {props.entry?.lifecycle === 'stable' ? '🔒 稳定' : '🌱 动态'}
+                </div>
+              </Show>
             </Show>
             <Show when={props.entry?.source === 'private'}>
               <div>📝 个人笔记</div>
@@ -131,6 +137,29 @@ export const DocRelationPanel: Component<DocRelationPanelProps> = (props) => {
               </Show>
             </Show>
           </div>
+
+          {/* Agent 生成溯源 */}
+          <Show when={props.entry?.sourceAgentId}>
+            <div style={{ 'margin-top': '8px', padding: '6px 8px', background: '#f0fdf4', 'border-radius': '6px', 'font-size': '11px' }}>
+              <div style={{ color: '#16a34a', 'font-weight': 500 }}>🧠 由 {props.entry?.sourceAgentId} 生成</div>
+              <Show when={props.entry?.date}>
+                <div style={{ color: '#9ca3af', 'margin-top': '2px' }}>沉淀于 {String(props.entry?.date ?? '').slice(0, 10)}</div>
+              </Show>
+            </div>
+          </Show>
+
+          {/* 查看原始会话 */}
+          <Show when={props.entry?.sourceSessionId && props.onViewSession}>
+            <button
+              style={{
+                ...actionBtnStyle('#f0f9ff', '#0369a1'),
+                'margin-top': '6px', 'text-align': 'center' as const,
+              }}
+              onClick={() => props.onViewSession?.(props.entry!.sourceSessionId!)}
+            >
+              💬 查看原始对话
+            </button>
+          </Show>
         </div>
       </Show>
     </div>

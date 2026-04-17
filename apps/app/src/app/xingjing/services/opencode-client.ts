@@ -9,7 +9,6 @@
  */
 
 import { createClient } from '../../lib/opencode';
-import { createSignal, onCleanup } from 'solid-js';
 
 // ─── Client 管理（OpenWork 注入）────────────────────────────────────────────
 
@@ -127,6 +126,18 @@ export async function fileList(
 }
 
 /**
+ * 将绝对路径转换为相对于工作目录的相对路径。
+ * 如果 path 以 _directory + '/' 开头，则去掉前缀；否则原样返回。
+ * 用于修正向 OpenWork Server API 传递绝对路径导致的路径重复 Bug。
+ */
+function toWorkspaceRelativePath(path: string): string {
+  if (_directory && path.startsWith(_directory + '/')) {
+    return path.slice(_directory.length + 1);
+  }
+  return path;
+}
+
+/**
  * 读取文件内容（文本）
  * 优先使用 OpenWork Server API，回退到 OpenCode file API。
  */
@@ -134,14 +145,18 @@ export async function fileRead(
   path: string,
   directory?: string,
 ): Promise<string | null> {
-  // 优先使用 OpenWork Server API
-  if (_owFileOps && _workspaceId) {
+  // 当显式传入 directory（且与全局工作目录不同）时，必须使用能正确携带 directory
+  // 参数的 OpenCode SDK，因为 OpenWork Server API 会忽略 directory 参数。
+  // 这一情况主要出现在知识扫描器按产品 workDir 读取文件时。
+  const useOpenworkApi = _owFileOps && _workspaceId && !directory;
+  if (useOpenworkApi) {
     try {
-      const result = await _owFileOps.read(_workspaceId, path);
+      // 将绝对路径转为相对路径，避免 OpenWork Server 二次拼接 workspace 根目录导致路径重复
+      const result = await _owFileOps!.read(_workspaceId!, toWorkspaceRelativePath(path));
       return result?.content ?? null;
     } catch { /* fall through to client SDK */ }
   }
-  // 回退到 OpenCode file API
+  // 使用 OpenCode file API（正确携带 directory 参数）
   const client = getXingjingClient();
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -168,7 +183,8 @@ export async function fileWrite(
   // 优先使用 OpenWork Server API
   if (_owFileOps && _workspaceId) {
     try {
-      return await _owFileOps.write(_workspaceId, { path, content });
+      // 将绝对路径转为相对路径，避免 OpenWork Server 二次拼接 workspace 根目录导致路径重复
+      return await _owFileOps.write(_workspaceId, { path: toWorkspaceRelativePath(path), content });
     } catch { /* fall through to raw fetch */ }
   }
   // 回退到裸 fetch（过渡期）
@@ -267,47 +283,6 @@ export async function sessionPrompt(
   }
 }
 
-// ─── SSE 事件订阅 ─────────────────────────────────────────────────────────────
-
-export type XingjingEvent =
-  | { type: 'session.progress'; sessionId: string; progress: number }
-  | { type: 'session.done'; sessionId: string }
-  | { type: 'session.error'; sessionId: string; message: string }
-  | { type: 'unknown'; raw: unknown };
-
-/**
- * SolidJS reactive 工具：订阅 OpenCode SSE 事件
- */
-export function createOpenCodeEvents(
-  onEvent: (event: XingjingEvent) => void,
-) {
-  const [connected, setConnected] = createSignal(false);
-
-  const eventSource = new EventSource(`${_baseUrl}/event`);
-  eventSource.onopen = () => setConnected(true);
-  eventSource.onerror = () => setConnected(false);
-  eventSource.onmessage = (e) => {
-    try {
-      const data = JSON.parse(e.data) as Record<string, unknown>;
-      if (data.type === 'session.completed') {
-        onEvent({ type: 'session.done', sessionId: String(data.sessionID ?? '') });
-      } else if (data.type === 'session.error') {
-        onEvent({
-          type: 'session.error',
-          sessionId: String(data.sessionID ?? ''),
-          message: String(data.message ?? ''),
-        });
-      } else {
-        onEvent({ type: 'unknown', raw: data });
-      }
-    } catch { /* ignore */ }
-  };
-
-  onCleanup(() => eventSource.close());
-
-  return { connected };
-}
-
 // ─── Config API ──────────────────────────────────────────────────────────────
 
 export interface XingjingModelConfig {
@@ -361,34 +336,6 @@ export async function setProviderAuth(providerID: string, apiKey: string): Promi
   }
 }
 
-// ─── SolidJS Reactive 辅助 ─────────────────────────────────────────────────
-
-/**
- * 创建响应式文件资源：读取文件内容，不可用时降级到 mock
- */
-export function createFileResource<T>(
-  getPath: () => string,
-  parseFn: (content: string) => T,
-  mockFallback: T,
-): () => T {
-  const [value, setValue] = createSignal<T>(mockFallback);
-
-  const path = getPath();
-  if (path) {
-    fileRead(path).then((content) => {
-      if (content) {
-        try {
-          setValue(() => parseFn(content));
-        } catch {
-          // parse error, keep mock fallback
-        }
-      }
-    });
-  }
-
-  return value as () => T;
-}
-
 // ─── 多平台 Skill 发现 ──────────────────────────────────────────────────────
 
 /**
@@ -421,33 +368,7 @@ export interface XingjingAgentItem {
   editable: boolean;
 }
 
-/** 简单解析 Markdown YAML frontmatter */
-function parseFrontmatter(content: string): Record<string, unknown> {
-  const match = content.match(/^---\s*\n([\s\S]*?)\n---/);
-  if (!match) return {};
-  const result: Record<string, unknown> = {};
-  for (const line of match[1].split('\n')) {
-    const idx = line.indexOf(':');
-    if (idx < 0) continue;
-    const key = line.slice(0, idx).trim();
-    const raw = line.slice(idx + 1).trim();
-    // 简单 YAML 数组：- item
-    if (raw === '') {
-      // multiline — skip for simplicity
-      continue;
-    }
-    result[key] = raw.replace(/^["']|["']$/g, '');
-  }
-  // 处理 skills 数组（取紧跟在 skills: 后面的 - 行）
-  const skillsMatch = content.match(/^skills:\s*\n((?:\s*-\s*.+\n?)*)/m);
-  if (skillsMatch) {
-    result['skills'] = skillsMatch[1]
-      .split('\n')
-      .map(l => l.replace(/^\s*-\s*/, '').trim())
-      .filter(Boolean);
-  }
-  return result;
-}
+import { parseFrontmatterMeta } from '../utils/frontmatter';
 
 // 各平台 Skill 目录配置
 const SKILL_DIRS: { path: string; platform: SkillPlatform; isSubdirBased: boolean }[] = [
@@ -479,7 +400,7 @@ export async function discoverAllSkills(workDir: string): Promise<{
         // 子目录结构：读取目录内的 SKILL.md
         const content = await fileRead(`${dir.path}/${entry.name}/SKILL.md`, workDir);
         if (content) {
-          const meta = parseFrontmatter(content);
+          const meta = parseFrontmatterMeta(content);
           skills.push({
             id: `${dir.platform}:${entry.name}`,
             name: (meta['name'] as string) ?? entry.name,
@@ -492,7 +413,7 @@ export async function discoverAllSkills(workDir: string): Promise<{
         }
       } else if (!dir.isSubdirBased && entry.type === 'file' && entry.name.endsWith('.md')) {
         const content = await fileRead(`${dir.path}/${entry.name}`, workDir);
-        const meta = parseFrontmatter(content ?? '');
+        const meta = parseFrontmatterMeta(content ?? '');
         skills.push({
           id: `${dir.platform}:${entry.name.replace('.md', '')}`,
           name: (meta['name'] as string) ?? entry.name.replace('.md', ''),
@@ -511,7 +432,7 @@ export async function discoverAllSkills(workDir: string): Promise<{
     for (const entry of entries) {
       if (entry.type === 'file' && entry.name.endsWith('.md')) {
         const content = await fileRead(`${dir.path}/${entry.name}`, workDir);
-        const meta = parseFrontmatter(content ?? '');
+        const meta = parseFrontmatterMeta(content ?? '');
         agents.push({
           id: `${dir.platform}:${entry.name.replace('.md', '')}`,
           name: (meta['name'] as string) ?? entry.name.replace('.md', ''),
@@ -598,6 +519,10 @@ export interface CallAgentOptions {
    * 可用于 UI 展示"搜索完成，找到 N 条结果"。
    */
   onToolResult?: (toolName: string, result: string) => void;
+  /** 复用已有 Session ID（多轮对话同一 session），跳过 session.create */
+  existingSessionId?: string;
+  /** Session 建立回调（新建或复用），返回当前 sessionId，供调用方缓存以便后续复用 */
+  onSessionCreated?: (sessionId: string) => void;
 }
 
 /**
@@ -1108,27 +1033,27 @@ async function runAgentSession(
 }
 
 /**
- * 使用外部注入的 client（来自 OpenWork）调用 AI Agent。
+ * Agent 会话执行核心：两层静默重试策略。
+ * Layer 1 复用 sessionId 重连 SSE，Layer 2 全新调用。
  *
  * 采用 SDK 的 client.event.subscribe() 替代原生 EventSource，
  * 确保在 Tauri/WKWebView 环境下正确使用 tauriFetch 并携带认证头。
  */
-export async function callAgentWithClient(
-  client: ReturnType<typeof createClient>,
+async function executeAgentWithRetry(
+  getClient: () => ReturnType<typeof createClient>,
   opts: CallAgentOptions,
 ): Promise<void> {
-  const getClient = () => client;
-  let sessionId: string | null = null;
+  let sessionId: string | null = opts.existingSessionId ?? null;
   let accumulated = '';
 
   // ── Layer 1: SSE 重连（复用 sessionId，不重发 prompt）──
   for (let sseTry = 0; sseTry <= RETRY_DELAYS.length; sseTry++) {
     if (sseTry > 0) await sleep(RETRY_DELAYS[sseTry - 1]);
 
-    console.log(`[xingjing-diag] callAgentWithClient Layer1 try=${sseTry}, sessionId=${sessionId}, accLen=${accumulated.length}`);
+    console.log(`[xingjing-diag] executeAgent Layer1 try=${sseTry}, sessionId=${sessionId}, accLen=${accumulated.length}`);
     const r = await runAgentSession(
       getClient,
-      sseTry === 0 ? null : sessionId,
+      sseTry === 0 ? (opts.existingSessionId ?? null) : sessionId,
       sseTry === 0 ? '' : accumulated,
       sseTry === 0,
       opts,
@@ -1136,86 +1061,15 @@ export async function callAgentWithClient(
 
     accumulated = r.accumulated;
     sessionId = r.sessionId;
-    console.log(`[xingjing-diag] callAgentWithClient Layer1 result: status=${r.status}, error=${r.error ?? 'none'}, accLen=${accumulated.length}, sid=${sessionId}`);
+    if (r.sessionId) opts.onSessionCreated?.(r.sessionId);
 
     if (r.status === 'done') {
-      console.log(`[xingjing-diag] callAgentWithClient Layer1 DONE, calling onDone with accLen=${accumulated.length}`);
-      opts.onDone?.(accumulated);
-      if (sessionId) opts.owDeleteSession?.(sessionId).catch(() => {});
-      return;
-    }
-    if (r.status === 'hard-error' && !r.error?.includes('无法创建')) break;
-    if (!sessionId) break;
-  }
-
-  // ── Layer 2: 全新调用（新 session + 重发 prompt）──
-  for (let callTry = 0; callTry <= RETRY_DELAYS.length; callTry++) {
-    if (callTry > 0) await sleep(RETRY_DELAYS[callTry - 1]);
-
-    console.log(`[xingjing-diag] callAgentWithClient Layer2 try=${callTry}`);
-    const r = await runAgentSession(getClient, null, '', true, opts);
-
-    accumulated = r.accumulated;
-    sessionId = r.sessionId;
-    console.log(`[xingjing-diag] callAgentWithClient Layer2 result: status=${r.status}, error=${r.error ?? 'none'}, accLen=${accumulated.length}, sid=${sessionId}`);
-
-    if (r.status === 'done') {
-      console.log(`[xingjing-diag] callAgentWithClient Layer2 DONE, calling onDone with accLen=${accumulated.length}`);
-      opts.onDone?.(accumulated);
-      if (sessionId) opts.owDeleteSession?.(sessionId).catch(() => {});
-      return;
-    }
-
-    if (callTry === RETRY_DELAYS.length) {
-      console.error(`[xingjing-diag] callAgentWithClient all retries exhausted, calling onError`);
-      opts.onError?.(r.error ?? '重试耗尽（外部 client）');
-      return;
-    }
-  }
-
-  console.error(`[xingjing-diag] callAgentWithClient fell through, calling onError`);
-  opts.onError?.('重试耗尽（外部 client）');
-}
-/**
- * 调用 AI Agent：创建会话 → 发送提示词 → 流式接收结果 → 完成回调
- *
- * 采用 SDK 的 client.event.subscribe() 替代原生 EventSource，
- * 确保在 Tauri/WKWebView 环境下正确使用 tauriFetch。
- * 支持两层静默重试：Layer 1 复用 sessionId 重连 SSE，Layer 2 全新调用。
- */
-export async function callAgent(opts: CallAgentOptions): Promise<void> {
-  const getClient = () => getXingjingClient();
-  let sessionId: string | null = null;
-  let accumulated = '';
-
-  // ── Layer 1: SSE 重连（复用 sessionId，不重发 prompt）──
-  for (let sseTry = 0; sseTry <= RETRY_DELAYS.length; sseTry++) {
-    if (sseTry > 0) await sleep(RETRY_DELAYS[sseTry - 1]);
-
-    console.log(`[xingjing-diag] callAgent Layer1 try=${sseTry}, sessionId=${sessionId}, accLen=${accumulated.length}`);
-    const r = await runAgentSession(
-      getClient,
-      sseTry === 0 ? null : sessionId,
-      sseTry === 0 ? '' : accumulated,
-      sseTry === 0,
-      opts,
-    );
-
-    accumulated = r.accumulated;
-    sessionId = r.sessionId;
-    console.log(`[xingjing-diag] callAgent Layer1 result: status=${r.status}, error=${r.error ?? 'none'}, accLen=${accumulated.length}, sid=${sessionId}`);
-
-    if (r.status === 'done') {
-      console.log(`[xingjing-diag] callAgent Layer1 DONE, calling onDone with accLen=${accumulated.length}`);
       opts.onDone?.(accumulated);
       if (sessionId) opts.owDeleteSession?.(sessionId).catch(() => {});
       return;
     }
     // 服务端硬错误（session.error）：不做 Layer 1 重试，直接进 Layer 2
-    if (r.status === 'hard-error' && !r.error?.includes('无法创建')) {
-      break;
-    }
-
+    if (r.status === 'hard-error' && !r.error?.includes('无法创建')) break;
     // session 创建失败：无法 Layer 1 重连，直接进 Layer 2
     if (!sessionId) break;
   }
@@ -1224,21 +1078,13 @@ export async function callAgent(opts: CallAgentOptions): Promise<void> {
   for (let callTry = 0; callTry <= RETRY_DELAYS.length; callTry++) {
     if (callTry > 0) await sleep(RETRY_DELAYS[callTry - 1]);
 
-    console.log(`[xingjing-diag] callAgent Layer2 try=${callTry}`);
-    const r = await runAgentSession(
-      getClient,
-      null,
-      '',
-      true,
-      opts,
-    );
+    const r = await runAgentSession(getClient, null, '', true, opts);
 
     accumulated = r.accumulated;
     sessionId = r.sessionId;
-    console.log(`[xingjing-diag] callAgent Layer2 result: status=${r.status}, error=${r.error ?? 'none'}, accLen=${accumulated.length}, sid=${sessionId}`);
+    if (r.sessionId) opts.onSessionCreated?.(r.sessionId);
 
     if (r.status === 'done') {
-      console.log(`[xingjing-diag] callAgent Layer2 DONE, calling onDone with accLen=${accumulated.length}`);
       opts.onDone?.(accumulated);
       if (sessionId) opts.owDeleteSession?.(sessionId).catch(() => {});
       return;
@@ -1246,14 +1092,30 @@ export async function callAgent(opts: CallAgentOptions): Promise<void> {
 
     if (callTry === RETRY_DELAYS.length) {
       const errMsg = r.error ?? '重试耗尽，请检查网络连接或 OpenCode 服务状态';
-      console.error(`[xingjing-diag] callAgent all retries exhausted, calling onError: ${errMsg}`);
       opts.onError?.(errMsg);
       return;
     }
   }
 
-  console.error(`[xingjing-diag] callAgent fell through, calling onError`);
   opts.onError?.('重试耗尽，请检查网络连接或 OpenCode 服务状态');
+}
+
+/**
+ * 使用外部注入的 client（来自 OpenWork）调用 AI Agent。
+ */
+export async function callAgentWithClient(
+  client: ReturnType<typeof createClient>,
+  opts: CallAgentOptions,
+): Promise<void> {
+  return executeAgentWithRetry(() => client, opts);
+}
+
+/**
+ * 调用 AI Agent：创建会话 → 发送提示词 → 流式接收结果 → 完成回调。
+ * 使用 OpenWork 注入的共享 client。
+ */
+export async function callAgent(opts: CallAgentOptions): Promise<void> {
+  return executeAgentWithRetry(() => getXingjingClient(), opts);
 }
 
 // ─── 直连 LLM API（OpenCode 不可用时的降级路径）────────────────────────────
@@ -1439,15 +1301,6 @@ async function execViaAgent(
 }
 
 /**
- * 在指定工作目录初始化 Git 仓库
- */
-export async function gitInit(
-  workDir: string,
-): Promise<{ ok: boolean; output: string }> {
-  return execViaAgent('git init', workDir);
-}
-
-/**
  * 同步 Git 仓库（add + commit + push）
  * @param workDir 工作目录
  * @param message commit 消息（默认 "xingjing sync"）
@@ -1458,16 +1311,4 @@ export async function gitSync(
 ): Promise<{ ok: boolean; output: string }> {
   const cmd = `git add -A && git commit -m "${message.replace(/"/g, '\\"')}" && git push`;
   return execViaAgent(cmd, workDir);
-}
-
-/**
- * 克隆远程 Git 仓库
- * @param url 远程仓库 URL
- * @param workDir 目标目录
- */
-export async function gitClone(
-  url: string,
-  workDir: string,
-): Promise<{ ok: boolean; output: string }> {
-  return execViaAgent(`git clone ${url} .`, workDir);
 }

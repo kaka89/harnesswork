@@ -27,6 +27,7 @@ import {
   type MemoryMessage,
   saveSession as saveMemorySession,
   loadMemoryIndex,
+  loadSession as loadMemorySession,
   generateSessionSummary,
   genSessionId,
   nowISO,
@@ -443,13 +444,29 @@ const MessageBubble: Component<{
   accentBg: string;
   agents: AutopilotAgent[];
   loading: boolean;
+  onCopy?: (content: string) => void;
 }> = (props) => {
   const isUser = () => props.msg.role === 'user';
   const isLoading = () => props.loading && !props.msg.content && !isUser();
   const bgClass = () => props.accentBg.split(' ')[0];
+  const [copied, setCopied] = createSignal(false);
+  const [hovered, setHovered] = createSignal(false);
+
+  const handleCopy = () => {
+    const text = props.msg.content;
+    if (!text) return;
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {});
+  };
 
   return (
-    <div class={`flex ${isUser() ? 'justify-end' : 'justify-start'} items-end gap-2`}>
+    <div
+      class={`flex ${isUser() ? 'justify-end' : 'justify-start'} items-end gap-2`}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
       {/* AI 头像（左侧） */}
       <Show when={!isUser()}>
         <div
@@ -461,7 +478,7 @@ const MessageBubble: Component<{
       </Show>
 
       {/* 消息主体 */}
-      <div class={`flex flex-col ${isUser() ? 'items-end' : 'items-start'} max-w-[80%]`}>
+      <div class={`flex flex-col ${isUser() ? 'items-end' : 'items-start'} max-w-[82%]`}>
 
         {/* AI 消息 */}
         <Show when={!isUser()}>
@@ -498,12 +515,27 @@ const MessageBubble: Component<{
           </div>
         </Show>
 
-        {/* 时间戳 */}
-        <Show when={props.msg.ts}>
-          <span class="text-[10px] text-[var(--dls-text-muted)] mt-1 px-1">
-            {props.msg.ts}
-          </span>
-        </Show>
+        {/* 时间戳 + 操作工具栏 */}
+        <div class="flex items-center gap-2 mt-1 px-1">
+          <Show when={props.msg.ts}>
+            <span class="text-[10px] text-[var(--dls-text-muted)]">{props.msg.ts}</span>
+          </Show>
+          {/* 复制按钮（hover 时显示，AI 消息且有内容时） */}
+          <Show when={!isUser() && props.msg.content && !isLoading() && hovered()}>
+            <button
+              onClick={handleCopy}
+              title={copied() ? '已复制' : '复制内容'}
+              class="text-[10px] px-1.5 py-0.5 rounded transition-colors"
+              style={{
+                color: copied() ? 'var(--green-9)' : 'var(--dls-text-muted)',
+                background: 'var(--dls-hover)',
+                border: '1px solid var(--dls-border)',
+              }}
+            >
+              {copied() ? '✓ 已复制' : '⎘ 复制'}
+            </button>
+          </Show>
+        </div>
       </div>
 
       {/* 用户头像（右侧） */}
@@ -557,9 +589,58 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
     // 降级：从 localStorage 加载（兼容旧数据）
     const persisted = loadLegacySessions();
     if (persisted.length > 0) {
-      setSessionHistory(persisted.map(fromPersistedSession));
+      setSessionHistory(
+        persisted.map(fromPersistedSession)
+          .sort((a, b) => b.ts.localeCompare(a.ts))
+      );
     }
   });
+
+  // ─── 按需加载历史会话详情 ─────────────────────────────────────────
+  const loadSessionDetail = async (session: SessionRecord) => {
+    // 先设置当前查看的会话
+    setViewingSession(session);
+
+    if (session.messages.length > 0) return; // 已有消息，无需加载
+
+    const workDir = props.workDir;
+    if (!workDir) return;
+
+    try {
+      const detail = await loadMemorySession(workDir, session.id);
+      if (detail && detail.messages.length > 0) {
+        const loaded: SessionRecord = {
+          ...session,
+          messages: detail.messages.map(m => ({
+            id: m.id,
+            role: m.role as 'user' | 'assistant',
+            content: m.content,
+            type: (m.msgType as AiMessage['type']) ?? 'chat',
+            agentName: m.agentName,
+            ts: m.ts
+              ? new Date(m.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+              : undefined,
+          })),
+        };
+        setViewingSession(loaded);
+        // 更新缓存
+        setSessionHistory(prev => prev.map(s => s.id === session.id ? loaded : s));
+      }
+    } catch (e) {
+      console.warn('[ai-chat-drawer] 加载会话详情失败:', e);
+    }
+  };
+
+  // ─── 将历史会话恢复为活跃对话（可继续发消息）─────────────────────────
+  const restoreAsActiveSession = (session: SessionRecord) => {
+    if (session.messages.length === 0) return;
+    // 将历史消息载入主消息列表
+    setMessages(session.messages);
+    // 关闭历史面板，回到对话界面
+    setViewingSession(null);
+    setShowHistory(false);
+    setHistoryExpanded(false);
+  };
 
   // ─── 工具权限请求队列 ──────────────────────────────────────────
   const [permissionQueue, setPermissionQueue] = createSignal<PermissionRequest[]>([]);
@@ -981,7 +1062,10 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
                   if (!showHistory()) {
                     // 打开历史面板时，从 localStorage 读取最新数据（onDone 只写 storage 不更新信号）
                     const persisted = loadLegacySessions();
-                    setSessionHistory(persisted.map(fromPersistedSession));
+                    setSessionHistory(
+                      persisted.map(fromPersistedSession)
+                        .sort((a, b) => b.ts.localeCompare(a.ts))
+                    );
                   }
                   setShowHistory(v => !v);
                   setViewingSession(null);
@@ -1038,7 +1122,7 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
             <div class="flex-1 overflow-y-auto">
               <Show when={viewingSession()}>
                 {/* 浏览某次历史会话 */}
-                <div class="px-4 py-2 border-b border-[var(--dls-border)] flex items-center gap-2">
+                <div class="px-4 py-2 border-b border-[var(--dls-border)] flex items-center gap-2 justify-between">
                   <button
                     class="text-xs flex items-center gap-1 text-[var(--dls-text-secondary)] hover:text-[var(--dls-text-primary)] transition-colors"
                     onClick={() => setViewingSession(null)}
@@ -1046,6 +1130,14 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
                     <ChevronRight size={12} style={{ transform: 'rotate(180deg)' }} />
                     返回历史记录
                   </button>
+                  <Show when={viewingSession()!.messages.length > 0}>
+                    <button
+                      class={`text-xs px-3 py-1 rounded-lg text-white transition-colors ${accentBg()}`}
+                      onClick={() => restoreAsActiveSession(viewingSession()!)}
+                    >
+                      继续对话
+                    </button>
+                  </Show>
                 </div>
                 <div class="p-4 flex flex-col gap-3">
                   <For each={viewingSession()!.messages}>
@@ -1072,7 +1164,7 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
                         <div>
                           <button
                             class="w-full text-left px-3 py-2.5 rounded-lg hover:bg-[var(--dls-hover)] transition-colors"
-                            onClick={() => setViewingSession(session)}
+                            onClick={() => loadSessionDetail(session)}
                           >
                             <div class="flex items-start gap-2">
                               <div class={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${idx() === 0 ? (props.isSoloMode ? 'bg-[var(--green-9)]' : 'bg-[var(--purple-9)]') : 'bg-[var(--dls-border)]'}`} />
@@ -1188,33 +1280,51 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
             </div>
 
             {/* ── 输入区 ── */}
-            <div class="p-3 flex gap-2 flex-shrink-0 border-t border-[var(--dls-border)]">
-              <DrawerMentionInput
-                value={input()}
-                onChange={setInput}
-                disabled={loading() || props.openworkStatus === 'disconnected'}
-                placeholder={
-                  props.openworkStatus === 'disconnected'
-                    ? 'OpenWork 服务未连接，AI 功能暂不可用'
-                    : loading()
-                      ? 'AI 正在回复中...'
-                      : dispatchMode()
-                        ? '描述你的目标，Agent 将并行执行...'
-                        : '问我任何问题，或输入 @ 召唤 Agent...'
-                }
-                agents={agents()}
-                onSubmit={handleSend}
-                isSoloMode={props.isSoloMode}
-              />
+            <div class="px-3 pt-2 pb-1 flex-shrink-0 border-t border-[var(--dls-border)]">
+              <div class="flex gap-2">
+                <DrawerMentionInput
+                  value={input()}
+                  onChange={setInput}
+                  disabled={loading() || props.openworkStatus === 'disconnected'}
+                  placeholder={
+                    props.openworkStatus === 'disconnected'
+                      ? 'OpenWork 服务未连接，AI 功能暂不可用'
+                      : loading()
+                        ? 'AI 正在回复中...'
+                        : dispatchMode()
+                          ? '描述目标，让 AI 团队并行执行... (Enter 发送)'
+                          : '问我任何问题，@ 召唤 Agent... (Enter 发送)'
+                  }
+                  agents={agents()}
+                  onSubmit={handleSend}
+                  isSoloMode={props.isSoloMode}
+                />
               <button
                 onClick={handleSend}
                 disabled={loading() || !input().trim() || props.openworkStatus === 'disconnected'}
                 class={`flex-shrink-0 rounded-lg px-3 py-2 text-sm transition-colors text-white disabled:opacity-50 ${accentBg()}`}
+                title="发送 (Enter)"
               >
                 <Show when={loading()} fallback="→">
                   <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} />
                 </Show>
               </button>
+              </div>
+              {/* 快捷键提示 */}
+              <div class="flex items-center justify-between mt-1 pb-1">
+                <span class="text-[10px] text-[var(--dls-text-muted)]">
+                  Enter 发送 · @ 召唤 Agent · Shift+Enter 换行
+                </span>
+                <Show when={messages().filter(m => m.role === 'user').length > 0}>
+                  <button
+                    class="text-[10px] text-[var(--dls-text-muted)] hover:text-[var(--dls-text-secondary)] transition-colors"
+                    disabled={loading()}
+                    onClick={startNewSession}
+                  >
+                    + 新对话
+                  </button>
+                </Show>
+              </div>
             </div>
           </Show>
         </div>

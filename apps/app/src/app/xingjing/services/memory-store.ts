@@ -79,14 +79,26 @@ export async function loadMemoryIndex(workDir: string): Promise<MemoryIndex> {
     } catch { /* sidecar 可能不存在 */ }
 
     return {
-      sessions: sessions.map((s: any) => ({
-        id: s.id ?? '',
-        type: 'chat' as const,
-        summary: s.title ?? s.description ?? '',
-        tags: sidecar[s.id]?.tags ?? [],
-        createdAt: s.createdAt ?? '',
-        messageCount: 0,
-      })),
+      sessions: sessions
+        .sort((a: any, b: any) => {
+          const ta = a.time?.updated ?? a.time?.created ?? 0;
+          const tb = b.time?.updated ?? b.time?.created ?? 0;
+          return tb - ta; // 倒序：最新在前
+        })
+        .map((s: any) => ({
+          id: s.id ?? '',
+          type: 'chat' as const,
+          summary: s.title ?? s.description ?? '',
+          tags: sidecar[s.id]?.tags ?? [],
+          createdAt: (() => {
+            const ms = s.time?.updated ?? s.time?.created;
+            if (!ms) return '';
+            return new Date(ms).toLocaleString('zh-CN', {
+              month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit',
+            });
+          })(),
+          messageCount: 0,
+        })),
     };
   } catch {
     return { sessions: [] };
@@ -128,20 +140,40 @@ export async function loadSession(
     if (!result.data) return null;
     const messages = Array.isArray(result.data) ? result.data : [];
 
+    // OpenCode messages 结构: { info: { id, role, time?: { created, updated } }, parts: [{ type, text }] }
+    const extractTs = (m: any): string => {
+      const ms = m.info?.time?.created ?? m.info?.time?.updated ?? m.time?.created ?? m.time?.updated;
+      return ms ? new Date(ms).toISOString() : new Date().toISOString();
+    };
+
+    // 仅提取 type==='text' 的 parts，忽略 thinking / tool-use / tool-result 等
+    const extractTextContent = (m: any): string => {
+      if (typeof m.content === 'string') return m.content;
+      const parts: any[] = m.parts ?? m.info?.parts ?? [];
+      return parts
+        .filter((p: any) => p.type === 'text' && typeof p.text === 'string')
+        .map((p: any) => p.text as string)
+        .join('');
+    };
+
+    const rawMessages: MemoryMessage[] = messages.map((m: any) => ({
+      id: m.info?.id ?? m.id ?? '',
+      role: (m.info?.role ?? m.role) === 'user' ? 'user' as const : 'assistant' as const,
+      content: extractTextContent(m),
+      ts: extractTs(m),
+    }));
+
+    // 过滤掉内容为空的消息（pure thinking / tool-call 消息）
+    const filteredMessages = rawMessages.filter((m) => m.content.trim().length > 0);
+
     return {
       id: sessionId,
       type: 'chat',
       summary: '',
       tags: [],
-      messages: messages.map((m: any) => ({
-        id: m.id ?? '',
-        role: m.role === 'user' ? 'user' as const : 'assistant' as const,
-        content: typeof m.content === 'string' ? m.content
-          : (m.parts?.map((p: any) => p.text ?? '').join('') ?? ''),
-        ts: m.createdAt ?? new Date().toISOString(),
-      })),
-      createdAt: messages[0]?.createdAt ?? new Date().toISOString(),
-      updatedAt: messages[messages.length - 1]?.createdAt ?? new Date().toISOString(),
+      messages: filteredMessages,
+      createdAt: messages.length > 0 ? extractTs(messages[0]) : new Date().toISOString(),
+      updatedAt: messages.length > 0 ? extractTs(messages[messages.length - 1]) : new Date().toISOString(),
     };
   } catch {
     return null;

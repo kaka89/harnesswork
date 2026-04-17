@@ -13,6 +13,7 @@ import { createClient } from '../../lib/opencode';
 // ─── Client 管理（OpenWork 注入）────────────────────────────────────────────
 
 let _sharedClient: ReturnType<typeof createClient> | null = null;
+let _fallbackClient: ReturnType<typeof createClient> | null = null;
 let _baseUrl = 'http://127.0.0.1:4096';
 let _directory = '';
 
@@ -33,6 +34,8 @@ let _workspaceId: string | null = null;
  */
 export function setSharedClient(client: ReturnType<typeof createClient> | null) {
   _sharedClient = client;
+  // 注入新 client 时，清除兜底缓存，避免后续误用旧兜底实例
+  _fallbackClient = null;
 }
 
 /**
@@ -82,13 +85,17 @@ export function setWorkingDirectory(directory: string, baseUrl?: string) {
 
 /**
  * 获取 OpenCode Client（来自 OpenWork 注入的统一实例）。
- * Client 未初始化时抛出明确错误。
+ * OpenWork 未连接时自动使用本地 OpenCode 地址兜底（独立版场景）。
  */
 export function getXingjingClient(): ReturnType<typeof createClient> {
-  if (!_sharedClient) {
-    throw new Error('[xingjing] OpenWork Client 未初始化，请确认 OpenWork 服务已启动');
+  if (_sharedClient) return _sharedClient;
+  // 兜底：独立版场景下 OpenWork 未连接，直接使用本地 OpenCode
+  if (!_fallbackClient) {
+    const fallbackUrl = _baseUrl || FALLBACK_OPENCODE_URL;
+    console.warn('[xingjing] OpenWork Client 未注入，使用本地兜底地址:', fallbackUrl);
+    _fallbackClient = createClient(fallbackUrl);
   }
-  return _sharedClient;
+  return _fallbackClient;
 }
 
 // ─── 文件 API ───────────────────────────────────────────────────────────────
@@ -259,8 +266,7 @@ export interface XingjingSessionOptions {
 
 /**
  * 创建 AI 会话
- * SessionCreateData: { body?: { parentID?, title? }, query?: { directory? } }
- * HeyAPI 展平后：{ body: { parentID?, title? }, directory? }
+ * HeyAPI buildClientParams 展平规则：parentID/title/permission 应在顶层，directory 同样在顶层
  */
 export async function sessionCreate(
   opts?: XingjingSessionOptions,
@@ -268,10 +274,8 @@ export async function sessionCreate(
   const client = getXingjingClient();
   try {
     const result = await client.session.create({
-      body: {
-        ...(opts?.parentId ? { parentID: opts.parentId } : {}),
-        ...(opts?.title ? { title: opts.title } : {}),
-      },
+      ...(opts?.parentId ? { parentID: opts.parentId } : {}),
+      ...(opts?.title ? { title: opts.title } : {}),
       ...(opts?.directory ?? _directory ? { directory: opts?.directory ?? _directory } : {}),
     } as Parameters<typeof client.session.create>[0]);
     if (result.data) return (result.data as { id: string }).id;
@@ -616,16 +620,27 @@ async function runAgentSession(
         // 无白名单时不设权限限制（对齐 OpenWork），让 OpenCode 状态机正常运转
         return undefined;
       })();
-      const result = await client.session.create({
-        body: {
-          ...(opts.title ? { title: opts.title } : { title: `xingjing-${Date.now()}` }),
-          ...(opts.agentId ? { agent: opts.agentId } : {}),
-        },
+      // HeyAPI SDK buildClientParams 约定：title/parentID/permission/directory 均展平到顶层，
+      // 不能嵌套在 body 对象内（body key 会被 buildClientParams 静默忽略）。
+      const createParams: Record<string, unknown> = {
+        ...(opts.title ? { title: opts.title } : { title: `xingjing-${Date.now()}` }),
+        ...(opts.agentId ? { agent: opts.agentId } : {}),
         ...(sessionPermission ? { permission: sessionPermission } : {}),
         ...(opts.directory ?? _directory ? { directory: opts.directory ?? _directory } : {}),
-      } as Parameters<typeof client.session.create>[0]);
+      };
+      console.log('[xingjing-diag] session.create params:', JSON.stringify(createParams));
+      const result = await client.session.create(
+        createParams as Parameters<typeof client.session.create>[0]
+      );
       sid = (result.data as { id: string } | undefined)?.id ?? null;
-    } catch { /* fall through */ }
+      if (!sid) {
+        console.error('[xingjing] session.create returned no id. error:', result.error,
+          '| data:', result.data);
+      }
+    } catch (e) {
+      console.error('[xingjing] session.create threw:', e);
+      /* fall through */
+    }
 
     if (!sid) {
       return { status: 'hard-error', accumulated: acc, sessionId: null, error: '无法创建 AI 会话，请检查 OpenCode 服务是否已启动' };

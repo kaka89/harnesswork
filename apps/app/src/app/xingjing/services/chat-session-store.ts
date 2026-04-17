@@ -1,12 +1,11 @@
 /**
  * 聊天会话历史存储服务
  *
- * 存储策略：
- * 1. 主存储：localStorage（key: xingjing-chat-sessions-v1）
- *    - 在 Tauri Webview 中，localStorage 等同于持久化本地存储
- *    - 浏览器模式下同样有效
- * 2. 辅助存储：Tauri 环境下尝试写入 ~/.xingjing/chat-sessions.json
- *    - 通过 xingjing_write_chat_history invoke 命令（尽力而为，失败不影响主流程）
+ * @deprecated 已迁移至 OpenCode Session API。
+ * 该文件保留为兆底存储层（localStorage），仅在 OpenCode 不可用时启用。
+ * 主存储已通过 memory-store.ts 的 loadMemoryIndex() 走 SDK 通道。
+ *
+ * 残留的 localStorage 存储仅为兼容旧数据，新会话不再写入。
  */
 
 // ─── 类型定义（与 ai-chat-drawer.tsx 共享，避免循环依赖）────────────────────
@@ -52,24 +51,21 @@ export function loadSessions(): SessionRecord[] {
 }
 
 /**
- * 将会话历史列表写入 localStorage，同时异步尝试写入本地文件
- * 不抛出异常
+ * 将会话历史列表写入 localStorage
+ * @deprecated OpenCode 自动持久化会话，此函数仅保留为兼容层
  */
 export function saveSessions(list: SessionRecord[]): void {
   try {
-    // 裁剪超出限制的旧会话（保留最新的）
     const trimmed = list.slice(0, MAX_SESSIONS);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(trimmed));
-
-    // 异步尝试写入本地文件（Tauri 环境下）
-    void tryWriteToFile(trimmed);
   } catch (e) {
     console.warn('[chat-session-store] 保存失败:', e);
   }
 }
 
 /**
- * 追加一条新会话到历史列表（自动去重：同 id 则更新）
+ * 追加一条新会话到历史列表
+ * @deprecated OpenCode 自动持久化，此函数仅保留为兼容层
  */
 export function appendSession(session: SessionRecord): void {
   const list = loadSessions();
@@ -84,6 +80,7 @@ export function appendSession(session: SessionRecord): void {
 
 /**
  * 删除某条会话记录
+ * @deprecated OpenCode 管理会话生命周期
  */
 export function removeSession(id: string): void {
   const list = loadSessions().filter(s => s.id !== id);
@@ -92,6 +89,7 @@ export function removeSession(id: string): void {
 
 /**
  * 清空所有历史会话
+ * @deprecated 仅清理 localStorage 兆底数据
  */
 export function clearSessions(): void {
   try {
@@ -101,22 +99,11 @@ export function clearSessions(): void {
   }
 }
 
-// ─── Tauri 文件写入（尽力而为）──────────────────────────────────────────────
+// ─── Tauri 文件写入（已废弃，OpenCode 自动持久化）─────────────────────────────
 
-async function tryWriteToFile(list: SessionRecord[]): Promise<void> {
-  try {
-    // 检测 Tauri 环境
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const w = window as any;
-    if (!w.__TAURI__ && !w.__TAURI_INTERNALS__) return;
-
-    const { invoke } = await import('@tauri-apps/api/core');
-    await invoke('xingjing_write_chat_history', {
-      content: JSON.stringify(list, null, 2),
-    });
-  } catch {
-    // 命令可能不存在（旧版后端），静默忽略
-  }
+/** @deprecated OpenCode 自动持久化会话数据 */
+async function tryWriteToFile(_list: SessionRecord[]): Promise<void> {
+  // no-op
 }
 
 // ─── 时间工具 ────────────────────────────────────────────────────────────────

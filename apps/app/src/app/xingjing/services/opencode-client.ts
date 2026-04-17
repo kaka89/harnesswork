@@ -86,7 +86,10 @@ export function setWorkingDirectory(directory: string, baseUrl?: string) {
  * 若未注入，自动降级到本地 OpenCode 服务（localhost:4096）。
  */
 export function getXingjingClient(): ReturnType<typeof createClient> {
-  if (_sharedClient) return _sharedClient;
+  if (_sharedClient) {
+    console.debug('[xingjing] 使用 OpenWork 注入的 shared client');
+    return _sharedClient;
+  }
   // 降级：本地 OpenCode 服务（lazy 创建）
   if (!_localClient) {
     console.warn('[xingjing] OpenWork Client 未注入，降级到本地 OpenCode:', _baseUrl);
@@ -608,6 +611,7 @@ async function runAgentSession(
 
   // 新建 session（Layer 2 或首次调用）
   if (!sid) {
+    let lastErrName: string | undefined;
     try {
       // 权限策略：对齐 OpenWork 模式 —— 不在 session 创建时设置 deny-all 限制。
       // deny-all 会阻断 OpenCode 状态机，导致不发送 session.idle/completed 事件，
@@ -638,8 +642,14 @@ async function runAgentSession(
       );
       sid = (result.data as { id: string } | undefined)?.id ?? null;
       if (!sid) {
-        console.error('[xingjing] session.create returned no id. error:', result.error,
-          '| data:', result.data);
+        const errName = (result.error as { name?: string } | undefined)?.name;
+        lastErrName = errName;
+        if (errName === 'ConfigInvalidError') {
+          console.error('[xingjing] session.create ConfigInvalidError — OpenCode 未配置有效的 LLM Provider/API Key');
+        } else {
+          console.error('[xingjing] session.create returned no id. error:', result.error,
+            '| data:', result.data);
+        }
       }
     } catch (e) {
       console.error('[xingjing] session.create threw:', e);
@@ -647,7 +657,10 @@ async function runAgentSession(
     }
 
     if (!sid) {
-      return { status: 'hard-error', accumulated: acc, sessionId: null, error: '无法创建 AI 会话，请检查 OpenCode 服务是否已启动' };
+      const msg = lastErrName === 'ConfigInvalidError'
+        ? '大模型未配置，请在设置页配置 API Key 后重试'
+        : '无法创建 AI 会话，请检查 OpenCode 服务是否已启动';
+      return { status: 'hard-error', accumulated: acc, sessionId: null, error: msg };
     }
   }
 

@@ -13,6 +13,7 @@ import { createClient } from '../../lib/opencode';
 // ─── Client 管理（OpenWork 注入）────────────────────────────────────────────
 
 let _sharedClient: ReturnType<typeof createClient> | null = null;
+let _localClient: ReturnType<typeof createClient> | null = null;
 let _baseUrl = 'http://127.0.0.1:4096';
 let _directory = '';
 
@@ -26,10 +27,12 @@ let _workspaceId: string | null = null;
 
 /**
  * 由 app-store 在初始化后注入 shared client。
- * 星静完全依赖 OpenWork 的 client 管理，不再维护独立的 fallback 逻辑。
+ * 优先使用 OpenWork 注入的 client，未注入时自动降级到本地 OpenCode 服务。
  */
 export function setSharedClient(client: ReturnType<typeof createClient> | null) {
   _sharedClient = client;
+  // 注入新 client 时清除本地兜底实例，避免后续误用
+  if (client) _localClient = null;
 }
 
 /**
@@ -78,29 +81,25 @@ export function setWorkingDirectory(directory: string, baseUrl?: string) {
 }
 
 /**
- * 获取 OpenCode Client（来自 OpenWork 注入的统一实例）。
- *
- * ⚠️ 重要：此函数要求在 OpenWork 环境中运行。
- * 如果 client 未注入，说明：
- * 1. OpenWork 尚未完成初始化（等待 workspaceStore 就绪）
- * 2. OpenCode 服务未启动（检查 OpenWork 连接状态）
- * 3. 配置错误（检查 app-store 的 setSharedClient 调用）
+ * 获取 OpenCode Client。
+ * 优先返回 OpenWork 注入的 shared client；
+ * 若未注入，自动降级到本地 OpenCode 服务（localhost:4096）。
  */
 export function getXingjingClient(): ReturnType<typeof createClient> {
-  if (!_sharedClient) {
-    throw new Error(
-      '[xingjing] OpenCode Client 未初始化。' +
-      '请确保：1) 在 OpenWork 环境中运行；2) OpenCode 服务已启动；3) workspaceStore 已就绪。'
-    );
+  if (_sharedClient) return _sharedClient;
+  // 降级：本地 OpenCode 服务（lazy 创建）
+  if (!_localClient) {
+    console.warn('[xingjing] OpenWork Client 未注入，降级到本地 OpenCode:', _baseUrl);
+    _localClient = createClient(_baseUrl);
   }
-  return _sharedClient;
+  return _localClient;
 }
 
 /**
  * 检查 client 是否已就绪（用于 UI 条件渲染）
  */
 export function isClientReady(): boolean {
-  return _sharedClient !== null;
+  return _sharedClient !== null || _localClient !== null;
 }
 
 // ─── 文件 API ───────────────────────────────────────────────────────────────
@@ -276,8 +275,8 @@ export interface XingjingSessionOptions {
 export async function sessionCreate(
   opts?: XingjingSessionOptions,
 ): Promise<string | null> {
-  const client = getXingjingClient();
   try {
+    const client = getXingjingClient();
     const result = await client.session.create({
       ...(opts?.parentId ? { parentID: opts.parentId } : {}),
       ...(opts?.title ? { title: opts.title } : {}),

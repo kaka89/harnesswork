@@ -970,6 +970,8 @@ export interface SoloKnowledgeItem {
   tags: string[];
   date: string;
   aiAlert?: string;
+  sourceAgentId?: string;    // 生成此知识的 Agent ID（AI 沉淀时写入）
+  sourceSessionId?: string;  // 原始会话 ID（AI 沉淀时写入）
 }
 
 export async function loadSoloKnowledge(workDir: string): Promise<SoloKnowledgeItem[]> {
@@ -977,7 +979,7 @@ export async function loadSoloKnowledge(workDir: string): Promise<SoloKnowledgeI
   const all: SoloKnowledgeItem[] = [];
   for (const sub of subdirs) {
     try {
-      const docs = await readMarkdownDir<Omit<SoloKnowledgeItem, 'content'>>(`${workDir}/knowledge/${sub}`);
+      const docs = await readMarkdownDir<Omit<SoloKnowledgeItem, 'content'>>(`knowledge/${sub}`, workDir);
       all.push(...docs
         .map((d) => ({
           ...d.frontmatter,
@@ -1001,11 +1003,12 @@ export async function saveSoloKnowledge(workDir: string, item: SoloKnowledgeItem
   const subdir = knowledgeCategoryDir[item.category] ?? 'pitfalls';
   const { content, ...frontmatter } = item;
   return writeMarkdownWithFrontmatter(
-    `${workDir}/knowledge/${subdir}/${item.id}.md`,
+    `knowledge/${subdir}/${item.id}.md`,
     {
       frontmatter: frontmatter as unknown as Record<string, unknown>,
       body: content ?? '',
     },
+    workDir,
   );
 }
 

@@ -118,7 +118,7 @@ export function invalidateKnowledgeCache(workDir?: string): void {
   _cacheTimestamp = 0;
   // 清除磁盘缓存
   if (workDir) {
-    fileWrite(`${workDir}/.xingjing/solo/knowledge/_index.json`, '').catch(() => {});
+    fileWrite('.xingjing/solo/knowledge/_index.json', '', workDir).catch(() => {});
   }
 }
 

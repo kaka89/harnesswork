@@ -82,7 +82,7 @@ export async function scanSingleDoc(
 
 async function loadDirGraph(workDir: string): Promise<DirGraphConfig | null> {
   try {
-    const content = await fileRead(`${workDir}/${DIR_GRAPH_PATH}`);
+    const content = await fileRead(DIR_GRAPH_PATH, workDir);
     if (!content) return null;
     const raw = parseYamlSimple(content) as Record<string, unknown>;
     return normalizeDirGraph(raw);
@@ -178,8 +178,6 @@ async function scanDocType(
       : [resolvedPath];
 
     for (const expanded of expandedPaths) {
-      const fullPath = `${workDir}/${expanded}`;
-
       // 如果展开后是具体文件路径（如 product/features/phone-login/PRD.md）
       if (/\.(md|yml|yaml)$/.test(expanded)) {
         const doc = await extractDocKnowledge(workDir, expanded, docTypeKey, docTypeDef, dirGraph);
@@ -190,8 +188,8 @@ async function scanDocType(
       // 目录路径：台账优先，台账无结果则降级文件系统扫描
       let scannedFromIndex = false;
       if (docTypeDef.index) {
-        const indexPath = `${fullPath}/${docTypeDef.index}`;
-        const indexContent = await fileRead(indexPath);
+        const relativeIndexPath = expanded.endsWith('/') ? `${expanded}${docTypeDef.index}` : `${expanded}/${docTypeDef.index}`;
+        const indexContent = await fileRead(relativeIndexPath, workDir);
         if (indexContent) {
           const docs = await scanFromIndex(workDir, indexContent, docTypeKey, docTypeDef, dirGraph, expanded);
           if (docs.length > 0) {
@@ -203,7 +201,7 @@ async function scanDocType(
 
       // 降级：台账不存在或台账无有效条目时，文件系统扫描
       if (!scannedFromIndex) {
-        const docs = await scanFromFileSystem(workDir, fullPath, docTypeKey, docTypeDef, dirGraph, expanded);
+        const docs = await scanFromFileSystem(workDir, expanded, docTypeKey, docTypeDef, dirGraph);
         results.push(...docs);
       }
     }
@@ -242,7 +240,7 @@ async function expandWildcardPaths(
   const afterPlaceholder = pathTemplate.slice(idx + match[0].length);
 
   try {
-    const items = await fileList(`${workDir}/${parentDir}`);
+    const items = await fileList(parentDir || '.', workDir);
     if (!items) return [];
     const dirs = items.filter(f => f.type === 'directory' && !f.name.startsWith('.'));
     const results: string[] = [];
@@ -302,15 +300,14 @@ async function scanFromIndex(
  */
 async function scanFromFileSystem(
   workDir: string,
-  dirPath: string,
+  relativeDirPath: string,
   docTypeKey: string,
   docTypeDef: DirGraphConfig['docTypes'][string],
   dirGraph: DirGraphConfig,
-  basePath: string,
 ): Promise<WorkspaceDocKnowledge[]> {
   const results: WorkspaceDocKnowledge[] = [];
   try {
-    const files = await fileList(dirPath);
+    const files = await fileList(relativeDirPath, workDir);
     if (!files) return results;
 
     const mdFiles = files.filter(f =>
@@ -318,7 +315,8 @@ async function scanFromFileSystem(
     );
 
     for (const file of mdFiles) {
-      const relativePath = `${basePath}/${file.name}`;
+      const basePath = relativeDirPath.endsWith('/') ? relativeDirPath : `${relativeDirPath}/`;
+      const relativePath = `${basePath}${file.name}`;
       const doc = await extractDocKnowledge(workDir, relativePath, docTypeKey, docTypeDef, dirGraph);
       if (doc) results.push(doc);
     }
@@ -338,7 +336,7 @@ async function extractDocKnowledge(
   dirGraph: DirGraphConfig,
 ): Promise<WorkspaceDocKnowledge | null> {
   try {
-    const content = await fileRead(`${workDir}/${relativePath}`);
+    const content = await fileRead(relativePath, workDir);
     if (!content) return null;
 
     const { frontmatter: fm, body } = parseFrontmatter(content);
@@ -496,10 +494,10 @@ async function fallbackScan(workDir: string): Promise<WorkspaceDocKnowledge[]> {
 
   for (const dir of fallbackDirs) {
     try {
-      const files = await fileList(`${workDir}/${dir}`);
+      const files = await fileList(dir, workDir);
       if (!files) continue;
       for (const file of files.filter(f => f.type === 'file' && f.name.endsWith('.md'))) {
-        const content = await fileRead(`${workDir}/${dir}/${file.name}`);
+        const content = await fileRead(`${dir}/${file.name}`, workDir);
         if (!content) continue;
         const { frontmatter: fm, body } = parseFrontmatter(content);
         results.push({
@@ -536,7 +534,7 @@ async function saveScanResult(
 ): Promise<void> {
   try {
     const { fileWrite: fWrite } = await import('./opencode-client');
-    await fWrite(`${workDir}/${DOC_INDEX_OUTPUT}`, JSON.stringify(results, null, 2));
+    await fWrite(DOC_INDEX_OUTPUT, JSON.stringify(results, null, 2), workDir);
   } catch {
     // silent
   }

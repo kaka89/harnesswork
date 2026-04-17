@@ -60,6 +60,8 @@ export interface KnowledgeEntry {
   lifecycle: 'living' | 'stable';
   date?: string;
   filePath?: string;
+  sourceAgentId?: string;    // 溯源：生成此知识的 Agent ID
+  sourceSessionId?: string;  // 溯源：原始会话 ID
 }
 
 /** dir-graph 配置模型 */
@@ -135,7 +137,7 @@ export async function buildKnowledgeIndex(
 
   // 3. Workspace 文档知识（从 _doc-index.json 加载，由 knowledge-scanner 生成）
   try {
-    const docContent = await fileRead(`${workDir}/${DOC_INDEX_PATH}`);
+    const docContent = await fileRead(DOC_INDEX_PATH, workDir);
     if (docContent) {
       const docItems = JSON.parse(docContent) as WorkspaceDocKnowledge[];
       for (const item of docItems) {
@@ -207,7 +209,7 @@ export async function buildKnowledgeIndex(
  */
 export async function loadCachedIndex(workDir: string): Promise<KnowledgeIndex | null> {
   try {
-    const content = await fileRead(`${workDir}/${INDEX_PATH}`);
+    const content = await fileRead(INDEX_PATH, workDir);
     if (!content) return null;
     const parsed = JSON.parse(content);
     if (parsed.version !== 1) return null;
@@ -219,7 +221,7 @@ export async function loadCachedIndex(workDir: string): Promise<KnowledgeIndex |
 
 async function cacheIndex(workDir: string, index: KnowledgeIndex): Promise<void> {
   try {
-    await fileWrite(`${workDir}/${INDEX_PATH}`, JSON.stringify(index, null, 2));
+    await fileWrite(INDEX_PATH, JSON.stringify(index, null, 2), workDir);
   } catch {
     // silent
   }
@@ -402,10 +404,10 @@ export async function updateReferenceMeta(
   knowledgeId: string,
   source: PrivateKnowledgeMeta['source'],
 ): Promise<void> {
-  const metaPath = `${workDir}/${META_DIR}/${knowledgeId}.json`;
+  const relativeMetaPath = `${META_DIR}/${knowledgeId}.json`;
   try {
     let meta: PrivateKnowledgeMeta;
-    const existing = await fileRead(metaPath);
+    const existing = await fileRead(relativeMetaPath, workDir);
     if (existing) {
       meta = JSON.parse(existing) as PrivateKnowledgeMeta;
       meta.referenceCount += 1;
@@ -418,7 +420,7 @@ export async function updateReferenceMeta(
         lastReferencedAt: new Date().toISOString(),
       };
     }
-    await fileWrite(metaPath, JSON.stringify(meta, null, 2));
+    await fileWrite(relativeMetaPath, JSON.stringify(meta, null, 2), workDir);
   } catch {
     // silent
   }
@@ -480,6 +482,8 @@ function privateToEntry(item: SoloKnowledgeItem): KnowledgeEntry {
     applicableScenes: mapCategoryToScenes(item.category),
     lifecycle: 'living',
     date: item.date,
+    sourceAgentId: item.sourceAgentId,
+    sourceSessionId: item.sourceSessionId,
   };
 }
 

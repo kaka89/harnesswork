@@ -12,6 +12,21 @@
 
 import { fileRead, fileList } from './opencode-client';
 import type { FileNode } from './opencode-client';
+
+// ─── 会话级 fileList 缓存 ────────────────────────────────────────────────────
+// 单次扫描过程中缓存 fileList 结果，避免对同一目录重复列举（并发展开时尤为明显）。
+// Map key = "workDir::path"，value = 共享的 Promise，并发请求同一路径只发一次 IO。
+let _scanFileListCache: Map<string, Promise<FileNode[]>> | null = null;
+
+/** 带会话缓存的 fileList：同一次 scanWorkspaceDocs 中相同路径只列举一次 */
+function cachedFileList(path: string, workDir?: string): Promise<FileNode[]> {
+  if (!_scanFileListCache) return fileList(path, workDir);
+  const key = `${workDir ?? ''}::${path}`;
+  if (!_scanFileListCache.has(key)) {
+    _scanFileListCache.set(key, fileList(path, workDir).catch(() => []));
+  }
+  return _scanFileListCache.get(key)!;
+}
 import { parseYamlSimple, parseFrontmatter } from './file-store';
 import type { WorkspaceDocKnowledge, DirGraphConfig } from './knowledge-index';
 
@@ -52,37 +67,41 @@ function isYamlFile(filePath: string): boolean {
 export async function scanWorkspaceDocs(
   workDir: string,
 ): Promise<WorkspaceDocKnowledge[]> {
-  // Step 1: 解析 dir-graph.yaml
-  const dirGraph = await loadDirGraph(workDir);
-  if (!dirGraph) {
-    console.warn('[knowledge-scanner] dir-graph.yaml not found, using fallback scan');
-    return fallbackScan(workDir);
-  }
+  // 初始化会话级 fileList 缓存（防止并发展开时重复列举同一目录）
+  _scanFileListCache = new Map();
 
-  const results: WorkspaceDocKnowledge[] = [];
-
-  // Step 2: 遍历 doc-types，台账优先扫描
-  for (const [docTypeKey, docTypeDef] of Object.entries(dirGraph.docTypes)) {
-    try {
-      const docs = await scanDocType(workDir, dirGraph, docTypeKey, docTypeDef);
-      results.push(...docs);
-    } catch (e) {
-      console.warn(`[knowledge-scanner] Failed to scan docType ${docTypeKey}:`, e);
+  try {
+    // Step 1: 解析 dir-graph.yaml
+    const dirGraph = await loadDirGraph(workDir);
+    if (!dirGraph) {
+      console.warn('[knowledge-scanner] dir-graph.yaml not found, using fallback scan');
+      return fallbackScan(workDir);
     }
+
+    // Step 2: 并发扫描所有 doc-types（T1.1：原串行 for...await → Promise.all）
+    const allDocs = await Promise.all(
+      Object.entries(dirGraph.docTypes).map(([docTypeKey, docTypeDef]) =>
+        scanDocType(workDir, dirGraph, docTypeKey, docTypeDef).catch((e) => {
+          console.warn(`[knowledge-scanner] Failed to scan docType ${docTypeKey}:`, e);
+          return [] as WorkspaceDocKnowledge[];
+        }),
+      ),
+    );
+    const results = allDocs.flat();
+
+    // Step 3: 若 dir-graph 扫描结果为空（路径配置与实际目录不符），
+    // 自动触发通用降级扫描补充，确保用户文档不会因配置偏差而消失
+    if (results.length === 0) {
+      console.warn('[knowledge-scanner] dir-graph scan returned 0 docs, falling back to generic scan');
+      return fallbackScan(workDir);
+    }
+
+    // 去重（同一 filePath 只保留第一条）
+    return results.filter((r, i, arr) => arr.findIndex(x => x.filePath === r.filePath) === i);
+  } finally {
+    // 清理会话级缓存，避免跨次扫描残留
+    _scanFileListCache = null;
   }
-
-  // Step 3: 若 dir-graph 扫描结果为空（路径配置与实际目录不符），
-  // 自动触发通用降级扫描补充，确保用户文档不会因配置偏差而消失
-  if (results.length === 0) {
-    console.warn('[knowledge-scanner] dir-graph scan returned 0 docs, falling back to generic scan');
-    const fallback = await fallbackScan(workDir);
-    return fallback;
-  }
-
-  // 去重（同一 filePath 只保留第一条）
-  const deduped = results.filter((r, i, arr) => arr.findIndex(x => x.filePath === r.filePath) === i);
-
-  return deduped;
 }
 
 /**
@@ -212,47 +231,54 @@ async function scanDocType(
   docTypeKey: string,
   docTypeDef: DirGraphConfig['docTypes'][string],
 ): Promise<WorkspaceDocKnowledge[]> {
-  const results: WorkspaceDocKnowledge[] = [];
+  // T1（locations 并发）：对每个 location 并发处理
+  const locationResults = await Promise.all(
+    docTypeDef.locations.map(async (location) => {
+      const locationDocs: WorkspaceDocKnowledge[] = [];
+      const resolvedPath = resolvePathVars(location, dirGraph.pathVars);
 
-  for (const location of docTypeDef.locations) {
-    const resolvedPath = resolvePathVars(location, dirGraph.pathVars);
+      // 占位符通配扫描：路径中仍有未解析的 {xxx} 时，遍历父目录展开
+      const expandedPaths = resolvedPath.includes('{')
+        ? await expandWildcardPaths(workDir, resolvedPath)
+        : [resolvedPath];
 
-    // 占位符通配扫描：路径中仍有未解析的 {xxx} 时，遍历父目录展开
-    const expandedPaths = resolvedPath.includes('{')
-      ? await expandWildcardPaths(workDir, resolvedPath)
-      : [resolvedPath];
-
-    for (const expanded of expandedPaths) {
-      // 如果展开后是具体文件路径（如 product/features/phone-login/PRD.md）
-      if (/\.(md|yml|yaml)$/.test(expanded)) {
-        const doc = await extractDocKnowledge(workDir, expanded, docTypeKey, docTypeDef, dirGraph);
-        if (doc) results.push(doc);
-        continue;
-      }
-
-      // 目录路径：台账优先，台账无结果则降级文件系统扫描
-      let scannedFromIndex = false;
-      if (docTypeDef.index) {
-        const relativeIndexPath = expanded.endsWith('/') ? `${expanded}${docTypeDef.index}` : `${expanded}/${docTypeDef.index}`;
-        const indexContent = await fileRead(relativeIndexPath, workDir);
-        if (indexContent) {
-          const docs = await scanFromIndex(workDir, indexContent, docTypeKey, docTypeDef, dirGraph, expanded);
-          if (docs.length > 0) {
-            results.push(...docs);
-            scannedFromIndex = true;
+      // T1（expandedPaths 并发）：并发处理所有展开路径
+      await Promise.all(
+        expandedPaths.map(async (expanded) => {
+          // 如果展开后是具体文件路径（如 product/features/phone-login/PRD.md）
+          if (/\.(md|yml|yaml)$/.test(expanded)) {
+            const doc = await extractDocKnowledge(workDir, expanded, docTypeKey, docTypeDef, dirGraph);
+            if (doc) locationDocs.push(doc);
+            return;
           }
-        }
-      }
 
-      // 降级：台账不存在或台账无有效条目时，文件系统扫描
-      if (!scannedFromIndex) {
-        const docs = await scanFromFileSystem(workDir, expanded, docTypeKey, docTypeDef, dirGraph);
-        results.push(...docs);
-      }
-    }
-  }
+          // 目录路径：台账优先，台账无结果则降级文件系统扫描
+          let scannedFromIndex = false;
+          if (docTypeDef.index) {
+            const relativeIndexPath = expanded.endsWith('/') ? `${expanded}${docTypeDef.index}` : `${expanded}/${docTypeDef.index}`;
+            const indexContent = await fileRead(relativeIndexPath, workDir);
+            if (indexContent) {
+              const docs = await scanFromIndex(workDir, indexContent, docTypeKey, docTypeDef, dirGraph, expanded);
+              if (docs.length > 0) {
+                locationDocs.push(...docs);
+                scannedFromIndex = true;
+              }
+            }
+          }
 
-  return results;
+          // 降级：台账不存在或台账无有效条目时，文件系统扫描
+          if (!scannedFromIndex) {
+            const docs = await scanFromFileSystem(workDir, expanded, docTypeKey, docTypeDef, dirGraph);
+            locationDocs.push(...docs);
+          }
+        }),
+      );
+
+      return locationDocs;
+    }),
+  );
+
+  return locationResults.flat();
 }
 
 /**
@@ -285,17 +311,17 @@ async function expandWildcardPaths(
   const afterPlaceholder = pathTemplate.slice(idx + match[0].length);
 
   try {
-    const items = await fileList(parentDir || '.', workDir);
+    const items = await cachedFileList(parentDir || '.', workDir);
     if (!items) return [];
     const dirs = items.filter(f => f.type === 'directory' && !f.name.startsWith('.'));
-    const results: string[] = [];
-    for (const dir of dirs) {
-      const expandedPath = `${parentDir}${dir.name}${afterPlaceholder}`;
-      // 递归展开剩余占位符
-      const further = await expandWildcardPaths(workDir, expandedPath);
-      results.push(...further);
-    }
-    return results;
+    // T1.5：并发递归展开所有子目录占位符
+    const expanded = await Promise.all(
+      dirs.map(dir => {
+        const expandedPath = `${parentDir}${dir.name}${afterPlaceholder}`;
+        return expandWildcardPaths(workDir, expandedPath).catch(() => [] as string[]);
+      }),
+    );
+    return expanded.flat();
   } catch {
     return [];
   }
@@ -312,32 +338,37 @@ async function scanFromIndex(
   dirGraph: DirGraphConfig,
   basePath: string,
 ): Promise<WorkspaceDocKnowledge[]> {
-  const results: WorkspaceDocKnowledge[] = [];
   try {
     const parsed = parseYamlSimple(indexContent);
     const items = Array.isArray(parsed['items']) ? parsed['items'] as Array<Record<string, unknown>> : [];
 
-    for (const item of items) {
-      // 兼容 path / id 两种定位方式：优先 path，其次从 id 推断文件名
-      let filePath = item['path'] ? String(item['path']) : null;
-      if (!filePath && item['id']) {
-        filePath = `${String(item['id'])}.md`;
-      }
-      if (!filePath) continue;
+    // T1.4：并发读取台账中所有条目
+    const fileEntries = items
+      .map(item => {
+        let filePath = item['path'] ? String(item['path']) : null;
+        if (!filePath && item['id']) filePath = `${String(item['id'])}.md`;
+        if (!filePath) return null;
+        return { filePath, item };
+      })
+      .filter(Boolean) as Array<{ filePath: string; item: Record<string, unknown> }>;
 
-      const fullFilePath = filePath.startsWith('/') ? filePath : `${basePath}/${filePath}`;
-      const doc = await extractDocKnowledge(workDir, fullFilePath, docTypeKey, docTypeDef, dirGraph);
-      if (doc) {
-        // 从台账补充元数据
-        if (item['status']) doc.frontmatter['status'] = item['status'];
-        if (item['refs']) doc.frontmatter['refs'] = item['refs'];
-        results.push(doc);
-      }
-    }
+    const docs = await Promise.all(
+      fileEntries.map(async ({ filePath, item }) => {
+        const fullFilePath = filePath.startsWith('/') ? filePath : `${basePath}/${filePath}`;
+        const doc = await extractDocKnowledge(workDir, fullFilePath, docTypeKey, docTypeDef, dirGraph);
+        if (doc) {
+          if (item['status']) doc.frontmatter['status'] = item['status'];
+          if (item['refs']) doc.frontmatter['refs'] = item['refs'];
+        }
+        return doc;
+      }),
+    );
+
+    return docs.filter(Boolean) as WorkspaceDocKnowledge[];
   } catch {
     // 台账解析失败，回退到文件系统扫描
+    return [];
   }
-  return results;
 }
 
 /**
@@ -354,36 +385,40 @@ async function scanFromFileSystem(
   depth = 0,
 ): Promise<WorkspaceDocKnowledge[]> {
   if (depth > 2) return []; // 最多递归 2 层，防止无限深入
-  const results: WorkspaceDocKnowledge[] = [];
   try {
-    const files = await fileList(relativeDirPath, workDir);
-    if (!files) return results;
+    // T5：使用会话级缓存避免重复列举同一目录
+    const files = await cachedFileList(relativeDirPath, workDir);
+    if (!files || files.length === 0) return [];
 
     const basePath = relativeDirPath.endsWith('/') ? relativeDirPath : `${relativeDirPath}/`;
 
-    for (const file of files) {
-      // SDD-009: 扩展匹配 .yml/.yaml 文件
-      if (file.type === 'file' && isScannableDoc(file.name) && !isSystemIndexFile(file.name) && matchesNaming(file.name, docTypeDef.naming)) {
-        const relativePath = `${basePath}${file.name}`;
-        const doc = await extractDocKnowledge(workDir, relativePath, docTypeKey, docTypeDef, dirGraph);
-        if (doc) results.push(doc);
-      } else if (file.type === 'directory' && !file.name.startsWith('.')) {
-        // 递归扫描子目录
-        const subDocs = await scanFromFileSystem(
-          workDir,
-          `${basePath}${file.name}`,
-          docTypeKey,
-          docTypeDef,
-          dirGraph,
-          depth + 1,
-        );
-        results.push(...subDocs);
-      }
-    }
+    const filesToProcess = files.filter(
+      f => f.type === 'file' && isScannableDoc(f.name) && !isSystemIndexFile(f.name) && matchesNaming(f.name, docTypeDef.naming),
+    );
+    const subdirs = files.filter(f => f.type === 'directory' && !f.name.startsWith('.'));
+
+    // T1.2 + T1.3：文件提取与子目录递归全部并发执行
+    const [fileDocs, subDirResults] = await Promise.all([
+      Promise.all(
+        filesToProcess.map(f =>
+          extractDocKnowledge(workDir, `${basePath}${f.name}`, docTypeKey, docTypeDef, dirGraph).catch(() => null),
+        ),
+      ),
+      Promise.all(
+        subdirs.map(dir =>
+          scanFromFileSystem(workDir, `${basePath}${dir.name}`, docTypeKey, docTypeDef, dirGraph, depth + 1).catch(() => []),
+        ),
+      ),
+    ]);
+
+    return [
+      ...(fileDocs.filter(Boolean) as WorkspaceDocKnowledge[]),
+      ...subDirResults.flat(),
+    ];
   } catch {
     // 目录不存在或无权限
+    return [];
   }
-  return results;
 }
 
 // ─── Step 3: 差异化提取 ──────────────────────────────────────────────────────

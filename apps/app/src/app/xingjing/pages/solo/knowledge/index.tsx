@@ -13,8 +13,7 @@ import {
 } from '../../../services/knowledge-index';
 import { checkKnowledgeHealth, type KnowledgeHealthScore } from '../../../services/knowledge-health';
 import { saveSoloKnowledge, type SoloKnowledgeCategory, type SoloKnowledgeItem } from '../../../services/file-store';
-import { invalidateKnowledgeCache } from '../../../services/knowledge-retrieval';
-import { scanWorkspaceDocs } from '../../../services/knowledge-scanner';
+import { invalidateKnowledgeCache, getKnowledgeIndex } from '../../../services/knowledge-retrieval';
 import type { SkillApiAdapter } from '../../../services/knowledge-behavior';
 import { useAppStore } from '../../../stores/app-store';
 import { themeColors, chartColors } from '../../../utils/colors';
@@ -81,10 +80,10 @@ const SoloKnowledge: Component = () => {
 
     setIndexLoading(true);
     try {
-      // dir-graph 扫描 + 行为知识 → 构建索引
-      const scannedDocs = await scanWorkspaceDocs(workDir);
-      const fresh = await buildKnowledgeIndex(workDir, skillApi, scannedDocs);
-      applyIndex(fresh);
+      // T4.1: 使用带缓存的 getKnowledgeIndex，5 分钟 TTL。
+      // 首次进入页面执行全量扫描；5 分钟内再次进入直接返回缓存（0 ms）。
+      const fresh = await getKnowledgeIndex(workDir, skillApi);
+      if (fresh) applyIndex(fresh);
     } catch (e) {
       console.warn('[knowledge] index build failed', e);
     } finally {

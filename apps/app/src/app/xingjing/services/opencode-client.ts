@@ -76,6 +76,9 @@ export function setOpenworkFileOps(
 ) {
   _owFileOps = ops;
   _workspaceId = workspaceId;
+  // 文件操作能力变更时重置通道偏好，确保新环境下重新探测最优通道
+  _preferredReadLevel = 0;
+  _preferredListLevel = 0;
 }
 
 /** 断线重试退避时间（ms）：1s / 2s / 5s */
@@ -109,6 +112,9 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 export function setWorkingDirectory(directory: string, baseUrl?: string) {
   _directory = directory;
   if (baseUrl) _baseUrl = baseUrl;
+  // 工作目录变更时重置通道偏好，确保新工作区从最优通道探测开始
+  _preferredReadLevel = 0;
+  _preferredListLevel = 0;
 }
 
 /**
@@ -160,7 +166,30 @@ export async function refreshLocalClient(): Promise<void> {
   _localClient = null;
 }
 
-// ─── 文件 API ───────────────────────────────────────────────────────────────
+// ─── 文件 API ───────────────────────────────────────────────
+
+// ─── 文件通道自适应优化 ─────────────────────────────────────────
+// 记录本次运行中已知最优通道级别，后续调用直接从该级别开始，
+// 跳过已知失败的高层级，大幅减少每个文件操作的等待时间。
+// 工作目录切换时自动重置（setWorkingDirectory / setOpenworkFileOps）。
+
+/** fileRead 最优通道（0=OpenWork API, 1=SDK, 2=tauriFetch, 3=Tauri native） */
+let _preferredReadLevel: 0 | 1 | 2 | 3 = 0;
+/** fileList 最优通道（0=OpenWork readdir, 1=SDK, 2=tauriFetch, 3=Tauri native） */
+let _preferredListLevel: 0 | 1 | 2 | 3 = 0;
+
+/** 网络层文件操作超时（ms）：Level 0-2 最多等待此时间才降级，避免 TCP 连接超时阻塞扫描 */
+const FILE_OP_NETWORK_TIMEOUT_MS = 2000;
+
+/** 包裹 Promise，超时后自动 reject */
+function withFileTimeout<T>(p: Promise<T>): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, rej) =>
+      setTimeout(() => rej(new Error('file op timeout')), FILE_OP_NETWORK_TIMEOUT_MS),
+    ),
+  ]);
+}
 
 export interface FileNode {
   name: string;
@@ -183,12 +212,12 @@ export async function fileList(
   path: string,
   directory?: string,
 ): Promise<FileNode[]> {
-  // Level 0: OpenWork Server readdir API——与 fileRead 的 OpenWork API Level 对齐
-  if (_owFileOps?.list) {
+  // Level 0: OpenWork Server readdir API
+  if (_preferredListLevel <= 0 && _owFileOps?.list) {
     try {
       const dir = directory ?? (_directory || '');
       const absPath = dir ? `${dir.replace(/\/$/, '')}/${path.replace(/\/$/, '')}` : path;
-      const entries = await _owFileOps.list(absPath);
+      const entries = await withFileTimeout(_owFileOps.list(absPath));
       if (entries && entries.length >= 0) {
         console.debug('[xingjing] fileList 通过 OpenWork readdir 成功, path:', path, 'count:', entries.length);
         return entries.map(entry => ({
@@ -201,41 +230,56 @@ export async function fileList(
       }
     } catch (e) {
       console.warn('[xingjing] fileList OpenWork readdir 失败:', (e as Error)?.message ?? e);
+      if (_preferredListLevel === 0) _preferredListLevel = 1;
     }
   }
 
   // Level 1: OpenCode SDK 客户端
-  try {
-    const client = getXingjingClient();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const result = await (client.file.list as any)({
-      path,
-      directory: directory ?? (_directory || undefined),
-    });
-    if (result.data) return result.data as FileNode[];
-    console.warn('[xingjing] fileList SDK returned no data, error:', (result as any)?.error?.name ?? result.error);
-  } catch (e) {
-    console.warn('[xingjing] fileList SDK failed:', (e as Error)?.message ?? e);
+  if (_preferredListLevel <= 1) {
+    try {
+      const client = getXingjingClient();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = await withFileTimeout((client.file.list as any)({
+        path,
+        directory: directory ?? (_directory || undefined),
+      })) as any;
+      if (result.data) {
+        _preferredListLevel = 1;
+        return result.data as FileNode[];
+      }
+      console.warn('[xingjing] fileList SDK returned no data, error:', (result as any)?.error?.name ?? result.error);
+      if (_preferredListLevel <= 1) _preferredListLevel = 2;
+    } catch (e) {
+      console.warn('[xingjing] fileList SDK failed:', (e as Error)?.message ?? e);
+      if (_preferredListLevel <= 1) _preferredListLevel = 2;
+    }
   }
 
   // Level 2: tauriFetch 直连 OpenCode（绕过 CORS）
-  try {
-    const url = new URL('/file', _baseUrl);
-    url.searchParams.set('path', path);
-    const dir = directory ?? (_directory || '');
-    if (dir) url.searchParams.set('directory', dir);
-    const resp = await safeFetch()(url.toString());
-    if (resp.ok) return (await resp.json()) as FileNode[];
-    console.warn('[xingjing] fileList tauriFetch 失败, status:', resp.status);
-  } catch (e) {
-    console.warn('[xingjing] fileList tauriFetch 异常:', (e as Error)?.message ?? e);
+  if (_preferredListLevel <= 2) {
+    try {
+      const url = new URL('/file', _baseUrl);
+      url.searchParams.set('path', path);
+      const dir = directory ?? (_directory || '');
+      if (dir) url.searchParams.set('directory', dir);
+      const resp = await withFileTimeout(safeFetch()(url.toString()));
+      if (resp.ok) {
+        _preferredListLevel = 2;
+        return (await resp.json()) as FileNode[];
+      }
+      console.warn('[xingjing] fileList tauriFetch 失败, status:', resp.status);
+      if (_preferredListLevel <= 2) _preferredListLevel = 3;
+    } catch (e) {
+      console.warn('[xingjing] fileList tauriFetch 异常:', (e as Error)?.message ?? e);
+      if (_preferredListLevel <= 2) _preferredListLevel = 3;
+    }
   }
 
   // Level 3: Tauri 原生文件系统（终极兜底）
   const nativeResult = await tauriNativeFileList(path, directory);
   if (nativeResult !== null) {
-    console.debug('[xingjing] fileList 通过 Tauri native fs 成功, path:', path,
-      'count:', nativeResult.length);
+    console.debug('[xingjing] fileList 通过 Tauri native fs 成功, path:', path, 'count:', nativeResult.length);
+    _preferredListLevel = 3;
     return nativeResult;
   }
 
@@ -362,54 +406,71 @@ export async function fileRead(
   // OpenWork API 会从错误的 workspace 读取，必须跳过
   const owApiAvailable = _owFileOps && _workspaceId && isServerSupportedFile(path)
     && (!directory || !_directory || directory === _directory);
-  if (owApiAvailable) {
+
+  if (_preferredReadLevel <= 0 && owApiAvailable) {
     try {
       const relativePath = directory ? path : toWorkspaceRelativePath(path);
       console.debug('[xingjing] fileRead 尝试 OpenWork API, path:', relativePath);
-      const result = await _owFileOps!.read(_workspaceId!, relativePath);
+      const result = await withFileTimeout(_owFileOps!.read(_workspaceId!, relativePath));
       if (result?.content !== undefined) return result.content;
       console.warn('[xingjing] fileRead OpenWork API 返回空内容, path:', relativePath);
     } catch (e) {
       console.warn('[xingjing] fileRead OpenWork API 失败:', (e as Error)?.message ?? e);
+      if (_preferredReadLevel === 0) _preferredReadLevel = 1;
     }
+  } else if (owApiAvailable && _preferredReadLevel > 0) {
+    console.debug('[xingjing] fileRead 跳过 OpenWork API（已知更优通道 Level', _preferredReadLevel, '）, path:', path);
   } else if (_owFileOps && _workspaceId && !owApiAvailable) {
     console.debug('[xingjing] fileRead 跳过 OpenWork API（文件类型不支持或 workspace 不匹配）, path:', path);
   }
 
   // 2. OpenCode SDK 客户端
-  try {
-    const client = getXingjingClient();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const result = await (client.file.read as any)({
-      path,
-      directory: directory ?? (_directory || undefined),
-    });
-    if (result.data) return (result.data as FileContent).content;
-    console.warn('[xingjing] fileRead SDK returned no data, error:', (result as any)?.error?.name ?? result.error);
-  } catch (e) {
-    console.warn('[xingjing] fileRead SDK failed:', (e as Error)?.message ?? e);
+  if (_preferredReadLevel <= 1) {
+    try {
+      const client = getXingjingClient();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = await withFileTimeout((client.file.read as any)({
+        path,
+        directory: directory ?? (_directory || undefined),
+      })) as any;
+      if (result.data) {
+        _preferredReadLevel = 1;
+        return (result.data as FileContent).content;
+      }
+      console.warn('[xingjing] fileRead SDK returned no data, error:', (result as any)?.error?.name ?? result.error);
+      if (_preferredReadLevel <= 1) _preferredReadLevel = 2;
+    } catch (e) {
+      console.warn('[xingjing] fileRead SDK failed:', (e as Error)?.message ?? e);
+      if (_preferredReadLevel <= 1) _preferredReadLevel = 2;
+    }
   }
 
   // 3. 兜底：通过 tauriFetch 直连 OpenCode（绕过 CORS）
-  try {
-    const url = new URL('/file/content', _baseUrl);
-    url.searchParams.set('path', path);
-    const dir = directory ?? (_directory || '');
-    if (dir) url.searchParams.set('directory', dir);
-    const resp = await safeFetch()(url.toString());
-    if (resp.ok) {
-      const data = await resp.json();
-      return (data as FileContent).content ?? null;
+  if (_preferredReadLevel <= 2) {
+    try {
+      const url = new URL('/file/content', _baseUrl);
+      url.searchParams.set('path', path);
+      const dir = directory ?? (_directory || '');
+      if (dir) url.searchParams.set('directory', dir);
+      const resp = await withFileTimeout(safeFetch()(url.toString()));
+      if (resp.ok) {
+        const data = await resp.json();
+        _preferredReadLevel = 2;
+        return (data as FileContent).content ?? null;
+      }
+      console.warn('[xingjing] fileRead tauriFetch 失败, status:', resp.status, 'path:', path);
+      if (_preferredReadLevel <= 2) _preferredReadLevel = 3;
+    } catch (e) {
+      console.warn('[xingjing] fileRead tauriFetch 异常:', (e as Error)?.message ?? e);
+      if (_preferredReadLevel <= 2) _preferredReadLevel = 3;
     }
-    console.warn('[xingjing] fileRead tauriFetch 失败, status:', resp.status, 'path:', path);
-  } catch (e) {
-    console.warn('[xingjing] fileRead tauriFetch 异常:', (e as Error)?.message ?? e);
   }
 
   // 4. 终极兜底：Tauri 原生文件系统（SDD-008 Level 4）
   const nativeResult = await tauriNativeFileRead(path, directory);
   if (nativeResult !== null) {
     console.debug('[xingjing] fileRead 通过 Tauri native fs 成功, path:', path);
+    _preferredReadLevel = 3;
     return nativeResult;
   }
 

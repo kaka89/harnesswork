@@ -95,6 +95,19 @@ export async function retrieveKnowledge(opts: RetrieveKnowledgeOpts): Promise<st
 }
 
 /**
+ * 获取索引（带内存缓存）
+ *
+ * 供知识库页面使用：首次加载执行全量扫描，5 分钟内再次进入页面直接返回缓存。
+ * handleRefresh 时需先调用 invalidateKnowledgeCache() 再调用此函数。
+ */
+export async function getKnowledgeIndex(
+  workDir: string,
+  skillApi: SkillApiAdapter | null,
+): Promise<KnowledgeIndex | null> {
+  return getOrBuildIndex(workDir, skillApi);
+}
+
+/**
  * 强制刷新索引缓存
  */
 export async function refreshKnowledgeIndex(

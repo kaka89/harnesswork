@@ -116,27 +116,30 @@ export async function buildKnowledgeIndex(
 ): Promise<KnowledgeIndex> {
   const entries: KnowledgeEntry[] = [];
 
-  // 1. 行为知识（Skill API）
-  if (skillApi) {
-    try {
-      const behaviorItems = await listBehaviorKnowledge(skillApi);
-      for (const item of behaviorItems) {
-        entries.push(behaviorToEntry(item));
+  // T3：两源并行加载（行为知识 + workspace 文档），节省两者串行等待的时间
+  const [behaviorItems, docItems] = await Promise.all([
+    skillApi
+      ? listBehaviorKnowledge(skillApi).catch((e) => {
+          console.warn('[knowledge-index] Failed to load behavior knowledge:', e);
+          return [];
+        })
+      : Promise.resolve([]),
+    (() => {
+      try {
+        return preloadedDocs !== undefined
+          ? Promise.resolve(preloadedDocs)
+          : scanWorkspaceDocs(workDir);
+      } catch {
+        return Promise.resolve([]);
       }
-    } catch (e) {
-      console.warn('[knowledge-index] Failed to load behavior knowledge:', e);
-    }
-  }
+    })(),
+  ]);
 
-  // 2. Workspace 文档知识（dir-graph.yaml 驱动）
-  // 优先使用调用方直接传入的扫描结果，否则实时扫描
-  try {
-    const docItems = preloadedDocs ?? await scanWorkspaceDocs(workDir);
-    for (const item of docItems) {
-      entries.push(docToEntry(item));
-    }
-  } catch {
-    // 扫描失败，跳过
+  for (const item of behaviorItems) {
+    entries.push(behaviorToEntry(item));
+  }
+  for (const item of docItems) {
+    entries.push(docToEntry(item));
   }
 
   // 4. 构建多维索引

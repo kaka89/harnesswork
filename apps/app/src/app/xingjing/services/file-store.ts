@@ -681,38 +681,114 @@ export interface SoloHypothesis {
   method: string;
   result?: string;
   impact: 'high' | 'medium' | 'low';
+  feature?: string;
   createdAt: string;
   validatedAt?: string;
   markdownDetail?: string;
 }
 
+interface HypothesisIndexItem {
+  id: string;
+  title?: string;
+  status?: SoloHypothesisStatus;
+  feature?: string;
+  impact?: 'high' | 'medium' | 'low';
+  createdAt?: string;
+  validatedAt?: string;
+  archived?: boolean;
+}
+
 export async function loadHypotheses(workDir: string): Promise<SoloHypothesis[]> {
   const dir = `${workDir}/iterations/hypotheses`;
   try {
+    // 1. Read _index.yml for metadata (feature, title, etc.)
+    const indexData = await readYaml<{ items: HypothesisIndexItem[] }>(
+      `${dir}/_index.yml`,
+      { items: [] },
+    );
+    const indexMap = new Map<string, HypothesisIndexItem>();
+    for (const item of indexData.items ?? []) {
+      if (item.id) indexMap.set(item.id, item);
+    }
+
+    // 2. Read all .md files for frontmatter + body
     const docs = await readMarkdownDir<Record<string, unknown>>(dir);
-    return docs
-      .map((d) => ({
-        ...(d.frontmatter as unknown as SoloHypothesis),
-        ...(d.body.trim() ? { result: (d.frontmatter as Record<string, unknown>).result as string ?? d.body.trim() } : {}),
-      }))
-      .filter((d) => !!d.id);
+    const mdMap = new Map<string, SoloHypothesis>();
+    for (const d of docs) {
+      const fm = d.frontmatter as unknown as SoloHypothesis;
+      if (!fm.id) continue;
+      const indexEntry = indexMap.get(fm.id);
+      mdMap.set(fm.id, {
+        ...fm,
+        ...(indexEntry?.feature ? { feature: indexEntry.feature } : {}),
+        ...(d.body.trim() ? { markdownDetail: d.body.trim() } : {}),
+      });
+    }
+
+    // 3. Include index-only entries (no .md file yet)
+    for (const [id, entry] of indexMap) {
+      if (!mdMap.has(id)) {
+        mdMap.set(id, {
+          id: entry.id,
+          status: entry.status ?? 'testing',
+          belief: entry.title ?? '',
+          why: '',
+          method: '',
+          impact: entry.impact ?? 'medium',
+          feature: entry.feature,
+          createdAt: entry.createdAt ?? new Date().toISOString().slice(0, 10),
+          validatedAt: entry.validatedAt,
+        });
+      }
+    }
+
+    return Array.from(mdMap.values());
   } catch {
     return [];
   }
 }
 
 export async function saveHypothesis(workDir: string, item: SoloHypothesis): Promise<boolean> {
-  const { result, markdownDetail, ...rest } = item;
-  return writeMarkdownWithFrontmatter(
+  const { result, markdownDetail, feature, ...rest } = item;
+  // 1. Write .md file (feature is stored in _index.yml, not in frontmatter)
+  const mdOk = await writeMarkdownWithFrontmatter(
     `${workDir}/iterations/hypotheses/${item.id}.md`,
     {
-      frontmatter: { ...rest, ...(markdownDetail !== undefined ? { markdownDetail } : {}) } as unknown as Record<string, unknown>,
-      body: result ?? '',
+      frontmatter: {
+        ...rest,
+        ...(feature ? { feature } : {}),
+      } as unknown as Record<string, unknown>,
+      body: markdownDetail ?? result ?? '',
     },
   );
+
+  // 2. Upsert _index.yml entry
+  try {
+    const indexPath = `${workDir}/iterations/hypotheses/_index.yml`;
+    const indexData = await readYaml<{ items: HypothesisIndexItem[] }>(indexPath, { items: [] });
+    const items = indexData.items ?? [];
+    const entry: HypothesisIndexItem = {
+      id: item.id,
+      title: item.belief,
+      status: item.status,
+      impact: item.impact,
+      createdAt: item.createdAt,
+      ...(item.validatedAt ? { validatedAt: item.validatedAt } : {}),
+      ...(feature ? { feature } : {}),
+      archived: false,
+    };
+    const idx = items.findIndex((i) => i.id === item.id);
+    if (idx >= 0) items[idx] = entry;
+    else items.push(entry);
+    await writeYaml(indexPath, { items } as unknown as Record<string, unknown>);
+  } catch {
+    // Index update is best-effort
+  }
+
+  return mdOk;
 }
 
-// ─── Solo: Feature Ideas ────────────────────────────────────────────────────
+// ─── Solo: Feature Ideas (legacy) ───────────────────────────────────────────
 
 export interface SoloFeatureIdea {
   id: string;
@@ -739,6 +815,64 @@ export async function saveFeatureIdea(workDir: string, item: SoloFeatureIdea): P
     `${workDir}/iterations/feature-ideas/${item.id}.yaml`,
     item as unknown as Record<string, unknown>,
   );
+}
+
+// ─── Solo: Product Features (real data) ─────────────────────────────────────
+
+export type SoloFeatureStatus = 'planned' | 'beta' | 'ga';
+
+export interface SoloProductFeature {
+  id: string;
+  name: string;
+  title?: string;
+  status: SoloFeatureStatus;
+  hypothesis?: string;
+  since?: string;
+  created?: string;
+  brief?: string;
+  description?: string;
+  path?: string;
+}
+
+export async function loadProductFeatures(workDir: string): Promise<SoloProductFeature[]> {
+  const indexPath = `${workDir}/product/features/_index.yml`;
+  try {
+    const data = await readYaml<{ features: Array<Record<string, unknown>> }>(indexPath, { features: [] });
+    return (data.features ?? []).map((f) => ({
+      id: (f.id as string) ?? (f.name as string) ?? '',
+      name: (f.name as string) ?? (f.title as string) ?? (f.id as string) ?? '',
+      title: (f.title as string) ?? undefined,
+      status: (f.status as SoloFeatureStatus) ?? 'planned',
+      hypothesis: (f.hypothesis as string) ?? undefined,
+      since: (f.since as string) ?? undefined,
+      created: (f.created as string) ?? undefined,
+      brief: (f.brief as string) ?? undefined,
+      description: (f.description as string) ?? undefined,
+      path: (f.path as string) ?? undefined,
+    })).filter((f) => !!f.id || !!f.name);
+  } catch {
+    return [];
+  }
+}
+
+// ─── Solo: Product Context (overview / roadmap) ─────────────────────────────
+
+export async function loadProductOverview(workDir: string): Promise<string> {
+  try {
+    const content = await readFile(`${workDir}/product/overview.md`);
+    return content ?? '';
+  } catch {
+    return '';
+  }
+}
+
+export async function loadProductRoadmap(workDir: string): Promise<string> {
+  try {
+    const content = await readFile(`${workDir}/product/roadmap.md`);
+    return content ?? '';
+  } catch {
+    return '';
+  }
 }
 
 // ─── Solo: Competitors ──────────────────────────────────────────────────────
@@ -984,25 +1118,38 @@ export interface SoloUserFeedback {
   id: string;
   user: string;
   channel: 'Email' | 'Product Hunt' | 'Twitter' | 'In-app';
-  content: string;
+  content?: string;
   sentiment: 'positive' | 'negative' | 'neutral';
   date: string;
+  archived?: boolean;
 }
 
 export async function loadUserFeedbacks(workDir: string): Promise<SoloUserFeedback[]> {
   const dir = `${workDir}/iterations/feedbacks`;
   try {
-    const items = await readYamlDir<SoloUserFeedback>(dir);
-    return items.filter((t) => !!t.id);
+    const docs = await readMarkdownDir<Record<string, unknown>>(dir);
+    return docs
+      .map((d) => {
+        const fm = d.frontmatter as unknown as SoloUserFeedback;
+        return {
+          ...fm,
+          content: d.body.trim() || fm.content || '',
+        };
+      })
+      .filter((f) => !!f.id);
   } catch {
     return [];
   }
 }
 
 export async function saveUserFeedback(workDir: string, feedback: SoloUserFeedback): Promise<boolean> {
-  return writeYaml(
-    `${workDir}/iterations/feedbacks/${feedback.id}.yaml`,
-    feedback as unknown as Record<string, unknown>,
+  const { content, ...rest } = feedback;
+  return writeMarkdownWithFrontmatter(
+    `${workDir}/iterations/feedbacks/${feedback.id}.md`,
+    {
+      frontmatter: rest as unknown as Record<string, unknown>,
+      body: content ?? '',
+    },
   );
 }
 

@@ -137,11 +137,13 @@ export interface Hypothesis {
   method: string;         // 验证方式
   result?: string;        // 实际结果
   impact: 'high' | 'medium' | 'low';
+  feature?: string;       // 关联功能 ID
   createdAt: string;
   validatedAt?: string;
   markdownDetail?: string; // Markdown 格式详细描述
 }
 
+/** @deprecated Use real data from file-store loadHypotheses() instead */
 export const hypotheses: Hypothesis[] = [
   {
     id: 'h1',
@@ -271,6 +273,7 @@ const reqTypeLabel: Record<RequirementType, string> = {
 
 export { reqTypeLabel };
 
+/** @deprecated Use real data from file-store loadRequirementOutputs() instead */
 export const requirementOutputs: RequirementOutput[] = [
   {
     id: 'req1',
@@ -811,6 +814,7 @@ export interface UserFeedback {
   date: string;
 }
 
+/** @deprecated Use real data from file-store loadUserFeedbacks() instead */
 export const userFeedbacks: UserFeedback[] = [
   {
     id: 'uf1',

@@ -1,13 +1,24 @@
 import { Component, createSignal, createEffect, For, Show, onMount } from 'solid-js';
 import {
-  hypotheses as mockHypotheses,
-  requirementOutputs as mockRequirements,
   Hypothesis,
   HypothesisStatus,
   RequirementOutput,
   reqTypeLabel,
 } from '../../../mock/solo';
-import { loadHypotheses, loadRequirementOutputs, saveHypothesis, saveRequirementOutput } from '../../../services/file-store';
+import {
+  loadHypotheses,
+  loadRequirementOutputs,
+  saveHypothesis,
+  saveRequirementOutput,
+  loadUserFeedbacks,
+  loadProductFeatures,
+  loadProductOverview,
+  loadProductRoadmap,
+  loadSoloMetrics,
+  type SoloUserFeedback,
+  type SoloProductFeature,
+  type SoloBusinessMetric,
+} from '../../../services/file-store';
 import { SOLO_AGENTS } from '../../../services/autopilot-executor';
 import { useAppStore } from '../../../stores/app-store';
 import { themeColors, chartColors } from '../../../utils/colors';
@@ -17,6 +28,7 @@ import type { InsightRecord, ProductSuggestion } from '../../../services/insight
 import { loadInsightRecords, saveInsightRecord, deleteInsightRecord } from '../../../services/insight-store';
 import InsightAgentPanel from '../../../components/insight/insight-agent-panel';
 import InsightBoard from '../../../components/insight/insight-board';
+import FeedbackCard from '../../../components/insight/feedback-card';
 
 const statusConfig: Record<HypothesisStatus, { label: string; icon: string; bg: string; border: string; cardBorder: string }> = {
   testing:     { label: '验证中',  icon: '🧪', bg: themeColors.primaryBg, border: themeColors.primaryBorder, cardBorder: themeColors.border },
@@ -263,11 +275,17 @@ const REQ_DOC_REGEX = /^\[REQ_DOC:([^\]]+)\]/;
 
 const SoloProduct: Component = () => {
   const { productStore, actions } = useAppStore();
-  const [activeTab, setActiveTab] = createSignal<'hypotheses' | 'requirements' | 'insights'>('hypotheses');
-  const [hypotheses, setHypotheses] = createSignal<Hypothesis[]>(mockHypotheses);
-  const [requirements, setRequirements] = createSignal<RequirementOutput[]>(mockRequirements);
+  const [activeTab, setActiveTab] = createSignal<'hypotheses' | 'features' | 'feedbacks' | 'insights'>('hypotheses');
+  const [hypotheses, setHypotheses] = createSignal<Hypothesis[]>([]);
+  const [requirements, setRequirements] = createSignal<RequirementOutput[]>([]);
   const [insightRecords, setInsightRecords] = createSignal<InsightRecord[]>([]);
   const [insightLoading, setInsightLoading] = createSignal(false);
+  // New real-data signals
+  const [features, setFeatures] = createSignal<SoloProductFeature[]>([]);
+  const [feedbacks, setFeedbacks] = createSignal<SoloUserFeedback[]>([]);
+  const [productOverview, setProductOverview] = createSignal('');
+  const [productRoadmap, setProductRoadmap] = createSignal('');
+  const [metrics, setMetrics] = createSignal<SoloBusinessMetric[]>([]);
   const [detailHypo, setDetailHypo] = createSignal<Hypothesis | null>(null);
   const [editMode, setEditMode] = createSignal<'preview' | 'edit'>('preview');
   const [editContent, setEditContent] = createSignal('');
@@ -300,24 +318,26 @@ const SoloProduct: Component = () => {
     const workDir = productStore.activeProduct()?.workDir;
     if (!workDir) return;
     try {
-      const [fileHypo, fileReqs] = await Promise.all([
+      const [fileHypo, fileReqs, fileFeedbacks, fileFeatures, overview, roadmap, metricsData, records] = await Promise.all([
         loadHypotheses(workDir),
         loadRequirementOutputs(workDir),
+        loadUserFeedbacks(workDir),
+        loadProductFeatures(workDir),
+        loadProductOverview(workDir),
+        loadProductRoadmap(workDir),
+        loadSoloMetrics(workDir),
+        loadInsightRecords(workDir),
       ]);
       if (fileHypo.length > 0) setHypotheses(fileHypo as unknown as Hypothesis[]);
       if (fileReqs.length > 0) setRequirements(fileReqs as unknown as RequirementOutput[]);
-    } catch {
-      // Mock fallback
-    }
-    // Load insight records
-    setInsightLoading(true);
-    try {
-      const records = await loadInsightRecords(workDir);
+      setFeedbacks(fileFeedbacks as unknown as SoloUserFeedback[]);
+      setFeatures(fileFeatures);
+      setProductOverview(overview);
+      setProductRoadmap(roadmap);
+      setMetrics(metricsData.businessMetrics ?? []);
       setInsightRecords(records);
     } catch {
-      // No insight records yet
-    } finally {
-      setInsightLoading(false);
+      // Graceful fallback: signals remain at empty defaults
     }
   });
 
@@ -589,9 +609,21 @@ ${reqSummary}
           <span style={{ color: themeColors.purple }}>💡</span>
           产品洞察
         </h2>
-        <div style={{ display: 'flex', gap: '8px' }}>
-          <span style={{ 'font-size': '12px', padding: '4px 8px', background: themeColors.primaryBg, color: chartColors.primary, 'border-radius': '9999px' }}>🧪 {testingItems().length} 个假设验证中</span>
-          <span style={{ 'font-size': '12px', padding: '4px 8px', background: themeColors.successBg, color: chartColors.success, 'border-radius': '9999px' }}>✅ {validatedItems().length} 个已证实</span>
+        <div style={{ display: 'flex', gap: '8px', 'flex-wrap': 'wrap' }}>
+          <For each={metrics()}>
+            {(m) => (
+              <span style={{ 'font-size': '12px', padding: '4px 8px', background: themeColors.hover, color: themeColors.textSecondary, 'border-radius': '9999px' }}>
+                {m.label}: {typeof m.value === 'number' ? `${m.value}${m.unit ?? ''}` : m.value}
+                <Show when={m.trendValue}>
+                  <span style={{ color: m.good ? chartColors.success : chartColors.error, 'margin-left': '4px' }}>{m.trendValue}</span>
+                </Show>
+              </span>
+            )}
+          </For>
+          <Show when={metrics().length === 0}>
+            <span style={{ 'font-size': '12px', padding: '4px 8px', background: themeColors.primaryBg, color: chartColors.primary, 'border-radius': '9999px' }}>🧪 {testingItems().length} 个假设验证中</span>
+            <span style={{ 'font-size': '12px', padding: '4px 8px', background: themeColors.successBg, color: chartColors.success, 'border-radius': '9999px' }}>✅ {validatedItems().length} 个已证实</span>
+          </Show>
         </div>
       </div>
 
@@ -605,9 +637,13 @@ ${reqSummary}
                 🧪 产品假设
                 <span style={{ 'margin-left': '6px', 'font-size': '12px', padding: '1px 6px', background: themeColors.primaryBg, color: chartColors.primary, 'border-radius': '9999px' }}>{testingItems().length} 验证中</span>
               </button>
-              <button style={tabStyle(activeTab() === 'requirements')} onClick={() => setActiveTab('requirements')}>
-                📋 产品需求
-                <span style={{ 'margin-left': '6px', 'font-size': '12px', padding: '1px 6px', background: themeColors.hover, color: themeColors.textSecondary, 'border-radius': '9999px' }}>{requirements().length}</span>
+              <button style={tabStyle(activeTab() === 'features')} onClick={() => setActiveTab('features')}>
+                📦 功能注册
+                <span style={{ 'margin-left': '6px', 'font-size': '12px', padding: '1px 6px', background: themeColors.hover, color: themeColors.textSecondary, 'border-radius': '9999px' }}>{features().length}</span>
+              </button>
+              <button style={tabStyle(activeTab() === 'feedbacks')} onClick={() => setActiveTab('feedbacks')}>
+                💬 用户反馈
+                <span style={{ 'margin-left': '6px', 'font-size': '12px', padding: '1px 6px', background: themeColors.hover, color: themeColors.textSecondary, 'border-radius': '9999px' }}>{feedbacks().length}</span>
               </button>
               <button style={tabStyle(activeTab() === 'insights')} onClick={() => setActiveTab('insights')}>
                 🔍 外部洞察
@@ -630,48 +666,72 @@ ${reqSummary}
                 </div>
               </Show>
 
-              {/* Requirements Output */}
-              <Show when={activeTab() === 'requirements'}>
+              {/* Features Registry */}
+              <Show when={activeTab() === 'features'}>
                 <div style={{ display: 'flex', 'flex-direction': 'column', gap: '12px' }}>
-                  <Show when={requirements().length === 0}>
+                  <Show when={features().length === 0}>
                     <div style={{ 'text-align': 'center', padding: '48px 0', color: themeColors.textMuted, 'font-size': '14px' }}>
-                      <div style={{ 'font-size': '32px', 'margin-bottom': '8px' }}>📋</div>
-                      <div>暂无需求文档</div>
-                      <div style={{ 'font-size': '12px', 'margin-top': '4px' }}>向右侧 AI 产品搭档说「帮我写XX模块的需求」</div>
+                      <div style={{ 'font-size': '32px', 'margin-bottom': '8px' }}>📦</div>
+                      <div>暂无功能注册</div>
+                      <div style={{ 'font-size': '12px', 'margin-top': '4px' }}>在 product/features/_index.yml 中添加功能条目</div>
                     </div>
                   </Show>
-                  <For each={requirements()}>
-                    {(req) => {
-                      const pStyle = priorityStyle[req.priority] || priorityStyle.P3;
+                  <For each={features()}>
+                    {(feat) => {
+                      const statusCfg: Record<string, { label: string; bg: string; color: string }> = {
+                        ga: { label: '已上线', bg: themeColors.successBg, color: chartColors.success },
+                        beta: { label: 'Beta', bg: themeColors.warningBg, color: themeColors.warningDark },
+                        planned: { label: '规划中', bg: themeColors.hover, color: themeColors.textSecondary },
+                      };
+                      const s = statusCfg[feat.status] ?? statusCfg.planned;
                       return (
-                        <div
-                          style={{ 'border-radius': '12px', border: `1px solid ${themeColors.borderLight}`, padding: '16px', cursor: 'pointer', transition: 'box-shadow 0.15s' }}
-                          onClick={() => openReqDetail(req)}
-                        >
-                          <div style={{ display: 'flex', 'align-items': 'center', gap: '8px', 'margin-bottom': '10px', 'flex-wrap': 'wrap' }}>
-                            <span style={{ 'font-size': '12px', padding: '1px 8px', 'border-radius': '4px', 'font-weight': 700, background: pStyle.bg, color: 'white' }}>
-                              {req.priority}
-                            </span>
-                            <span style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text }}>{req.title}</span>
-                            <span style={{ 'font-size': '12px', padding: '1px 6px', background: themeColors.primaryBg, color: chartColors.primary, 'border-radius': '4px' }}>
-                              {reqTypeLabel[req.type]}
-                            </span>
-                            <span style={{ 'margin-left': 'auto', 'font-size': '11px', color: themeColors.textMuted }}>点击查看详情 →</span>
+                        <div style={{ 'border-radius': '12px', border: `1px solid ${themeColors.borderLight}`, padding: '14px 16px' }}>
+                          <div style={{ display: 'flex', 'align-items': 'center', gap: '8px', 'margin-bottom': '6px', 'flex-wrap': 'wrap' }}>
+                            <span style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text }}>{feat.title ?? feat.name}</span>
+                            <span style={{ 'font-size': '11px', padding: '1px 6px', 'border-radius': '4px', background: s.bg, color: s.color }}>{s.label}</span>
+                            <Show when={feat.since}>
+                              <span style={{ 'font-size': '11px', color: themeColors.textMuted }}>since {feat.since}</span>
+                            </Show>
+                            <Show when={feat.hypothesis}>
+                              <span style={{ 'font-size': '11px', padding: '1px 6px', 'border-radius': '4px', background: themeColors.primaryBg, color: chartColors.primary }}>🔗 {feat.hypothesis}</span>
+                            </Show>
                           </div>
-                          <Show when={req.linkedHypothesis}>
-                            <div style={{ 'font-size': '12px', color: themeColors.textMuted, 'margin-bottom': '8px' }}>
-                              🔗 关联假设: {req.linkedHypothesis}
-                            </div>
-                          </Show>
-                          <div style={{ 'font-size': '13px', color: themeColors.textSecondary, 'white-space': 'nowrap', overflow: 'hidden', 'text-overflow': 'ellipsis' }}>
-                            {req.content.replace(/[#*`\[\]]/g, '').split('\n').filter(l => l.trim()).slice(0, 2).join(' · ')}
-                          </div>
-                          <div style={{ 'margin-top': '8px', 'font-size': '12px', color: themeColors.textMuted }}>
-                            {req.createdAt}
+                          <div style={{ 'font-size': '13px', color: themeColors.textSecondary }}>
+                            {feat.brief ?? feat.description ?? ''}
                           </div>
                         </div>
                       );
                     }}
+                  </For>
+                </div>
+              </Show>
+
+              {/* User Feedbacks */}
+              <Show when={activeTab() === 'feedbacks'}>
+                <div style={{ display: 'flex', 'flex-direction': 'column', gap: '12px' }}>
+                  {/* Sentiment summary */}
+                  <Show when={feedbacks().length > 0}>
+                    <div style={{ display: 'flex', gap: '8px', 'margin-bottom': '4px' }}>
+                      <span style={{ 'font-size': '12px', padding: '2px 8px', 'border-radius': '9999px', background: '#f6ffed', color: '#389e0d' }}>
+                        😊 {feedbacks().filter(f => f.sentiment === 'positive').length} 正面
+                      </span>
+                      <span style={{ 'font-size': '12px', padding: '2px 8px', 'border-radius': '9999px', background: '#fff2f0', color: '#cf1322' }}>
+                        😟 {feedbacks().filter(f => f.sentiment === 'negative').length} 负面
+                      </span>
+                      <span style={{ 'font-size': '12px', padding: '2px 8px', 'border-radius': '9999px', background: '#f5f5f5', color: '#595959' }}>
+                        😐 {feedbacks().filter(f => f.sentiment === 'neutral').length} 中性
+                      </span>
+                    </div>
+                  </Show>
+                  <Show when={feedbacks().length === 0}>
+                    <div style={{ 'text-align': 'center', padding: '48px 0', color: themeColors.textMuted, 'font-size': '14px' }}>
+                      <div style={{ 'font-size': '32px', 'margin-bottom': '8px' }}>💬</div>
+                      <div>暂无用户反馈</div>
+                      <div style={{ 'font-size': '12px', 'margin-top': '4px' }}>在 iterations/feedbacks/ 目录下添加反馈记录</div>
+                    </div>
+                  </Show>
+                  <For each={feedbacks()}>
+                    {(fb) => <FeedbackCard feedback={fb} />}
                   </For>
                 </div>
               </Show>
@@ -696,11 +756,15 @@ ${reqSummary}
             callAgentFn={actions.callAgent}
             productName={productStore.activeProduct()?.name}
             workDir={productStore.activeProduct()?.workDir ?? ''}
-            productContext={`当前产品假设：\n${
-              hypotheses().map(h => `- [${h.status}] ${h.belief}`).join('\n') || '（暂无）'
-            }\n\n已有需求文档：\n${
-              requirements().map(r => `- [${r.priority}] ${r.title}`).join('\n') || '（暂无）'
-            }`}
+            productContext={[
+              productOverview() ? `## 产品概述\n${productOverview()}` : '',
+              productRoadmap() ? `## 路线图\n${productRoadmap()}` : '',
+              metrics().length > 0 ? `## 业务指标\n${metrics().map(m => `- ${m.label}: ${m.value}${m.unit ?? ''} (${m.trendValue})`).join('\n')}` : '',
+              `## 当前产品假设\n${hypotheses().map(h => `- [${h.status}] ${h.belief}${h.feature ? ` (功能: ${h.feature})` : ''}`).join('\n') || '（暂无）'}`,
+              features().length > 0 ? `## 功能注册表\n${features().map(f => `- [${f.status}] ${f.title ?? f.name}${f.hypothesis ? ` (假设: ${f.hypothesis})` : ''}`).join('\n')}` : '',
+              feedbacks().length > 0 ? `## 用户反馈摘要\n${feedbacks().slice(0, 5).map(f => `- [${f.sentiment}] ${f.user}: ${(f.content ?? '').slice(0, 60)}`).join('\n')}` : '',
+              requirements().length > 0 ? `## 已有需求文档\n${requirements().map(r => `- [${r.priority}] ${r.title}`).join('\n')}` : '',
+            ].filter(Boolean).join('\n\n')}
             onHypothesisSave={handleHypothesisSaveFromAgent}
             onRequirementSave={handleRequirementSaveFromAgent}
             onInsightRecord={handleInsightRecord}

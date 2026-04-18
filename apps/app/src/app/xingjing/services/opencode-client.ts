@@ -216,7 +216,10 @@ export async function fileList(
   if (_preferredListLevel <= 0 && _owFileOps?.list) {
     try {
       const dir = directory ?? (_directory || '');
-      const absPath = dir ? `${dir.replace(/\/$/, '')}/${path.replace(/\/$/, '')}` : path;
+      // Fix: 当 path 已经是绝对路径时，用 toWorkspaceRelativePath 先转为相对路径，
+      // 再与 dir 拼接，避免 workDir 被重复拼接（如 /solo007//solo007/iterations）。
+      const relPath = dir ? toWorkspaceRelativePath(path) : path;
+      const absPath = dir ? `${dir.replace(/\/$/, '')}/${relPath.replace(/^\//, '')}` : path;
       const entries = await withFileTimeout(_owFileOps.list(absPath));
       if (entries && entries.length >= 0) {
         console.debug('[xingjing] fileList 通过 OpenWork readdir 成功, path:', path, 'count:', entries.length);
@@ -1037,6 +1040,13 @@ async function runAgentSession(
 
   const finalSid = sid;
 
+  // ── 提前触发 onSessionCreated（在 SSE 订阅和 promptAsync 启动前）──
+  // 让调用方（如 chatAccumulator）在事件流开始前完成 SSE 订阅准备，
+  // 避免 accumulator 错过流式 message.part.delta 事件。
+  opts.onSessionCreated?.(finalSid);
+  // 让出一个微任务 tick，使 SolidJS 响应式系统运行 accumulator 的 createEffect
+  await Promise.resolve();
+
   // ── 工具调用追踪（用于 onToolUse / onToolResult 回调）──
   // key: toolUseId (part.id) → { name, inputJson }
   const pendingToolUses = new Map<string, { name: string; inputJson: string }>();
@@ -1502,7 +1512,7 @@ async function executeAgentWithRetry(
 
     accumulated = r.accumulated;
     sessionId = r.sessionId;
-    if (r.sessionId) opts.onSessionCreated?.(r.sessionId);
+    // onSessionCreated 已在 runAgentSession 内部（session 建立后、SSE 启动前）调用，此处无需重复
 
     if (r.status === 'done') {
       opts.onDone?.(accumulated);
@@ -1523,7 +1533,7 @@ async function executeAgentWithRetry(
 
     accumulated = r.accumulated;
     sessionId = r.sessionId;
-    if (r.sessionId) opts.onSessionCreated?.(r.sessionId);
+    // onSessionCreated 已在 runAgentSession 内部调用，此处无需重复
 
     if (r.status === 'done') {
       opts.onDone?.(accumulated);

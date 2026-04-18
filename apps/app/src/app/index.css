@@ -410,3 +410,200 @@ select:disabled {
 @utility animate-progress-shimmer {
   animation: progress-shimmer 2s infinite linear;
 }
+
+/* ─── AI Chat 动画 ──────────────────────────────────────────────────────────── */
+
+@keyframes ai-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.6; }
+  30%            { transform: translateY(-4px); opacity: 1; }
+}
+
+/* 流式光标：右边缘竖线闪烁 */
+.streaming-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  background: currentColor;
+  margin-left: 1px;
+  vertical-align: text-bottom;
+  border-radius: 1px;
+  opacity: 0.6;
+  animation: cursor-blink 0.8s ease-in-out infinite;
+}
+
+@keyframes cursor-blink {
+  0%, 100% { opacity: 0.6; }
+  50%       { opacity: 0; }
+}
+
+/* ─── AI 消息 Markdown Prose 样式 ──────────────────────────────────────────── */
+
+.md-prose {
+  font-size: 0.875rem;
+  line-height: 1.7;
+  color: var(--dls-text-primary);
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+/* 段落 */
+.md-prose p {
+  margin: 0 0 0.6em 0;
+}
+.md-prose p:last-child { margin-bottom: 0; }
+
+/* 标题 */
+.md-prose h1, .md-prose h2, .md-prose h3,
+.md-prose h4, .md-prose h5, .md-prose h6 {
+  font-weight: 600;
+  line-height: 1.4;
+  margin: 0.8em 0 0.3em 0;
+  color: var(--dls-text-heading, var(--dls-text-primary));
+}
+.md-prose h1 { font-size: 1.1em; }
+.md-prose h2 { font-size: 1.05em; }
+.md-prose h3 { font-size: 1em; }
+.md-prose h4, .md-prose h5, .md-prose h6 { font-size: 0.95em; }
+
+/* 粗体 / 斜体 */
+.md-prose strong { font-weight: 600; color: var(--dls-text-heading, var(--dls-text-primary)); }
+.md-prose em     { font-style: italic; }
+
+/* 内联代码 */
+.md-prose code {
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", ui-monospace, monospace;
+  font-size: 0.82em;
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  background: var(--gray-3, rgba(0,0,0,0.06));
+  color: var(--purple-9, #7c3aed);
+  border: 1px solid var(--gray-5, rgba(0,0,0,0.08));
+}
+
+/* 代码块 */
+.md-prose pre {
+  margin: 0.6em 0;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--gray-2, #f9fafb);
+  border: 1px solid var(--dls-border);
+}
+.md-prose pre code {
+  display: block;
+  padding: 0.8em 1em;
+  font-size: 0.82em;
+  overflow-x: auto;
+  background: transparent;
+  color: var(--dls-text-primary);
+  border: none;
+  border-radius: 0;
+  white-space: pre;
+}
+
+/* 引用块 */
+.md-prose blockquote {
+  margin: 0.5em 0;
+  padding: 0.4em 0.8em;
+  border-left: 3px solid var(--purple-8, #a78bfa);
+  background: rgba(139,92,246,0.05);
+  border-radius: 0 6px 6px 0;
+  color: var(--dls-text-secondary);
+}
+.md-prose blockquote p { margin: 0; }
+
+/* 无序列表 */
+.md-prose ul {
+  margin: 0.4em 0;
+  padding-left: 1.3em;
+  list-style: none;
+}
+.md-prose ul li {
+  position: relative;
+  margin: 0.2em 0;
+}
+.md-prose ul li::before {
+  content: "·";
+  position: absolute;
+  left: -1em;
+  color: var(--purple-9, #8b5cf6);
+  font-weight: bold;
+}
+
+/* 有序列表 */
+.md-prose ol {
+  margin: 0.4em 0;
+  padding-left: 1.4em;
+  list-style: decimal;
+}
+.md-prose ol li {
+  margin: 0.2em 0;
+}
+.md-prose ol li::marker {
+  color: var(--purple-9, #8b5cf6);
+  font-weight: 600;
+}
+
+/* 嵌套列表 */
+.md-prose ul ul, .md-prose ol ol, .md-prose ul ol, .md-prose ol ul {
+  margin: 0.15em 0;
+}
+
+/* 分隔线 */
+.md-prose hr {
+  border: none;
+  border-top: 1px solid var(--dls-border);
+  margin: 0.8em 0;
+}
+
+/* 链接 */
+.md-prose a {
+  color: var(--purple-9, #8b5cf6);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.md-prose a:hover { color: var(--purple-10, #7c3aed); }
+
+/* 表格 */
+.md-prose table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.5em 0;
+  font-size: 0.85em;
+}
+.md-prose th, .md-prose td {
+  border: 1px solid var(--dls-border);
+  padding: 0.3em 0.6em;
+  text-align: left;
+}
+.md-prose th {
+  background: var(--gray-3, rgba(0,0,0,0.04));
+  font-weight: 600;
+}
+.md-prose tr:nth-child(even) td {
+  background: var(--gray-2, rgba(0,0,0,0.02));
+}
+
+/* 暗色模式覆盖 */
+[data-theme="dark"] .md-prose code {
+  background: rgba(255,255,255,0.08);
+  color: var(--purple-11, #c4b5fd);
+  border-color: rgba(255,255,255,0.1);
+}
+[data-theme="dark"] .md-prose pre {
+  background: rgba(255,255,255,0.04);
+  border-color: var(--dls-border);
+}
+[data-theme="dark"] .md-prose pre code {
+  color: var(--gray-12);
+}
+[data-theme="dark"] .md-prose blockquote {
+  background: rgba(139,92,246,0.08);
+}
+
+/* AI 气泡容器 */
+.ai-bubble {
+  transition: box-shadow 0.15s ease;
+}
+.ai-bubble:hover {
+  box-shadow: 0 2px 12px rgba(0,0,0,0.07);
+}

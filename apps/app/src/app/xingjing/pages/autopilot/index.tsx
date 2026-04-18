@@ -1,5 +1,6 @@
 import { createSignal, createMemo, createEffect, onMount, onCleanup, Show, For } from 'solid-js';
 import { useNavigate } from '@solidjs/router';
+import { marked } from 'marked';
 import {
   teamSampleGoals,
   type AgentDef,
@@ -11,6 +12,7 @@ import {
   Bot, CheckCircle, Loader2, Clock, PlayCircle, FileText, Network,
   Bug, Rocket, BarChart3, Plus, Send, Settings, Zap,
   MessageSquare, Activity, X, ChevronLeft, ChevronRight,
+  Brain, Copy, Check,
 } from 'lucide-solid';
 import { useAppStore } from '../../stores/app-store';
 import { themeColors, chartColors } from '../../utils/colors';
@@ -127,6 +129,61 @@ const formatElapsed = (sec: number) => {
   const m = Math.floor(sec / 60);
   const s = sec % 60;
   return `${m}m ${s.toString().padStart(2, '0')}s`;
+};
+
+// ─── Markdown + Think 解析 ────────────────────────────────────────────────────
+
+marked.setOptions({ breaks: true, gfm: true });
+
+interface ParsedContent { thinking: string; output: string; thinkingComplete: boolean; }
+
+function parseThinkingContent(content: string): ParsedContent {
+  if (!content) return { thinking: '', output: '', thinkingComplete: false };
+  const closeIdx = content.indexOf('</think>');
+  if (content.startsWith('<think>')) {
+    if (closeIdx !== -1) {
+      return { thinking: content.slice(7, closeIdx).trim(), output: content.slice(closeIdx + 8).trim(), thinkingComplete: true };
+    }
+    return { thinking: content.slice(7).trim(), output: '', thinkingComplete: false };
+  }
+  return { thinking: '', output: content, thinkingComplete: true };
+}
+
+const MarkdownMsg = (props: { content: string }) => {
+  const html = () => {
+    if (!props.content) return '';
+    try { return marked.parse(props.content, { async: false }) as string; }
+    catch { return props.content.replace(/</g, '&lt;'); }
+  };
+  return <div class="md-prose" innerHTML={html()} />;
+};
+
+const ThinkBlock = (props: { content: string; complete: boolean; streaming: boolean }) => {
+  const [open, setOpen] = createSignal(true);
+  createEffect(() => { if (props.complete && !props.streaming) setOpen(false); });
+  return (
+    <div style={{ 'border-radius': '10px', overflow: 'hidden', 'margin-bottom': '8px', background: 'rgba(139,92,246,0.06)', border: '1px solid rgba(139,92,246,0.18)' }}>
+      <button
+        style={{ width: '100%', display: 'flex', 'align-items': 'center', gap: '6px', padding: '6px 10px', background: 'none', border: 'none', cursor: 'pointer', color: '#7c3aed', 'font-size': '12px', 'font-weight': 600 }}
+        onClick={() => setOpen(v => !v)}
+      >
+        <Show when={props.streaming} fallback={<Brain size={12} />}>
+          <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} />
+        </Show>
+        <span>{props.streaming ? '思考中...' : '思考过程'}</span>
+        <Show when={!props.streaming}>
+          <span style={{ 'margin-left': 'auto', 'font-size': '11px', opacity: '0.5' }}>{open() ? '收起' : '展开'}</span>
+          <Show when={open()} fallback={<ChevronRight size={11} />}><ChevronLeft size={11} style={{ transform: 'rotate(90deg)' }} /></Show>
+        </Show>
+      </button>
+      <Show when={open() && props.content}>
+        <div style={{ padding: '6px 10px 8px', 'font-size': '11px', 'line-height': '1.65', color: 'rgba(109,40,217,0.75)', 'border-top': '1px solid rgba(139,92,246,0.12)', 'white-space': 'pre-wrap', 'font-style': 'italic' }}>
+          {props.content}
+          <Show when={props.streaming}><span class="streaming-cursor" /></Show>
+        </div>
+      </Show>
+    </div>
+  );
 };
 
 // ─── Main component ──────────────────────────────────────────────────────────
@@ -528,66 +585,72 @@ const EnterpriseAutopilot = () => {
             >Pipeline</button>
           </div>
         </div>
-        {/* 大 textarea */}
-        <textarea
-          value={goal()}
-          onInput={(e) => setGoal(e.currentTarget.value)}
-          disabled={runState() === 'running'}
-          placeholder="描述你的目标，例如：为苍穹财务增加「智能费用报销审批」功能，支持 OCR 识别票据、自动匹配审批规则..."
-          style={{
-            width: '100%', 'min-height': '88px', border: 'none', outline: 'none',
-            resize: 'vertical', padding: '12px 16px', 'font-size': '13px',
-            'line-height': '1.6', background: 'transparent', color: themeColors.textPrimary,
-            'box-sizing': 'border-box', 'font-family': 'inherit',
-          }}
-          onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleStart(); }}
-        />
-        {/* 底部：快速示例 + 操作按钮 */}
-        <div style={{
-          display: 'flex', 'align-items': 'center', gap: '8px',
-          padding: '8px 12px', 'border-top': `1px solid ${themeColors.border}`,
-          'flex-wrap': 'wrap',
-        }}>
-          <span style={{ 'font-size': '12px', color: themeColors.textMuted, 'flex-shrink': 0 }}>快速示例：</span>
-          <For each={teamSampleGoals}>{(g) => (
-            <button
-              onClick={() => { if (runState() !== 'running') setGoal(g); }}
-              style={{
-                'font-size': '12px', padding: '3px 10px', 'border-radius': '12px',
-                border: `1px solid ${themeColors.border}`, background: themeColors.surface,
-                cursor: 'pointer', color: themeColors.textSecondary,
-                'max-width': '220px', overflow: 'hidden', 'text-overflow': 'ellipsis',
-                'white-space': 'nowrap', 'flex-shrink': 0,
-              }}
-            >{g.slice(0, 22)}…</button>
-          )}</For>
-          <div style={{ flex: 1 }} />
-          {/* 重置 */}
-          <button
-            onClick={() => { setGoal(''); resetExecution(); setChatMessages([]); setSessionId('session-' + Date.now()); }}
+        {/* Textarea 区域 */}
+        <div style={{ position: 'relative' }}>
+          <textarea
+            value={goal()}
+            onInput={(e) => setGoal(e.currentTarget.value)}
+            disabled={runState() === 'running'}
+            placeholder={runState() === 'running' ? 'Agent 执行中，请稍候...' : '描述目标，例如：为财务系统增加「智能报销审批」功能，支持 OCR 识别票据、自动匹配规则… (⌘Enter 启动)'}
             style={{
-              padding: '6px 14px', 'border-radius': '6px', 'font-size': '13px',
-              border: `1px solid ${themeColors.border}`, background: 'transparent',
-              cursor: 'pointer', color: themeColors.textSecondary, 'flex-shrink': 0,
+              width: '100%', 'min-height': '80px', 'max-height': '200px',
+              border: 'none', outline: 'none', resize: 'vertical',
+              padding: '12px 48px 12px 16px', 'font-size': '13px',
+              'line-height': '1.65', background: 'transparent',
+              color: themeColors.textPrimary, 'box-sizing': 'border-box',
+              'font-family': 'inherit', opacity: runState() === 'running' ? '0.6' : '1',
             }}
-          >重置</button>
-          {/* 重新启动 */}
+            onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleStart(); }}
+          />
+          {/* 右侧发送按钮（浮动在 textarea 内） */}
           <button
             onClick={handleStart}
             disabled={runState() === 'running' || !goal().trim()}
+            title="启动 (⌘Enter)"
             style={{
-              display: 'flex', 'align-items': 'center', gap: '6px',
-              padding: '6px 16px', 'border-radius': '6px', 'font-size': '13px',
+              position: 'absolute', right: '10px', bottom: '10px',
+              width: '30px', height: '30px', 'border-radius': '8px',
               border: 'none', cursor: (!goal().trim() || runState() === 'running') ? 'not-allowed' : 'pointer',
               background: (!goal().trim() || runState() === 'running') ? themeColors.border : chartColors.primary,
-              color: 'white', 'font-weight': 500, 'flex-shrink': 0, transition: 'background 0.2s',
+              color: 'white', display: 'flex', 'align-items': 'center', 'justify-content': 'center',
+              transition: 'all 0.2s', 'flex-shrink': 0,
+              'box-shadow': (!goal().trim() || runState() === 'running') ? 'none' : `0 2px 6px ${chartColors.primary}50`,
             }}
           >
-            {runState() === 'running'
-              ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} />
-              : <PlayCircle size={14} />}
-            重新启动
+            <Show when={runState() === 'running'} fallback={<Send size={13} />}>
+              <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} />
+            </Show>
           </button>
+        </div>
+        {/* 底部：快速示例 + 重置 */}
+        <div style={{
+          display: 'flex', 'align-items': 'center', gap: '6px',
+          padding: '6px 12px 8px', 'border-top': `1px solid ${themeColors.border}`,
+          'flex-wrap': 'wrap',
+        }}>
+          <span style={{ 'font-size': '11px', color: themeColors.textMuted, 'flex-shrink': 0 }}>示例：</span>
+          <For each={teamSampleGoals.slice(0, 3)}>{(g) => (
+            <button
+              onClick={() => { if (runState() !== 'running') setGoal(g); }}
+              style={{
+                'font-size': '11px', padding: '2px 9px', 'border-radius': '10px',
+                border: `1px solid ${themeColors.border}`, background: 'transparent',
+                cursor: 'pointer', color: themeColors.textSecondary,
+                'max-width': '200px', overflow: 'hidden', 'text-overflow': 'ellipsis',
+                'white-space': 'nowrap', 'flex-shrink': 0, transition: 'all 0.15s',
+              }}
+            >{g.slice(0, 20)}…</button>
+          )}</For>
+          <div style={{ flex: 1 }} />
+          <button
+            onClick={() => { setGoal(''); resetExecution(); setChatMessages([]); setSessionId('session-' + Date.now()); }}
+            disabled={runState() === 'running'}
+            style={{
+              padding: '3px 10px', 'border-radius': '5px', 'font-size': '11px',
+              border: `1px solid ${themeColors.border}`, background: 'transparent',
+              cursor: 'pointer', color: themeColors.textMuted, 'flex-shrink': 0,
+            }}
+          >清空</button>
         </div>
       </div>
       {/* 进度条行（运行中或完成时显示） */}
@@ -836,69 +899,202 @@ const EnterpriseAutopilot = () => {
           <Show when={activeTab() === 'chat'}>
             <Show when={!hasMessages()} fallback={
               /* ── Has messages: scrollable bubble list ── */
-              <div ref={chatScrollRef} style={{ flex: 1, 'overflow-y': 'auto', padding: '16px' }}>
-                <div style={{ display: 'flex', 'flex-direction': 'column', gap: '12px', 'padding-bottom': '8px' }}>
+              <div ref={chatScrollRef} style={{ flex: 1, 'overflow-y': 'auto', padding: '16px 20px' }}>
+                <div style={{ display: 'flex', 'flex-direction': 'column', gap: '16px', 'padding-bottom': '8px' }}>
                   <For each={filteredMessages()}>
                     {(msg) => {
+                      // ── User bubble ──
                       if (msg.type === 'user') return (
-                        <div style={{ display: 'flex', 'justify-content': 'flex-end' }}>
-                          <div style={{ 'max-width': '70%', display: 'flex', 'align-items': 'flex-start', gap: '8px', 'flex-direction': 'row-reverse' }}>
-                            <div style={{ width: '28px', height: '28px', 'border-radius': '50%', background: chartColors.primary, display: 'flex', 'align-items': 'center', 'justify-content': 'center', color: 'white', 'font-size': '12px', 'font-weight': 600, 'flex-shrink': 0 }}>我</div>
-                            <div>
-                              <div style={{ background: '#dcf8e8', padding: '8px 12px', 'border-radius': '12px 2px 12px 12px', 'font-size': '13px', 'line-height': '1.6', color: themeColors.textPrimary }}>{msg.text}</div>
-                              <div style={{ 'font-size': '11px', color: themeColors.textMuted, 'text-align': 'right', 'margin-top': '3px' }}>{msg.time}</div>
-                            </div>
+                        <div style={{ display: 'flex', 'justify-content': 'flex-end', 'align-items': 'flex-end', gap: '8px' }}>
+                          <div style={{ 'max-width': '72%' }}>
+                            <div style={{
+                              background: chartColors.primary,
+                              padding: '10px 14px',
+                              'border-radius': '18px 18px 4px 18px',
+                              'font-size': '13px', 'line-height': '1.65',
+                              color: 'white', 'word-break': 'break-word',
+                              'box-shadow': '0 1px 4px rgba(0,0,0,0.12)',
+                            }}>{msg.text}</div>
+                            <div style={{ 'font-size': '11px', color: themeColors.textMuted, 'text-align': 'right', 'margin-top': '4px', 'padding-right': '2px' }}>{msg.time}</div>
                           </div>
+                          <div style={{
+                            width: '30px', height: '30px', 'border-radius': '50%',
+                            background: chartColors.primary,
+                            display: 'flex', 'align-items': 'center', 'justify-content': 'center',
+                            color: 'white', 'font-size': '12px', 'font-weight': 700,
+                            'flex-shrink': 0, 'box-shadow': '0 1px 4px rgba(0,0,0,0.15)',
+                          }}>我</div>
                         </div>
                       );
-                      if (msg.type === 'ai') return (
-                        <div style={{ display: 'flex' }}>
-                          <div style={{ 'max-width': '85%', display: 'flex', 'align-items': 'flex-start', gap: '8px' }}>
-                            <div style={{ width: '28px', height: '28px', 'border-radius': '50%', background: themeColors.hover, display: 'flex', 'align-items': 'center', 'justify-content': 'center', 'font-size': '14px', 'flex-shrink': 0 }}>
+
+                      // ── AI bubble ──
+                      if (msg.type === 'ai') {
+                        const agent = TEAM_AGENTS.find(a => a.id === msg.agentId);
+                        const agentColor = agent?.color ?? chartColors.primary;
+                        const agentBg = agent?.bgColor ?? themeColors.hover;
+                        const parsed = parseThinkingContent(msg.text ?? '');
+                        const thinkStreaming = () => !!msg.isStreaming && !parsed.thinkingComplete;
+                        const outStreaming = () => !!msg.isStreaming && parsed.thinkingComplete;
+                        const isEmpty = () => !msg.text && !!msg.isStreaming;
+
+                        // copy state per message (keyed by id)
+                        const [copied, setCopied] = createSignal(false);
+                        const [hovered, setHovered] = createSignal(false);
+                        const handleCopy = () => {
+                          const text = parsed.output || msg.text;
+                          if (!text) return;
+                          navigator.clipboard.writeText(text).then(() => {
+                            setCopied(true); setTimeout(() => setCopied(false), 2000);
+                          }).catch(() => {});
+                        };
+
+                        return (
+                          <div
+                            style={{ display: 'flex', 'align-items': 'flex-start', gap: '10px', 'max-width': '88%' }}
+                            onMouseEnter={() => setHovered(true)}
+                            onMouseLeave={() => setHovered(false)}
+                          >
+                            {/* Agent avatar */}
+                            <div style={{
+                              width: '32px', height: '32px', 'border-radius': '10px',
+                              background: agentBg,
+                              border: `1.5px solid ${agentColor}40`,
+                              display: 'flex', 'align-items': 'center', 'justify-content': 'center',
+                              'font-size': '16px', 'flex-shrink': 0,
+                              'box-shadow': `0 1px 4px ${agentColor}20`,
+                            }}>
                               {msg.agentEmoji || '🤖'}
                             </div>
-                            <div>
-                              <div style={{ 'font-size': '12px', 'font-weight': 600, color: themeColors.textSecondary, 'margin-bottom': '3px' }}>{msg.agentName}</div>
-                              <div style={{ background: themeColors.surface, border: `1px solid ${themeColors.border}`, padding: '8px 12px', 'border-radius': '2px 12px 12px 12px', 'font-size': '13px', 'line-height': '1.7', color: themeColors.textPrimary, 'white-space': 'pre-wrap' }}>
-                                {msg.text}
+                            <div style={{ flex: 1, 'min-width': 0 }}>
+                              {/* Agent name row */}
+                              <div style={{ display: 'flex', 'align-items': 'center', gap: '6px', 'margin-bottom': '5px' }}>
+                                <span style={{ 'font-size': '12px', 'font-weight': 700, color: agentColor }}>{msg.agentName}</span>
                                 <Show when={msg.isStreaming}>
-                                  <span style={{ display: 'inline-flex', gap: '2px', 'margin-left': '4px', 'vertical-align': 'middle' }}>
-                                    <span style={{ width: '4px', height: '4px', 'border-radius': '50%', background: chartColors.primary, animation: 'blink 1.4s infinite both', 'animation-delay': '0s' }} />
-                                    <span style={{ width: '4px', height: '4px', 'border-radius': '50%', background: chartColors.primary, animation: 'blink 1.4s infinite both', 'animation-delay': '0.2s' }} />
-                                    <span style={{ width: '4px', height: '4px', 'border-radius': '50%', background: chartColors.primary, animation: 'blink 1.4s infinite both', 'animation-delay': '0.4s' }} />
+                                  <span style={{
+                                    display: 'inline-flex', 'align-items': 'center', gap: '3px',
+                                    'font-size': '10px', color: agentColor, opacity: '0.8',
+                                    background: agentBg, padding: '1px 7px', 'border-radius': '8px',
+                                    border: `1px solid ${agentColor}30`,
+                                  }}>
+                                    <Loader2 size={9} style={{ animation: 'spin 1s linear infinite' }} />
+                                    生成中
                                   </span>
                                 </Show>
                               </div>
-                              <div style={{ 'font-size': '11px', color: themeColors.textMuted, 'margin-top': '3px' }}>{msg.time}</div>
+
+                              {/* Message content bubble */}
+                              <div style={{
+                                background: themeColors.surface,
+                                border: `1px solid ${themeColors.border}`,
+                                'border-left': `3px solid ${agentColor}60`,
+                                padding: '10px 14px',
+                                'border-radius': '0 14px 14px 14px',
+                                'font-size': '13px', 'line-height': '1.7',
+                                color: themeColors.textPrimary,
+                                'box-shadow': '0 1px 3px rgba(0,0,0,0.05)',
+                                'min-width': '80px',
+                              }}>
+                                {/* Loading state: empty + streaming */}
+                                <Show when={isEmpty()}>
+                                  <span style={{ display: 'flex', 'align-items': 'center', gap: '5px' }}>
+                                    <span class="typing-dot" style={{ 'animation-delay': '0s' }} />
+                                    <span class="typing-dot" style={{ 'animation-delay': '0.2s' }} />
+                                    <span class="typing-dot" style={{ 'animation-delay': '0.4s' }} />
+                                  </span>
+                                </Show>
+                                {/* Has content */}
+                                <Show when={msg.text}>
+                                  {/* Think block */}
+                                  <Show when={parsed.thinking}>
+                                    <ThinkBlock content={parsed.thinking} complete={parsed.thinkingComplete} streaming={thinkStreaming()} />
+                                  </Show>
+                                  {/* Main output */}
+                                  <Show when={parsed.output}>
+                                    <MarkdownMsg content={parsed.output} />
+                                    <Show when={outStreaming()}>
+                                      <span class="streaming-cursor" />
+                                    </Show>
+                                  </Show>
+                                  {/* Thinking done but output not started yet */}
+                                  <Show when={!parsed.output && parsed.thinkingComplete && msg.isStreaming}>
+                                    <span style={{ display: 'flex', 'align-items': 'center', gap: '5px', 'margin-top': '4px' }}>
+                                      <span class="typing-dot" style={{ 'animation-delay': '0s' }} />
+                                      <span class="typing-dot" style={{ 'animation-delay': '0.2s' }} />
+                                      <span class="typing-dot" style={{ 'animation-delay': '0.4s' }} />
+                                    </span>
+                                  </Show>
+                                </Show>
+                              </div>
+
+                              {/* Footer: time + copy */}
+                              <div style={{ display: 'flex', 'align-items': 'center', gap: '8px', 'margin-top': '4px', 'padding-left': '2px' }}>
+                                <span style={{ 'font-size': '11px', color: themeColors.textMuted }}>{msg.time}</span>
+                                <Show when={!msg.isStreaming && msg.text && hovered()}>
+                                  <button
+                                    onClick={handleCopy}
+                                    style={{
+                                      display: 'flex', 'align-items': 'center', gap: '3px',
+                                      padding: '2px 7px', 'border-radius': '5px',
+                                      'font-size': '11px', cursor: 'pointer',
+                                      background: themeColors.hover, border: `1px solid ${themeColors.border}`,
+                                      color: copied() ? '#16a34a' : themeColors.textMuted,
+                                      transition: 'all 0.15s',
+                                    }}
+                                  >
+                                    <Show when={copied()} fallback={<Copy size={9} />}><Check size={9} /></Show>
+                                    {copied() ? '已复制' : '复制'}
+                                  </button>
+                                </Show>
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      );
+                        );
+                      }
                       return null;
                     }}
                   </For>
                 </div>
+
                 {/* Bottom input */}
-                <div style={{ 'flex-shrink': 0, padding: '12px 0 0' }}>
+                <div style={{ 'flex-shrink': 0, padding: '16px 0 0' }}>
                   <GoalInputPanel />
                 </div>
                 <Show when={agentError() !== null}>
-                  <div style={{ padding: '10px 14px', 'border-radius': '6px', 'font-size': '13px', background: '#fff2f0', border: '1px solid #ffccc7', color: '#cf1322', display: 'flex', gap: '8px', 'margin-top': '8px' }}>
-                    <span>⚠️</span>
+                  <div style={{ padding: '10px 14px', 'border-radius': '8px', 'font-size': '13px', background: '#fff2f0', border: '1px solid #ffccc7', color: '#cf1322', display: 'flex', gap: '8px', 'margin-top': '8px', 'align-items': 'flex-start' }}>
+                    <span style={{ 'flex-shrink': 0 }}>⚠️</span>
                     <div style={{ flex: 1 }}><strong>AI 调用失败</strong><br />{agentError()}</div>
-                    <button onClick={() => setAgentError(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#cf1322' }}>✕</button>
+                    <button onClick={() => setAgentError(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#cf1322', 'flex-shrink': 0 }}>✕</button>
                   </div>
                 </Show>
               </div>
             }>
               {/* ── Empty state: centered input ── */}
-              <div style={{ flex: 1, display: 'flex', 'flex-direction': 'column', 'align-items': 'center', 'justify-content': 'flex-start', padding: '40px 24px 24px', gap: '12px' }}>
+              <div style={{ flex: 1, display: 'flex', 'flex-direction': 'column', 'align-items': 'center', 'justify-content': 'center', padding: '32px 24px', gap: '20px' }}>
+                {/* Hero section */}
+                <div style={{ 'text-align': 'center', 'max-width': '480px' }}>
+                  <div style={{ 'font-size': '36px', 'margin-bottom': '10px', 'line-height': 1 }}>🤖</div>
+                  <div style={{ 'font-size': '18px', 'font-weight': 700, color: themeColors.textPrimary, 'margin-bottom': '6px' }}>Agent 自动驾驶</div>
+                  <div style={{ 'font-size': '13px', color: themeColors.textSecondary, 'line-height': '1.6' }}>
+                    描述目标，{TEAM_AGENTS.length} 个专属 Agent 并行规划、开发、测试、部署
+                  </div>
+                  {/* Agent avatar row */}
+                  <div style={{ display: 'flex', 'justify-content': 'center', gap: '8px', 'margin-top': '16px', 'flex-wrap': 'wrap' }}>
+                    <For each={TEAM_AGENTS.slice(0, 6)}>{(agent) => (
+                      <div title={agent.name} style={{
+                        width: '36px', height: '36px', 'border-radius': '10px',
+                        background: agent.bgColor, border: `1.5px solid ${agent.color}30`,
+                        display: 'flex', 'align-items': 'center', 'justify-content': 'center',
+                        'font-size': '18px',
+                      }}>{agent.emoji}</div>
+                    )}</For>
+                  </div>
+                </div>
                 <GoalInputPanel centered />
                 <Show when={agentError() !== null}>
-                  <div style={{ 'max-width': '680px', width: '100%', padding: '10px 14px', 'border-radius': '6px', 'font-size': '13px', background: '#fff2f0', border: '1px solid #ffccc7', color: '#cf1322', display: 'flex', gap: '8px' }}>
-                    <span>⚠️</span>
+                  <div style={{ 'max-width': '680px', width: '100%', padding: '10px 14px', 'border-radius': '8px', 'font-size': '13px', background: '#fff2f0', border: '1px solid #ffccc7', color: '#cf1322', display: 'flex', gap: '8px', 'align-items': 'flex-start' }}>
+                    <span style={{ 'flex-shrink': 0 }}>⚠️</span>
                     <div style={{ flex: 1 }}><strong>AI 调用失败</strong><br />{agentError()}</div>
-                    <button onClick={() => setAgentError(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#cf1322' }}>✕</button>
+                    <button onClick={() => setAgentError(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#cf1322', 'flex-shrink': 0 }}>✕</button>
                   </div>
                 </Show>
               </div>
@@ -915,30 +1111,101 @@ const EnterpriseAutopilot = () => {
                 </div>
               </Show>
               <Show when={orchestratorText() && dispatchPlan().length === 0}>
-                <div style={{ padding: '10px 12px', background: themeColors.primaryBg, border: `1px solid ${themeColors.primaryBorder}`, 'border-radius': '6px', 'margin-bottom': '8px' }}>
-                  <div style={{ 'font-size': '12px', 'font-weight': 600, color: chartColors.primary, 'margin-bottom': '4px' }}>Orchestrator 规划中...</div>
-                  <div style={{ 'font-size': '11px', color: themeColors.textSecondary, 'white-space': 'pre-wrap', 'max-height': '120px', 'overflow-y': 'auto' }}>{orchestratorText()}</div>
+                <div style={{ padding: '12px 14px', background: themeColors.primaryBg, border: `1px solid ${themeColors.primaryBorder}`, 'border-radius': '10px', 'margin-bottom': '12px' }}>
+                  <div style={{ display: 'flex', 'align-items': 'center', gap: '6px', 'font-size': '12px', 'font-weight': 700, color: chartColors.primary, 'margin-bottom': '6px' }}>
+                    <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} />
+                    Orchestrator 规划中...
+                  </div>
+                  <div style={{ 'font-size': '11px', color: themeColors.textSecondary, 'max-height': '120px', 'overflow-y': 'auto' }}>
+                    <MarkdownMsg content={orchestratorText()} />
+                  </div>
                 </div>
               </Show>
               <For each={dispatchPlan()}>
                 {(item) => {
                   const agent = TEAM_AGENTS.find((a) => a.id === item.agentId);
-                  const text = () => agentStreamTexts()[item.agentId] ?? '';
+                  const rawText = () => agentStreamTexts()[item.agentId] ?? '';
                   const execStatus = () => agentExecStatuses()[item.agentId] ?? 'pending';
-                  const isStreaming = () => execStatus() === 'thinking' || execStatus() === 'working';
+                  const isActive = () => execStatus() === 'thinking' || execStatus() === 'working';
+                  const isDone = () => execStatus() === 'done';
                   if (!agent) return null;
+
+                  const parsedFlow = () => parseThinkingContent(rawText());
+
                   return (
-                    <div style={{ 'padding-bottom': '12px', display: 'flex', gap: '12px' }}>
-                      <div style={{ width: '20px', height: '20px', 'border-radius': '50%', 'flex-shrink': 0, 'background-color': execStatus() === 'done' ? agent.color : 'transparent', border: isStreaming() ? `2px solid ${agent.color}` : `2px solid ${themeColors.border}`, display: 'flex', 'align-items': 'center', 'justify-content': 'center' }}>
-                        <Show when={isStreaming()}><Loader2 size={12} style={{ color: agent.color, animation: 'spin 1s linear infinite' }} /></Show>
-                      </div>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ display: 'flex', 'align-items': 'center', gap: '6px', 'margin-bottom': '4px' }}>
-                          <span style={{ display: 'inline-block', background: agent.color, color: 'white', padding: '0 6px', 'border-radius': '4px', 'font-size': '11px' }}>{agent.name}</span>
-                          <span style={{ 'font-size': '11px', color: themeColors.textMuted }}>{item.task.slice(0, 40)}...</span>
+                    <div style={{ 'margin-bottom': '12px', display: 'flex', gap: '12px' }}>
+                      {/* Status dot + line */}
+                      <div style={{ display: 'flex', 'flex-direction': 'column', 'align-items': 'center', 'flex-shrink': 0 }}>
+                        <div style={{
+                          width: '22px', height: '22px', 'border-radius': '50%', 'flex-shrink': 0,
+                          background: isDone() ? agent.color : isActive() ? `${agent.color}20` : themeColors.hover,
+                          border: isActive() ? `2px solid ${agent.color}` : isDone() ? 'none' : `2px solid ${themeColors.border}`,
+                          display: 'flex', 'align-items': 'center', 'justify-content': 'center',
+                          'box-shadow': isActive() ? `0 0 0 3px ${agent.color}15` : 'none',
+                          transition: 'all 0.3s',
+                        }}>
+                          <Show when={isActive()} fallback={
+                            <Show when={isDone()}>
+                              <CheckCircle size={12} style={{ color: 'white' }} />
+                            </Show>
+                          }>
+                            <Loader2 size={12} style={{ color: agent.color, animation: 'spin 1s linear infinite' }} />
+                          </Show>
                         </div>
-                        <Show when={text()}>
-                          <div style={{ 'font-size': '11px', color: themeColors.textSecondary, 'white-space': 'pre-wrap', 'line-height': '1.6', 'max-height': '200px', 'overflow-y': 'auto', background: themeColors.hover, padding: '6px 8px', 'border-radius': '4px' }}>{text()}</div>
+                      </div>
+                      <div style={{ flex: 1, 'min-width': 0, 'padding-bottom': '4px' }}>
+                        {/* Header */}
+                        <div style={{ display: 'flex', 'align-items': 'center', gap: '7px', 'margin-bottom': '6px', 'flex-wrap': 'wrap' }}>
+                          <span style={{
+                            display: 'inline-flex', 'align-items': 'center', gap: '4px',
+                            background: agent.bgColor, color: agent.color,
+                            border: `1px solid ${agent.borderColor ?? agent.color}40`,
+                            padding: '2px 8px', 'border-radius': '6px', 'font-size': '11px', 'font-weight': 700,
+                          }}>
+                            {agent.emoji} {agent.name}
+                          </span>
+                          <span style={{ 'font-size': '11px', color: themeColors.textMuted, flex: 1, 'min-width': 0, overflow: 'hidden', 'text-overflow': 'ellipsis', 'white-space': 'nowrap' }}>
+                            {item.task.slice(0, 60)}{item.task.length > 60 ? '…' : ''}
+                          </span>
+                          {/* Status badge */}
+                          <span style={{
+                            'font-size': '10px', padding: '1px 6px', 'border-radius': '8px', 'flex-shrink': 0,
+                            background: isDone() ? '#f0fdf4' : isActive() ? `${agent.color}12` : themeColors.hover,
+                            color: isDone() ? '#16a34a' : isActive() ? agent.color : themeColors.textMuted,
+                            border: `1px solid ${isDone() ? '#86efac' : isActive() ? `${agent.color}30` : themeColors.border}`,
+                          }}>
+                            {isDone() ? '✓ 完成' : isActive() ? '执行中' : '等待中'}
+                          </span>
+                        </div>
+                        {/* Content area */}
+                        <Show when={rawText()}>
+                          <div style={{
+                            background: themeColors.bgSubtle, 'border-radius': '8px',
+                            border: `1px solid ${themeColors.border}`,
+                            'border-left': `3px solid ${agent.color}50`,
+                            overflow: 'hidden',
+                          }}>
+                            <Show when={parsedFlow().thinking}>
+                              <div style={{ padding: '6px 10px', 'font-size': '11px', color: 'rgba(109,40,217,0.7)', 'font-style': 'italic', 'border-bottom': `1px solid ${themeColors.border}`, background: 'rgba(139,92,246,0.04)', 'white-space': 'pre-wrap', 'max-height': '80px', 'overflow-y': 'auto', 'line-height': '1.5' }}>
+                                <span style={{ 'font-weight': 600, 'font-style': 'normal' }}>🧠 </span>{parsedFlow().thinking}
+                              </div>
+                            </Show>
+                            <Show when={parsedFlow().output}>
+                              <div style={{ padding: '8px 10px', 'max-height': '220px', 'overflow-y': 'auto', 'font-size': '12px' }}>
+                                <MarkdownMsg content={parsedFlow().output} />
+                                <Show when={isActive() && parsedFlow().thinkingComplete}>
+                                  <span class="streaming-cursor" />
+                                </Show>
+                              </div>
+                            </Show>
+                            <Show when={!parsedFlow().output && isActive()}>
+                              <div style={{ padding: '8px 10px', display: 'flex', 'align-items': 'center', gap: '5px' }}>
+                                <span class="typing-dot" style={{ 'animation-delay': '0s' }} />
+                                <span class="typing-dot" style={{ 'animation-delay': '0.2s' }} />
+                                <span class="typing-dot" style={{ 'animation-delay': '0.4s' }} />
+                              </div>
+                            </Show>
+                          </div>
                         </Show>
                       </div>
                     </div>
@@ -959,6 +1226,12 @@ const EnterpriseAutopilot = () => {
       <style>{`
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         @keyframes blink { 0%,80%,100% { opacity: 0; } 40% { opacity: 1; } }
+        .typing-dot {
+          display: inline-block;
+          width: 6px; height: 6px; border-radius: 50%;
+          background: currentColor; opacity: 0.5;
+          animation: ai-bounce 1.4s ease-in-out infinite;
+        }
       `}</style>
       <Show when={permissionRequest()}>
         <PermissionDialog

@@ -653,7 +653,8 @@ const SoloAutopilot = () => {
   }
 
   // 合并消息源用于渲染：累积器消息(实时) + 旧格式消息(历史恢复) + 乐观占位
-  const chatDisplayMessages = (): MessageWithParts[] => {
+  // 使用 createMemo 确保只在依赖变化时重新计算，且不含副作用
+  const chatDisplayMessages = createMemo((): MessageWithParts[] => {
     const accMsgs = chatAccumulator.messages();
     const legacy = chatMessages();
     const pending = pendingUserMsg();
@@ -665,23 +666,26 @@ const SoloAutopilot = () => {
       result.push(...legacy.map(legacyToMessageWithParts));
     }
 
-    // 累积器消息（实时会话）
+    // 累积器消息（实时会话）优先级最高，直接返回
     if (accMsgs.length > 0) {
-      result.push(...accMsgs);
-      // 累积器已包含用户消息时，清除乐观占位
-      if (pending && accMsgs.some(m => (m.info as any).role === 'user')) {
-        setPendingUserMsg(null);
-        return result;
-      }
+      return [...result, ...accMsgs];
     }
 
-    // 乐观占位消息
+    // 乐观占位消息（仅在 accumulator 尚无消息时显示）
     if (pending) {
       result.push(pending);
     }
 
     return result;
-  };
+  });
+
+  // 副作用独立到 createEffect：accumulator 收到用户消息后清除乐观占位
+  createEffect(() => {
+    const accMsgs = chatAccumulator.messages();
+    if (pendingUserMsg() && accMsgs.some(m => (m.info as any).role === 'user')) {
+      setPendingUserMsg(null);
+    }
+  });
 
   // MessageList 工具步骤展开状态
   const [chatExpandedStepIds, setChatExpandedStepIds] = createSignal<Set<string>>(new Set());

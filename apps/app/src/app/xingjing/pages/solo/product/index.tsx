@@ -1,4 +1,4 @@
-import { Component, createSignal, createEffect, For, Show, onMount } from 'solid-js';
+import { Component, createSignal, createEffect, For, Show } from 'solid-js';
 import {
   Hypothesis,
   HypothesisStatus,
@@ -346,7 +346,13 @@ const SoloProduct: Component = () => {
     }
   };
 
-  onMount(() => void loadAllData());
+  // 监听活跃产品变化，自动重度加载数据：
+  // - 首次挂载时即触发（替代 onMount）
+  // - activeProduct() 切换时（如切换产品、从文件异步加载完成）也会重载
+  createEffect(() => {
+    const workDir = productStore.activeProduct()?.workDir;
+    if (workDir) void loadAllData();
+  });
 
   const testingItems = () => hypotheses().filter((h) => h.status === 'testing');
   const validatedItems = () => hypotheses().filter((h) => h.status === 'validated');

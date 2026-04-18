@@ -1115,6 +1115,20 @@ async function runAgentSession(
             console.log(`[xingjing-diag] SSE event: type=${evt.type}, evtSid=${evtSidForLog}, ourSid=${finalSid}, accLen=${acc.length}`);
           }
 
+          // ── message.updated（追踪用户消息 ID，role 在 message 级别最可靠）──
+          if (evt.type === 'message.updated') {
+            const msg = (p.message ?? p) as Record<string, unknown>;
+            if (String(msg.sessionID ?? '') !== finalSid) continue;
+            const msgId = String(msg.id ?? '');
+            const msgRole = typeof msg.role === 'string' ? msg.role : null;
+            if (msgRole === 'user' && msgId) {
+              userMsgId = msgId;
+            } else if (msgId) {
+              sessionMsgIds.add(msgId);
+            }
+            continue; // message.updated 只含 metadata，不含文本
+          }
+
           // ── message.part.updated ──
           if (evt.type === 'message.part.updated') {
             const part = p.part as Record<string, unknown> | undefined;
@@ -1122,16 +1136,14 @@ async function runAgentSession(
 
             const partMsgId = part.messageID ? String(part.messageID) : null;
 
-            // 检测并跳过用户 prompt 消息回显（含 Agent systemPrompt 等）
+            // 检测并跳过用户 prompt 消息回显
+            // 1. part 级别有 role: 'user' → 明确是用户消息
             const partRole = typeof part.role === 'string' ? part.role : null;
             if (partRole === 'user') {
               if (partMsgId) userMsgId = partMsgId;
               continue;
             }
-            if (sendPrompt && !userMsgId && partMsgId) {
-              userMsgId = partMsgId;
-              continue;
-            }
+            // 2. 已通过 message.updated 确认的用户消息 → 跳过
             if (partMsgId && partMsgId === userMsgId) {
               continue;
             }
@@ -1204,7 +1216,10 @@ async function runAgentSession(
           if (evt.type === 'message.part.delta') {
             const msgId = typeof p.messageID === 'string' ? p.messageID : null;
             if (msgId && msgId === userMsgId) { resetContentIdleTimer(); continue; } // 跳过用户消息 delta
-            if (msgId && sessionMsgIds.has(msgId)) {
+            // 放宽条件：只要 msgId 不是用户消息，就处理 delta（不再严格要求 sessionMsgIds 预注册）
+            // 这修复了 delta 事件先于 message.part.updated 到达的竞态问题
+            if (msgId && msgId !== userMsgId) {
+              sessionMsgIds.add(msgId); // 自动注册
               const delta = typeof p.delta === 'string' ? p.delta : '';
               const field = typeof p.field === 'string' ? p.field : '';
               if (delta && field === 'text') {

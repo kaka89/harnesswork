@@ -343,6 +343,11 @@ export function createTeamSessionOrchestrator(opts: TeamSessionOrchestratorOptio
             if (slot) newSlots.set(slot.agentId, slot);
           });
           setState('agentSlots', newSlots);
+          // 自动切换到第一个 Agent Tab，避免停留在 orchestrator 占位页
+          if (newSlots.size > 0) {
+            const firstAgentId = newSlots.keys().next().value;
+            if (firstAgentId) setState('activeTabId', firstAgentId);
+          }
           setState('isRunning', false);
           resolve();
         });

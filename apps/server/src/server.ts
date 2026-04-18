@@ -3104,14 +3104,19 @@ function createRoutes(
     return jsonResponse({ items, cursor: events.cursor });
   });
 
+  // SDD-008: 支持的工作区文本文件类型白名单（Markdown + 数据/配置文件）
+  const SUPPORTED_TEXT_EXTENSIONS = new Set([
+    ".md", ".mdx", ".markdown",
+    ".yaml", ".yml", ".json",
+  ]);
+
   addRoute(routes, "GET", "/workspace/:id/files/content", "client", async (ctx) => {
     const workspace = await resolveWorkspace(config, ctx.params.id);
     const requested = (ctx.url.searchParams.get("path") ?? "").trim();
     const relativePath = normalizeWorkspaceRelativePath(requested, { allowSubdirs: true });
-    const lowered = relativePath.toLowerCase();
-    const isMarkdown = lowered.endsWith(".md") || lowered.endsWith(".mdx") || lowered.endsWith(".markdown");
-    if (!isMarkdown) {
-      throw new ApiError(400, "invalid_path", "Only markdown files are supported");
+    const ext = "." + (relativePath.split(".").pop()?.toLowerCase() ?? "");
+    if (!SUPPORTED_TEXT_EXTENSIONS.has(ext)) {
+      throw new ApiError(400, "invalid_path", `Unsupported file type: ${ext}. Supported: ${[...SUPPORTED_TEXT_EXTENSIONS].join(", ")}`);
     }
 
     const absPath = resolveSafeChildPath(workspace.path, relativePath);
@@ -3140,10 +3145,9 @@ function createRoutes(
 
     const requestedPath = String(body.path ?? "");
     const relativePath = normalizeWorkspaceRelativePath(requestedPath, { allowSubdirs: true });
-    const lowered = relativePath.toLowerCase();
-    const isMarkdown = lowered.endsWith(".md") || lowered.endsWith(".mdx") || lowered.endsWith(".markdown");
-    if (!isMarkdown) {
-      throw new ApiError(400, "invalid_path", "Only markdown files are supported");
+    const ext = "." + (relativePath.split(".").pop()?.toLowerCase() ?? "");
+    if (!SUPPORTED_TEXT_EXTENSIONS.has(ext)) {
+      throw new ApiError(400, "invalid_path", `Unsupported file type: ${ext}. Supported: ${[...SUPPORTED_TEXT_EXTENSIONS].join(", ")}`);
     }
 
     if (typeof body.content !== "string") {

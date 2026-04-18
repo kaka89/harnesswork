@@ -11,7 +11,7 @@ import {
   loadProjectSettings,
   loadGlobalSettings, saveGlobalSettings,
 } from '../services/file-store';
-import { callAgent as _callAgent, setProviderAuth, setOpenworkFileOps, setSharedClient, type CallAgentOptions } from '../services/opencode-client';
+import { callAgent as _callAgent, setProviderAuth, setOpenworkFileOps, setSharedClient, registerEnsureAuth, type CallAgentOptions } from '../services/opencode-client';
 import { ensureAgentsRegistered } from '../services/agent-registry';
 import { appendAgentLog } from '../services/agent-logger';
 import { currentUser } from '../services/auth-service';
@@ -96,6 +96,8 @@ export interface XingjingOpenworkContext {
   installHubSkill?: (workspaceId: string, name: string) => Promise<boolean>;
   // ── 新增：Engine 管理 ──
   reloadEngine?: (workspaceId: string) => Promise<boolean>;
+  // ── 新增：目录列表（OpenWork Server readdir）──
+  listDir?: (absPath: string) => Promise<Array<{ name: string; path: string; type: 'dir' | 'file'; ext?: string }> | null>;
 }
 
 interface AppState {
@@ -248,7 +250,7 @@ export const AppStoreProvider: ParentComponent<{
     const wsId = resolvedWorkspaceId();
     if (ctx?.readWorkspaceFile && ctx?.writeWorkspaceFile) {
       setOpenworkFileOps(
-        { read: ctx.readWorkspaceFile, write: ctx.writeWorkspaceFile },
+        { read: ctx.readWorkspaceFile, write: ctx.writeWorkspaceFile, list: ctx.listDir ?? undefined },
         wsId,
       );
     } else {
@@ -321,6 +323,19 @@ export const AppStoreProvider: ParentComponent<{
 
   // Attempt to load products from file on mount
   onMount(() => {
+    // 注册全局 ensureAuth 钩子：每次 session.create 前自动同步 API Key 到 OpenCode
+    registerEnsureAuth(async () => {
+      const cfg = state.llmConfig;
+      console.log('[app-store] ensureAuth 钩子执行', {
+        providerID: cfg.providerID,
+        hasApiKey: !!(cfg.apiKey && cfg.apiKey.length > 4),
+        modelName: cfg.modelName,
+      });
+      if (cfg.providerID && cfg.providerID !== 'custom' && cfg.apiKey && cfg.apiKey.length > 4) {
+        await setProviderAuth(cfg.providerID, cfg.apiKey);
+      }
+    });
+
     productStore.loadFromFile().catch(() => {/* silent */});
     // 加载全局 LLM 配置（~/.xingjing/global-settings.yaml）
     loadGlobalSettings().then((g) => {

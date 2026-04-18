@@ -8,11 +8,11 @@
 import { Component, createSignal, createEffect, Show } from 'solid-js';
 import { useNavigate } from '@solidjs/router';
 import {
-  buildKnowledgeIndex, loadCachedIndex, groupEntriesForTree,
+  buildKnowledgeIndex, groupEntriesForTree,
   searchKnowledge, type KnowledgeEntry, type KnowledgeIndex, type KnowledgeTreeGroup,
 } from '../../../services/knowledge-index';
 import { checkKnowledgeHealth, type KnowledgeHealthScore } from '../../../services/knowledge-health';
-import { loadSoloKnowledge, saveSoloKnowledge, type SoloKnowledgeCategory, type SoloKnowledgeItem } from '../../../services/file-store';
+import { saveSoloKnowledge, type SoloKnowledgeCategory, type SoloKnowledgeItem } from '../../../services/file-store';
 import { invalidateKnowledgeCache } from '../../../services/knowledge-retrieval';
 import { scanWorkspaceDocs } from '../../../services/knowledge-scanner';
 import type { SkillApiAdapter } from '../../../services/knowledge-behavior';
@@ -74,27 +74,14 @@ const SoloKnowledge: Component = () => {
   };
 
   // ── 索引加载 ──────────────────────────────────────────────────────────────
-  const DISK_CACHE_TTL_MS = 10 * 60 * 1000; // 磁盘缓存 10 分钟有效
 
-  const loadIndex = async (force = false) => {
+  const loadIndex = async () => {
     const workDir = productStore.activeProduct()?.workDir;
     if (!workDir) { setIndexLoading(false); return; }
 
     setIndexLoading(true);
     try {
-      // 尝试缓存（带 TTL 校验）
-      if (!force) {
-        const cached = await loadCachedIndex(workDir);
-        if (cached && cached.builtAt) {
-          const cacheAge = Date.now() - new Date(cached.builtAt).getTime();
-          if (cacheAge < DISK_CACHE_TTL_MS) {
-            applyIndex(cached);
-            setIndexLoading(false);
-            return;
-          }
-        }
-      }
-      // force=true 或缓存过期：先扫描文件系统，再将扫描结果直接传入重建索引
+      // dir-graph 扫描 + 行为知识 → 构建索引
       const scannedDocs = await scanWorkspaceDocs(workDir);
       const fresh = await buildKnowledgeIndex(workDir, skillApi, scannedDocs);
       applyIndex(fresh);
@@ -114,8 +101,8 @@ const SoloKnowledge: Component = () => {
   const handleRefresh = async () => {
     const workDir = productStore.activeProduct()?.workDir;
     if (!workDir) return;
-    invalidateKnowledgeCache(workDir);
-    await loadIndex(true);
+    invalidateKnowledgeCache();
+    await loadIndex();
     // 健康度也刷新
     if (index()) {
       setHealthLoading(true);
@@ -205,8 +192,8 @@ const SoloKnowledge: Component = () => {
     if (ok) {
       setCreateNoteCategory(null);
       showToast('笔记已保存');
-      invalidateKnowledgeCache(workDir);
-      await loadIndex(true);
+      invalidateKnowledgeCache();
+      await loadIndex();
     } else {
       showToast('保存失败');
     }

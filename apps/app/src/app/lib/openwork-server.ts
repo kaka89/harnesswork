@@ -1544,6 +1544,17 @@ export function createOpenworkServerClient(options: { baseUrl: string; token?: s
         `/workspace/${encodeURIComponent(workspaceId)}/artifacts/${encodeURIComponent(artifactId)}`,
         { token, hostToken, timeoutMs: timeouts.binary },
       ),
+
+    /**
+     * 列举指定绝对路径目录的直接子项。
+     * 对应 OpenWork Server GET /workspace/readdir?path=<abs_path>
+     */
+    readdir: (absPath: string) =>
+      requestJson<Array<{ name: string; path: string; type: 'dir' | 'file'; ext?: string }>>(
+        baseUrl,
+        `/workspace/readdir?path=${encodeURIComponent(absPath)}`,
+        { token, hostToken },
+      ),
   };
 }
 

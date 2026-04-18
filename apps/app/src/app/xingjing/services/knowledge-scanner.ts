@@ -18,7 +18,28 @@ import type { WorkspaceDocKnowledge, DirGraphConfig } from './knowledge-index';
 // ─── 常量 ─────────────────────────────────────────────────────────────────────
 
 const DIR_GRAPH_PATH = '.xingjing/dir-graph.yaml';
-const DOC_INDEX_OUTPUT = '.xingjing/solo/knowledge/_doc-index.json';
+
+// SDD-009: 知识扫描器支持的文档文件扩展名
+const SCANNABLE_DOC_EXTENSIONS = ['.md', '.yml', '.yaml'];
+
+/** 判断文件是否为可扫描的文档类型 */
+function isScannableDoc(fileName: string): boolean {
+  return SCANNABLE_DOC_EXTENSIONS.some(ext => fileName.endsWith(ext));
+}
+
+/**
+ * 判断文件是否为系统台账/元数据文件（不应被扫描为文档）。
+ * 约定：以 _ 开头的文件（如 _index.yml、_plan.yaml）是台账文件，
+ * 已通过 scanFromIndex 专门解析，不应在文件系统扫描中被重复当作普通文档。
+ */
+function isSystemIndexFile(fileName: string): boolean {
+  return fileName.startsWith('_');
+}
+
+/** 判断文件路径是否为 YAML 格式 */
+function isYamlFile(filePath: string): boolean {
+  return filePath.endsWith('.yml') || filePath.endsWith('.yaml');
+}
 
 // ─── 主入口 ─────────────────────────────────────────────────────────────────
 
@@ -55,14 +76,11 @@ export async function scanWorkspaceDocs(
   if (results.length === 0) {
     console.warn('[knowledge-scanner] dir-graph scan returned 0 docs, falling back to generic scan');
     const fallback = await fallbackScan(workDir);
-    return fallback; // fallbackScan 已调用 saveScanResult，直接返回
+    return fallback;
   }
 
   // 去重（同一 filePath 只保留第一条）
   const deduped = results.filter((r, i, arr) => arr.findIndex(x => x.filePath === r.filePath) === i);
-
-  // 保存扫描结果
-  await saveScanResult(workDir, deduped);
 
   return deduped;
 }
@@ -344,7 +362,8 @@ async function scanFromFileSystem(
     const basePath = relativeDirPath.endsWith('/') ? relativeDirPath : `${relativeDirPath}/`;
 
     for (const file of files) {
-      if (file.type === 'file' && file.name.endsWith('.md') && matchesNaming(file.name, docTypeDef.naming)) {
+      // SDD-009: 扩展匹配 .yml/.yaml 文件
+      if (file.type === 'file' && isScannableDoc(file.name) && !isSystemIndexFile(file.name) && matchesNaming(file.name, docTypeDef.naming)) {
         const relativePath = `${basePath}${file.name}`;
         const doc = await extractDocKnowledge(workDir, relativePath, docTypeKey, docTypeDef, dirGraph);
         if (doc) results.push(doc);
@@ -380,8 +399,26 @@ async function extractDocKnowledge(
     const content = await fileRead(relativePath, workDir);
     if (!content) return null;
 
-    const { frontmatter: fm, body } = parseFrontmatter(content);
-    const title = String(fm['title'] ?? fm['doc-type'] ?? extractTitleFromBody(body));
+    // ── SDD-009: 格式感知解析（YAML vs Markdown）──
+    let fm: Record<string, unknown>;
+    let body: string;
+
+    if (isYamlFile(relativePath)) {
+      // YAML 文件：整体解析为结构化数据
+      fm = parseYamlSimple(content);
+      // 将字符串类型的字段拼接为伪 body，供摘要提取复用
+      body = Object.entries(fm)
+        .filter(([, v]) => typeof v === 'string')
+        .map(([k, v]) => `${k}: ${v}`)
+        .join('\n');
+    } else {
+      // Markdown 文件：标准 frontmatter 解析
+      const parsed = parseFrontmatter(content);
+      fm = parsed.frontmatter;
+      body = parsed.body;
+    }
+
+    const title = String(fm['title'] ?? fm['name'] ?? fm['doc-type'] ?? extractTitleFromBody(body));
     const tags = extractTags(fm, body);
     const summary = extractSummary(docTypeKey, fm, body);
     const layer = inferLayer(relativePath, dirGraph);
@@ -478,8 +515,12 @@ function resolvePathVars(
 
 function matchesNaming(fileName: string, naming: string): boolean {
   if (!naming) return true;
-  // 简单匹配：naming 如 "PRD-{NNN}-{slug}.md"
-  const prefix = naming.split('-')[0]?.split('{')[0];
+  // naming 含模板占位符（如 K-{NNN}-{name}.md）时仅作为生成提示，
+  // 不作为扫描过滤条件——目录位置已由 dir-graph location 约束，
+  // 过度过滤会导致用户手动创建的文档（如 note-xxx.md）被丢弃
+  if (naming.includes('{')) return true;
+  // 无占位符的纯固定前缀（如 "PRD.md"）才做精确匹配
+  const prefix = naming.split('-')[0]?.split('.')[0];
   if (!prefix) return true;
   return fileName.toUpperCase().startsWith(prefix.toUpperCase());
 }
@@ -529,10 +570,11 @@ function generateDocId(docType: string, filePath: string): string {
 // ─── 降级扫描 ────────────────────────────────────────────────────────────────
 
 /**
- * 通用 .md 文件收集：扫描 dir 下所有 .md 文件（包含一层子目录），
+ * SDD-009: 通用文档文件收集（支持 .md/.yml/.yaml）。
+ * 扫描 dir 下所有可扫描文档（包含子目录递归），
  * 适用于 fallbackScan 及 dir-graph 未命中场景。
  */
-async function collectMdFiles(
+async function collectDocFiles(
   workDir: string,
   dir: string,
   docType: string,
@@ -546,18 +588,36 @@ async function collectMdFiles(
   if (!files) return;
 
   for (const file of files) {
-    if (file.type === 'file' && file.name.endsWith('.md')) {
+    // SDD-009: 扩展匹配 .yml/.yaml 文件
+    if (file.type === 'file' && isScannableDoc(file.name) && !isSystemIndexFile(file.name)) {
       const filePath = `${dir}/${file.name}`;
       if (seen.has(filePath)) continue;
       seen.add(filePath);
       try {
         const content = await fileRead(filePath, workDir);
         if (!content) continue;
-        const { frontmatter: fm, body } = parseFrontmatter(content);
+
+        // SDD-009: 格式感知解析
+        let fm: Record<string, unknown>;
+        let body: string;
+        if (isYamlFile(filePath)) {
+          fm = parseYamlSimple(content);
+          body = Object.entries(fm)
+            .filter(([, v]) => typeof v === 'string')
+            .map(([k, v]) => `${k}: ${v}`)
+            .join('\n');
+        } else {
+          const parsed = parseFrontmatter(content);
+          fm = parsed.frontmatter;
+          body = parsed.body;
+        }
+
         // 从 frontmatter 或 body 推断文档类型
         const inferredDocType =
           String(fm['doc-type'] ?? fm['docType'] ?? fm['type'] ?? docType).toUpperCase();
-        const title = String(fm['title'] ?? extractTitleFromBody(body) ?? file.name.replace('.md', ''));
+        const title = String(
+          fm['title'] ?? fm['name'] ?? extractTitleFromBody(body) ?? file.name.replace(/\.(md|yml|yaml)$/, '')
+        );
         results.push({
           id: `scan-${inferredDocType}-${filePath.replace(/[^a-zA-Z0-9]/g, '-')}`,
           docType: inferredDocType,
@@ -567,7 +627,7 @@ async function collectMdFiles(
           summary: body.slice(0, 500),
           tags: extractTags(fm, body),
           filePath,
-          owner: String(fm['owner'] ?? ''),
+          owner: String(fm['owner'] ?? fm['assignee'] ?? ''),
           upstream: [],
           downstream: [],
           frontmatter: fm,
@@ -576,8 +636,8 @@ async function collectMdFiles(
         });
       } catch { /* silent */ }
     } else if (file.type === 'directory' && !file.name.startsWith('.')) {
-      // 递归扫描一层子目录（避免过深，防止扫描 node_modules 等）
-      await collectMdFiles(workDir, `${dir}/${file.name}`, docType, results, seen);
+      // 递归扫描子目录（避免过深，防止扫描 node_modules 等）
+      await collectDocFiles(workDir, `${dir}/${file.name}`, docType, results, seen);
     }
   }
 }
@@ -613,35 +673,16 @@ async function fallbackScan(workDir: string): Promise<WorkspaceDocKnowledge[]> {
     { dir: 'docs/product/prd',        docType: 'PRD' },
     { dir: 'docs/product/architecture', docType: 'SDD' },
     { dir: 'docs/delivery',           docType: 'TASK' },
-    // 私有知识库
-    { dir: '.xingjing/solo/knowledge', docType: 'KNOWLEDGE' },
     // 根目录 .md 文件（README、OVERVIEW 等）
     { dir: '.',                        docType: 'DOC' },
   ];
 
   for (const { dir, docType } of scanDirs) {
-    await collectMdFiles(workDir, dir, docType, results, seen);
+    await collectDocFiles(workDir, dir, docType, results, seen);
   }
 
   // 去重（同一 filePath 只保留第一条）
   const deduped = results.filter((r, i, arr) => arr.findIndex(x => x.filePath === r.filePath) === i);
 
-  await saveScanResult(workDir, deduped);
   return deduped;
-}
-
-// ─── 扫描结果持久化 ──────────────────────────────────────────────────────────
-
-async function saveScanResult(
-  workDir: string,
-  results: WorkspaceDocKnowledge[],
-): Promise<void> {
-  try {
-    const { fileWrite: fWrite } = await import('./opencode-client');
-    // 确保父目录存在：先写入一个占位文件触发目录创建
-    // OpenCode file.write 会自动创建中间目录
-    await fWrite(DOC_INDEX_OUTPUT, JSON.stringify(results, null, 2), workDir);
-  } catch (e) {
-    console.warn('[knowledge-scanner] saveScanResult failed:', e);
-  }
 }

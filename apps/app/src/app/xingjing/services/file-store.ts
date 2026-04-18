@@ -508,46 +508,6 @@ export async function savePlanningItem(workDir: string, item: PlanningRecord): P
   return savePlanning(workDir, updated);
 }
 
-// ─── Knowledge 知识条目 ────────────────────────────────────────────────────────
-
-export interface KnowledgeRecord {
-  id: string;
-  title: string;
-  category: string;
-  level?: string;
-  tags?: string[];
-  summary?: string;
-  content?: string;
-  author?: string;
-  updatedAt?: string;
-}
-
-export async function loadKnowledge(workDir: string): Promise<KnowledgeRecord[]> {
-  const dir = `${workDir}/.xingjing/knowledge`;
-  try {
-    const docs = await readMarkdownDir<Record<string, unknown>>(dir);
-    return docs
-      .map((d) => ({
-        ...(d.frontmatter as unknown as KnowledgeRecord),
-        content: d.body,
-      }))
-      .filter((d) => !!d.id);
-  } catch {
-    return [];
-  }
-}
-
-export async function saveKnowledgeItem(workDir: string, item: KnowledgeRecord): Promise<boolean> {
-  const { content, ...frontmatter } = item;
-  return writeMarkdownWithFrontmatter(
-    `${workDir}/.xingjing/knowledge/${item.id}.md`,
-    {
-      frontmatter: frontmatter as unknown as Record<string, unknown>,
-      body: content ?? '',
-    },
-  );
-}
-
 // ─── Sprint 元数据 ─────────────────────────────────────────────────────────────
 
 export interface SprintRecord {

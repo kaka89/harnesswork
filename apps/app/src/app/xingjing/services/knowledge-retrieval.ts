@@ -1,27 +1,24 @@
 /**
- * 知识检索服务（三源融合统一入口）
+ * 知识检索服务（两源融合统一入口）
  *
- * 整合三源知识索引、检索和格式化，为 Agent 调用提供统一的知识上下文。
+ * 整合两源知识索引、检索和格式化，为 Agent 调用提供统一的知识上下文。
  *
  * 职责：
- * 1. 加载三源知识索引（带内存缓存）
+ * 1. 加载两源知识索引（纯内存缓存，5 分钟 TTL）
  * 2. 搜索匹配知识条目（包含 workspace 文档）
  * 3. 按优先级排序（融合文档链路距离）
  * 4. 格式化为 Markdown 文本块，带来源+层级标注
  * 5. 截断到 maxTokens
- * 6. 降级：OpenWork 不可用时仅检索私有知识
  */
 
 import {
   buildKnowledgeIndex,
-  loadCachedIndex,
   searchKnowledge,
   updateReferenceMeta,
   type KnowledgeIndex,
   type KnowledgeEntry,
   type SearchContext,
 } from './knowledge-index';
-import { fileWrite } from './opencode-client';
 import type { SkillApiAdapter } from './knowledge-behavior';
 
 // ─── 内存缓存 ─────────────────────────────────────────────────────────────────
@@ -111,15 +108,10 @@ export async function refreshKnowledgeIndex(
 
 /**
  * 使索引缓存失效（用于文件变更时触发重建）
- * @param workDir 可选，传入时同时清除磁盘缓存 _index.json
  */
-export function invalidateKnowledgeCache(workDir?: string): void {
+export function invalidateKnowledgeCache(): void {
   _cachedIndex = null;
   _cacheTimestamp = 0;
-  // 清除磁盘缓存
-  if (workDir) {
-    fileWrite('.xingjing/solo/knowledge/_index.json', '', workDir).catch(() => {});
-  }
 }
 
 // ─── 内部实现 ─────────────────────────────────────────────────────────────────
@@ -137,19 +129,7 @@ async function getOrBuildIndex(
     return _cachedIndex;
   }
 
-  // 尝试加载磁盘缓存
-  const diskCache = await loadCachedIndex(workDir);
-  if (diskCache) {
-    const cacheAge = Date.now() - new Date(diskCache.builtAt).getTime();
-    if (cacheAge < CACHE_TTL_MS * 2) {
-      _cachedIndex = diskCache;
-      _cacheWorkDir = workDir;
-      _cacheTimestamp = Date.now();
-      return diskCache;
-    }
-  }
-
-  // 全量构建
+  // 全量构建（dir-graph 扫描 + 行为知识）
   try {
     const index = await buildKnowledgeIndex(workDir, skillApi);
     _cachedIndex = index;
@@ -157,7 +137,7 @@ async function getOrBuildIndex(
     _cacheTimestamp = Date.now();
     return index;
   } catch {
-    return diskCache;
+    return null;
   }
 }
 

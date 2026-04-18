@@ -2,7 +2,7 @@
  * 产品洞察持久化服务
  *
  * 负责 InsightRecord（外部调研记录）和 ProductSuggestion（产品建议）的读写。
- * 存储路径：.xingjing/solo/product/insights/
+ * 存储路径：.xingjing/product/insights/
  *
  * 文件结构：
  *   index.yaml            — InsightRecord 索引（轻量，不含全文）
@@ -55,7 +55,7 @@ export interface ProductSuggestion {
 
 // ─── 路径常量 ─────────────────────────────────────────────────────────────────
 
-const INSIGHTS_DIR = '.xingjing/solo/product/insights';
+const INSIGHTS_DIR = '.xingjing/product/insights';
 const INDEX_PATH = `${INSIGHTS_DIR}/index.yaml`;
 const SUGGESTIONS_PATH = `${INSIGHTS_DIR}/suggestions.yaml`;
 
@@ -239,12 +239,14 @@ function parseInsightMarkdown(id: string, content: string): InsightRecord {
   }
 
   // 提取摘要段落
-  const summaryMatch = body.match(/## 摘要\r?\n\r?\n([\s\S]*?)(?=\n## |\n---\n|$)/);
+  const summaryRe = new RegExp('## 摘要\\r?\\n\\r?\\n([\\s\\S]*?)(?=\\n## |\\n---\\n|$)');
+  const summaryMatch = body.match(summaryRe);
   const summary = summaryMatch ? summaryMatch[1].trim() : body.slice(0, 300);
 
   // 提取来源
   const sources: InsightSource[] = [];
-  const sourceSection = body.match(/## 来源\r?\n\r?\n([\s\S]*?)(?=\n## |\n---\n|$)/);
+  const sourceRe = new RegExp('## 来源\\r?\\n\\r?\\n([\\s\\S]*?)(?=\\n## |\\n---\\n|$)');
+  const sourceSection = body.match(sourceRe);
   if (sourceSection) {
     const sourceLines = sourceSection[1].split('\n- ');
     for (const block of sourceLines) {

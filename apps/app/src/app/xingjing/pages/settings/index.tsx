@@ -120,11 +120,26 @@ const LLMTab: Component = () => {
       const owConfig = await actions.readOpencodeConfig();
       if (owConfig && typeof owConfig === 'object') {
         const c = owConfig as Record<string, unknown>;
-        const model = c['model'] as Record<string, string> | undefined;
-        if (model?.provider || model?.id) {
-          // 找到匹配的 modelOptions
+        // 支持两种格式：
+        //   新格式: model: "provider/modelID" （符合 OpenCode schema）
+        //   旧格式: model: { provider, id } （兼容历史配置）
+        let parsedProvider: string | undefined;
+        let parsedModelId: string | undefined;
+        const modelVal = c['model'];
+        if (typeof modelVal === 'string' && modelVal.includes('/')) {
+          // 新格式: "deepseek/deepseek-chat"
+          const [p, ...rest] = modelVal.split('/');
+          parsedProvider = p;
+          parsedModelId = rest.join('/');
+        } else if (modelVal && typeof modelVal === 'object') {
+          // 旧格式: { provider: "deepseek", id: "deepseek-chat" }
+          const m = modelVal as Record<string, string>;
+          parsedProvider = m.provider;
+          parsedModelId = m.id;
+        }
+        if (parsedProvider || parsedModelId) {
           const matched = modelOptions.find(
-            o => o.providerID === model?.provider && (o.modelID === model?.id || !model?.id)
+            o => o.providerID === parsedProvider && (o.modelID === parsedModelId || !parsedModelId)
           );
           if (matched) {
             setConfig(prev => ({
@@ -470,14 +485,27 @@ const LLMTab: Component = () => {
         openCodeSynced = await setProviderAuth(cfg.providerID, cfg.apiKey);
       }
 
-      // 3. 写入 OpenWork 工作区配置文件（.qoder/opencode.json 等）
-      const owConfigContent = JSON.stringify({
-        model: {
-          provider: cfg.providerID,
-          id: cfg.modelID,
-        },
-        ...(cfg.apiKey && cfg.providerID ? { providers: { [cfg.providerID as string]: { apiKey: cfg.apiKey } } } : {}),
-      }, null, 2);
+      // 3. 写入 OpenWork 工作区配置文件（opencode.jsonc）
+      // 先读取现有配置，保留 $schema/default_agent/mcp/plugin 等合法字段，
+      // 仅更新 model，并移除非法的 providers 字段。
+      let existingConfig: Record<string, unknown> = {};
+      try {
+        const existing = await actions.readOpencodeConfig();
+        if (existing && typeof existing === 'object') {
+          existingConfig = { ...(existing as Record<string, unknown>) };
+        }
+      } catch { /* 无现有配置，从空开始 */ }
+      // 确保 $schema 存在
+      if (!existingConfig['$schema']) {
+        existingConfig['$schema'] = 'https://opencode.ai/config.json';
+      }
+      // model 字段使用 OpenCode schema 要求的字符串格式: "provider/modelID"
+      if (cfg.providerID && cfg.modelID) {
+        existingConfig['model'] = `${cfg.providerID}/${cfg.modelID}`;
+      }
+      // 移除非法字段（旧版代码生成的，不在 OpenCode schema 中）
+      delete existingConfig['providers'];
+      const owConfigContent = JSON.stringify(existingConfig, null, 2);
       let owWritten = await actions.writeOpencodeConfig(owConfigContent);
 
       // 3a. 若未写入原因是"未关联工作区"，且 OpenWork 已连接，则自动按产品目录创建工作区后重试

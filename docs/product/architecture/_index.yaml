@@ -13,3 +13,56 @@ items:
     file: SDD-001-core-architecture.md
     created: "2026-04-05"
     updated: "2026-04-05"
+
+  - id: SDD-007
+    title: LLM Provider 管理 OpenWork 原生化
+    status: proposed
+    author: architect-agent
+    reviewers: [tech-lead]
+    revision: "1.0"
+    file: ../features/llm-provider-native/spec/SDD-007-llm-provider-openwork-native.md
+    created: "2026-04-17"
+    updated: "2026-04-17"
+
+  - id: SDD-008
+    title: 非 Markdown 文件读取支持——Server API 扩展 + 客户端降级增强
+    status: proposed
+    author: architect-agent
+    reviewers: [tech-lead]
+    revision: "1.0"
+    file: ../features/file-read-non-markdown/spec/SDD-008-file-read-non-markdown-support.md
+    created: "2026-04-17"
+    updated: "2026-04-17"
+
+  - id: SDD-009
+    title: 知识库扫描器与 Workspace 目录结构契合修复
+    status: proposed
+    author: architect-agent
+    reviewers: [tech-lead]
+    source_spec: SDD-008
+    revision: "1.0"
+    file: ../features/knowledge-scanner-dir-compat/spec/SDD-009-knowledge-scanner-dir-structure-compat.md
+    created: "2026-04-17"
+    updated: "2026-04-17"
+
+  - id: SDD-010
+    title: 独立版驾驶舱模型选择 OpenWork 原生化
+    status: proposed
+    author: architect-agent
+    reviewers: [tech-lead]
+    source_spec: SDD-007
+    revision: "1.0"
+    file: ../features/autopilot-model-integration/spec/SDD-010-autopilot-model-openwork-integration.md
+    created: "2026-04-17"
+    updated: "2026-04-17"
+
+  - id: SDD-011
+    title: 全局配置路径误入 OpenWork API——路径路由守卫增强
+    status: proposed
+    author: architect-agent
+    reviewers: [tech-lead]
+    source_spec: SDD-008
+    revision: "1.0"
+    file: ../features/global-path-routing-fix/spec/SDD-011-global-path-routing-fix.md
+    created: "2026-04-18"
+    updated: "2026-04-18"

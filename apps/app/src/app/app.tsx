@@ -2357,6 +2357,13 @@ export default function App() {
             return m ? { providerID: m.providerID, modelID: m.modelID } : null;
           }}
           sessionStatusById={activeSessionStatusById}
+          providerConnectedIds={providerConnectedIds}
+          modelOptions={() => modelConfig.modelOptions().map(o => ({
+            providerID: o.providerID, modelID: o.modelID,
+            title: o.title, isConnected: o.isConnected,
+            isRecommended: o.isRecommended,
+          }))}
+          submitProviderApiKey={submitProviderApiKey}
         />
       </Match>
       <Match when={true}>

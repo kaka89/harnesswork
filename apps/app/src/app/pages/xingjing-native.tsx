@@ -55,6 +55,16 @@ interface XingjingNativePageProps {
   selectedModel?: () => { providerID: string; modelID: string } | null;
   /** OpenWork 全局 SSE 维护的 session 状态映射（复用） */
   sessionStatusById?: () => Record<string, string>;
+  // ── SDD-010：Provider/Model 状态透传 ──
+  /** OpenWork 已连接的 Provider ID 列表（响应式） */
+  providerConnectedIds?: () => string[];
+  /** OpenWork 动态模型选项列表（含连接状态、推荐标记） */
+  modelOptions?: () => Array<{
+    providerID: string; modelID: string; title: string;
+    isConnected: boolean; isRecommended?: boolean;
+  }>;
+  /** 通过 OpenWork Provider Store 提交 API Key */
+  submitProviderApiKey?: (providerId: string, apiKey: string) => Promise<string>;
 }
 
 export default function XingjingNativePage(props: XingjingNativePageProps) {
@@ -123,12 +133,18 @@ export default function XingjingNativePage(props: XingjingNativePageProps) {
           reloadEngine: (workspaceId) =>
             props.openworkServerClient!.reloadEngine(workspaceId)
               .then((r) => r.ok).catch(() => false),
+          // SDD-010: Provider/Model 状态透传
+          providerConnectedIds: () => props.providerConnectedIds?.() ?? [],
+          modelOptions: () => props.modelOptions?.() ?? [],
+          submitProviderApiKey: props.submitProviderApiKey ?? (async () => ''),
           listCommands: (workspaceId: string) =>
             props.openworkServerClient!.listCommands(workspaceId)
               .then((r) => r.items as OpenworkCommandItem[]).catch(() => []),
           listAudit: (workspaceId: string, limit?: number) =>
             props.openworkServerClient!.listAudit(workspaceId, limit)
               .then((r) => r.items as OpenworkAuditEntry[]).catch(() => []),
+          listDir: (absPath: string) =>
+            props.openworkServerClient!.readdir(absPath).catch(() => null),
         }
       : undefined
   );

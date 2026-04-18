@@ -26,7 +26,7 @@ const STALE_THRESHOLD_DAYS = 90;
 const PROMOTE_REF_THRESHOLD = 5;
 
 /** 元数据目录路径 */
-const META_DIR = '.xingjing/solo/knowledge/_meta';
+const META_DIR = '.xingjing/knowledge/_meta';
 
 // ─── 健康报告数据模型 ─────────────────────────────────────────────────────────
 

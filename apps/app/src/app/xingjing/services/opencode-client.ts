@@ -8,13 +8,36 @@
  * 例如：client.file.list({ path: '/foo', directory: '/bar' })
  */
 
-import { createClient } from '../../lib/opencode';
+import { createClient, waitForHealthy } from '../../lib/opencode';
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 import { isTauriRuntime } from '../../utils';
 
 /** 解析不受 CORS 限制的 fetch（Tauri 环境用 tauriFetch，否则用浏览器 fetch） */
 const safeFetch = (): typeof globalThis.fetch =>
   isTauriRuntime() ? (tauriFetch as unknown as typeof globalThis.fetch) : globalThis.fetch;
+
+/** 缓存的用户主目录路径（Tauri 环境下惰性加载） */
+let _cachedHomeDir: string | null = null;
+
+/**
+ * 展开路径中的 ~ 符号为实际用户主目录。
+ * Tauri 的 @tauri-apps/plugin-fs 不支持 ~ 自动展开，
+ * 若直接传入会在当前工作目录下创建名为 "~" 的字面量目录。
+ */
+async function expandTildePath(p: string): Promise<string> {
+  if (!p.startsWith('~')) return p;
+  if (!_cachedHomeDir) {
+    try {
+      const { homeDir } = await import('@tauri-apps/api/path');
+      _cachedHomeDir = (await homeDir()).replace(/\/+$/, '');
+    } catch {
+      // 非 Tauri 环境或 API 不可用，原样返回
+      return p;
+    }
+  }
+  // ~/foo → /Users/xxx/foo  |  ~ → /Users/xxx
+  return p === '~' ? _cachedHomeDir : `${_cachedHomeDir}${p.slice(1)}`;
+}
 
 // ─── Client 管理（OpenWork 注入）────────────────────────────────────────────
 
@@ -28,6 +51,8 @@ let _directory = '';
 let _owFileOps: {
   read: (wsId: string, path: string) => Promise<{ content: string } | null>;
   write: (wsId: string, payload: { path: string; content: string; force?: boolean }) => Promise<boolean>;
+  /** 目录列表（OpenWork Server readdir），接受绝对路径 */
+  list?: (absPath: string) => Promise<Array<{ name: string; path: string; type: 'dir' | 'file'; ext?: string }> | null>;
 } | null = null;
 let _workspaceId: string | null = null;
 
@@ -134,7 +159,28 @@ export async function fileList(
   path: string,
   directory?: string,
 ): Promise<FileNode[]> {
-  // 1. 优先：OpenWork 注入的 SDK 客户端
+  // Level 0: OpenWork Server readdir API——与 fileRead 的 OpenWork API Level 对齐
+  if (_owFileOps?.list) {
+    try {
+      const dir = directory ?? (_directory || '');
+      const absPath = dir ? `${dir.replace(/\/$/, '')}/${path.replace(/\/$/, '')}` : path;
+      const entries = await _owFileOps.list(absPath);
+      if (entries && entries.length >= 0) {
+        console.debug('[xingjing] fileList 通过 OpenWork readdir 成功, path:', path, 'count:', entries.length);
+        return entries.map(entry => ({
+          name: entry.name,
+          path: `${path.replace(/\/$/, '')}/${entry.name}`,
+          absolute: entry.path,
+          type: (entry.type === 'dir' ? 'directory' : 'file') as 'file' | 'directory',
+          ignored: entry.name.startsWith('.'),
+        }));
+      }
+    } catch (e) {
+      console.warn('[xingjing] fileList OpenWork readdir 失败:', (e as Error)?.message ?? e);
+    }
+  }
+
+  // Level 1: OpenCode SDK 客户端
   try {
     const client = getXingjingClient();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -148,18 +194,7 @@ export async function fileList(
     console.warn('[xingjing] fileList SDK failed:', (e as Error)?.message ?? e);
   }
 
-  // 2. 回退：OpenWork 文件 API（无 CORS 问题，不受 ConfigInvalidError 影响）
-  if (_owFileOps && _workspaceId) {
-    try {
-      // 路径已是相对路径，OpenWork API 以 workspace 根目录解析
-      const result = await _owFileOps.read(_workspaceId, path);
-      if (result?.content) {
-        try { return JSON.parse(result.content) as FileNode[]; } catch { /* not JSON */ }
-      }
-    } catch { /* fall through */ }
-  }
-
-  // 3. 兜底：通过 tauriFetch 直连 OpenCode（绕过 CORS）
+  // Level 2: tauriFetch 直连 OpenCode（绕过 CORS）
   try {
     const url = new URL('/file', _baseUrl);
     url.searchParams.set('path', path);
@@ -167,7 +202,20 @@ export async function fileList(
     if (dir) url.searchParams.set('directory', dir);
     const resp = await safeFetch()(url.toString());
     if (resp.ok) return (await resp.json()) as FileNode[];
-  } catch { /* ignore */ }
+    console.warn('[xingjing] fileList tauriFetch 失败, status:', resp.status);
+  } catch (e) {
+    console.warn('[xingjing] fileList tauriFetch 异常:', (e as Error)?.message ?? e);
+  }
+
+  // Level 3: Tauri 原生文件系统（终极兜底）
+  const nativeResult = await tauriNativeFileList(path, directory);
+  if (nativeResult !== null) {
+    console.debug('[xingjing] fileList 通过 Tauri native fs 成功, path:', path,
+      'count:', nativeResult.length);
+    return nativeResult;
+  }
+
+  console.warn('[xingjing] fileList 所有通道均失败, path:', path);
   return [];
 }
 
@@ -183,27 +231,125 @@ function toWorkspaceRelativePath(path: string): string {
   return path;
 }
 
+// ─── SDD-008: 文件类型智能路由 + Tauri native fs 兜底 ─────────────────────────
+
+/** 服务端当前支持的文件扩展名（与 server.ts SUPPORTED_TEXT_EXTENSIONS 保持同步） */
+const SERVER_SUPPORTED_EXTENSIONS = new Set([
+  '.md', '.mdx', '.markdown', '.yaml', '.yml', '.json',
+]);
+
+/**
+ * 判断文件路径是否为 Server API 支持的类型。
+ * 用于 fileRead/fileWrite 智能路由：不支持的类型直接跳过 Level 1，避免无意义的 400 错误。
+ */
+function isServerSupportedFile(path: string): boolean {
+  const dotIdx = path.lastIndexOf('.');
+  if (dotIdx < 0) return false;
+  return SERVER_SUPPORTED_EXTENSIONS.has(path.slice(dotIdx).toLowerCase());
+}
+
+/**
+ * Level 4 兜底：通过 Tauri 原生文件系统 API 直接读取本地文件。
+ * 无网络依赖，Tauri 环境下始终可用。
+ * 非 Tauri 环境（浏览器）跳过此层。
+ */
+async function tauriNativeFileRead(
+  path: string,
+  directory?: string,
+): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    const { readTextFile } = await import('@tauri-apps/plugin-fs');
+    const raw = directory ? `${directory}/${path}` : path;
+    const fullPath = await expandTildePath(raw);
+    const content = await readTextFile(fullPath);
+    return content || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Level 3 兜底（fileList）：通过 Tauri 原生文件系统列举目录内容。
+ * 将 Tauri readDir 结果适配为 FileNode[] 格式。
+ * SDD-009 新增。
+ */
+async function tauriNativeFileList(
+  path: string,
+  directory?: string,
+): Promise<FileNode[] | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    const { readDir } = await import('@tauri-apps/plugin-fs');
+    const raw = directory ? `${directory}/${path}` : path;
+    const fullPath = await expandTildePath(raw);
+    const entries = await readDir(fullPath);
+    return entries
+      .filter(e => e.name != null)
+      .map(entry => ({
+        name: entry.name!,
+        path: `${path.replace(/\/$/, '')}/${entry.name}`,
+        absolute: `${fullPath.replace(/\/$/, '')}/${entry.name}`,
+        type: (entry.isDirectory ? 'directory' : 'file') as 'file' | 'directory',
+        ignored: entry.name!.startsWith('.'),
+      }));
+  } catch (e) {
+    console.warn('[xingjing] tauriNativeFileList 失败, path:', path, 'error:', (e as Error)?.message ?? e);
+    return null;
+  }
+}
+
+/**
+ * Level 3（fileWrite 兜底）：通过 Tauri 原生文件系统写入本地文件。
+ */
+async function tauriNativeFileWrite(
+  path: string,
+  content: string,
+  directory?: string,
+): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  try {
+    const { writeTextFile, mkdir } = await import('@tauri-apps/plugin-fs');
+    const raw = directory ? `${directory}/${path}` : path;
+    const fullPath = await expandTildePath(raw);
+    // 确保父目录存在
+    const lastSlash = fullPath.lastIndexOf('/');
+    if (lastSlash > 0) {
+      await mkdir(fullPath.slice(0, lastSlash), { recursive: true }).catch(() => {/* 目录已存在 */});
+    }
+    await writeTextFile(fullPath, content);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * 读取文件内容（文本）
- * 优先使用 OpenWork Server API，回退到 OpenCode file API。
+ * 优先使用 OpenWork Server API，回退到 OpenCode file API，终极兜底 Tauri native fs。
+ * SDD-008: 增加智能路由（非支持类型跳过 Level 1）+ Level 4 Tauri 原生文件系统。
  */
 export async function fileRead(
   path: string,
   directory?: string,
 ): Promise<string | null> {
-  // 1. 优先：OpenWork 文件 API（无 CORS 问题，不受 OpenCode ConfigInvalidError 影响）
-  if (_owFileOps && _workspaceId) {
+  // 1. 优先：OpenWork 文件 API（仅当 workspace 与目标目录匹配时使用）
+  // 当调用方显式指定了 directory 且与当前 workspace 不一致时，
+  // OpenWork API 会从错误的 workspace 读取，必须跳过
+  const owApiAvailable = _owFileOps && _workspaceId && isServerSupportedFile(path)
+    && (!directory || !_directory || directory === _directory);
+  if (owApiAvailable) {
     try {
       const relativePath = directory ? path : toWorkspaceRelativePath(path);
-      console.debug('[xingjing] fileRead 尝试 OpenWork API, wsId:', _workspaceId, 'path:', relativePath);
-      const result = await _owFileOps.read(_workspaceId, relativePath);
+      console.debug('[xingjing] fileRead 尝试 OpenWork API, path:', relativePath);
+      const result = await _owFileOps!.read(_workspaceId!, relativePath);
       if (result?.content !== undefined) return result.content;
       console.warn('[xingjing] fileRead OpenWork API 返回空内容, path:', relativePath);
     } catch (e) {
       console.warn('[xingjing] fileRead OpenWork API 失败:', (e as Error)?.message ?? e);
     }
-  } else {
-    console.warn('[xingjing] fileRead OpenWork API 不可用: owFileOps=', !!_owFileOps, 'wsId=', _workspaceId);
+  } else if (_owFileOps && _workspaceId && !owApiAvailable) {
+    console.debug('[xingjing] fileRead 跳过 OpenWork API（文件类型不支持或 workspace 不匹配）, path:', path);
   }
 
   // 2. OpenCode SDK 客户端
@@ -231,27 +377,43 @@ export async function fileRead(
       const data = await resp.json();
       return (data as FileContent).content ?? null;
     }
-  } catch { /* ignore */ }
+    console.warn('[xingjing] fileRead tauriFetch 失败, status:', resp.status, 'path:', path);
+  } catch (e) {
+    console.warn('[xingjing] fileRead tauriFetch 异常:', (e as Error)?.message ?? e);
+  }
+
+  // 4. 终极兜底：Tauri 原生文件系统（SDD-008 Level 4）
+  const nativeResult = await tauriNativeFileRead(path, directory);
+  if (nativeResult !== null) {
+    console.debug('[xingjing] fileRead 通过 Tauri native fs 成功, path:', path);
+    return nativeResult;
+  }
+
+  console.warn('[xingjing] fileRead 所有通道均失败, path:', path);
   return null;
 }
 
 /**
  * 写入文件内容
- * 优先使用 OpenWork Server API，回退到裸 fetch（过渡期）。
+ * 优先使用 OpenWork Server API，回退到裸 fetch，终极兜底 Tauri native fs。
+ * SDD-008: 增加智能路由 + Level 3 Tauri 原生文件系统兜底。
  */
 export async function fileWrite(
   path: string,
   content: string,
   directory?: string,
 ): Promise<boolean> {
-  // 优先使用 OpenWork Server API
-  if (_owFileOps && _workspaceId) {
+  // 1. 优先使用 OpenWork Server API（仅当 workspace 与目标目录匹配时）
+  const owWriteAvailable = _owFileOps && _workspaceId && isServerSupportedFile(path)
+    && (!directory || !_directory || directory === _directory);
+  if (owWriteAvailable) {
     try {
-      // 将绝对路径转为相对路径，避免 OpenWork Server 二次拼接 workspace 根目录导致路径重复
-      return await _owFileOps.write(_workspaceId, { path: toWorkspaceRelativePath(path), content });
-    } catch { /* fall through to raw fetch */ }
+      return await _owFileOps!.write(_workspaceId!, { path: toWorkspaceRelativePath(path), content });
+    } catch (e) {
+      console.warn('[xingjing] fileWrite OpenWork API 失败:', (e as Error)?.message ?? e);
+    }
   }
-  // 回退：通过 tauriFetch 直连 OpenCode（绕过 CORS）
+  // 2. 回退：通过 tauriFetch 直连 OpenCode（绕过 CORS）
   const dir = directory ?? _directory;
   try {
     const url = `${_baseUrl}/file/content`;
@@ -261,9 +423,18 @@ export async function fileWrite(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    return resp.ok;
-  } catch { /* ignore */ }
-  console.warn('[xingjing] fileWrite: OpenCode file write not available, operating in read-only mode');
+    if (resp.ok) return true;
+    console.warn('[xingjing] fileWrite tauriFetch 失败, status:', resp.status);
+  } catch (e) {
+    console.warn('[xingjing] fileWrite tauriFetch 异常:', (e as Error)?.message ?? e);
+  }
+  // 3. 终极兜底：Tauri 原生文件系统（SDD-008）
+  const nativeOk = await tauriNativeFileWrite(path, content, directory);
+  if (nativeOk) {
+    console.debug('[xingjing] fileWrite 通过 Tauri native fs 成功, path:', path);
+    return true;
+  }
+  console.warn('[xingjing] fileWrite 所有通道均失败, path:', path);
   return false;
 }
 
@@ -376,24 +547,88 @@ export async function configGetModels(): Promise<XingjingModelConfig[]> {
   }
 }
 
+/** 缓存已验证的 auth 标识（仅在 provider 列表确认包含目标 provider 后才缓存） */
+let _lastVerifiedAuthKey: string | null = null;
+
+/** 清除 auth 缓存，使下次 setProviderAuth 执行完整流程（含 dispose） */
+export function clearProviderAuthCache(): void {
+  _lastVerifiedAuthKey = null;
+}
+
 /**
  * 为指定 Provider 设置 API Key（同步到 OpenCode，使 callAgent 调用时生效）
  *
- * 等同于 OpenWork 设置页中「连接 Provider」-> 输入 API Key 的操作
+ * 对齐 OpenWork 设置页的完整流程：
+ *   1. auth.set() — 将 API Key 写入磁盘
+ *   2. instance.dispose() — 强制 OpenCode 重新加载配置到内存
+ *   3. waitForHealthy() — 等待 OpenCode 重启完成
+ *   4. provider.list() — 验证 provider 已被识别
  */
 export async function setProviderAuth(providerID: string, apiKey: string): Promise<boolean> {
+  const maskedKey = apiKey.length > 8 ? apiKey.slice(0, 4) + '...' + apiKey.slice(-4) : '***';
+  const cacheKey = `${providerID}:${apiKey.slice(-8)}`;
+
+  // 已验证相同 Provider/Key，跳过
+  if (_lastVerifiedAuthKey === cacheKey) {
+    console.log('[xingjing] setProviderAuth 跳过（已验证）', { providerID });
+    return true;
+  }
+
+  console.log('[xingjing] setProviderAuth 调用', { providerID, maskedKey });
   const client = getXingjingClient();
   try {
+    // Step 1: 写入 API Key 到磁盘
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (client.auth as any).set({
       providerID,
       auth: { type: 'api', key: apiKey },
     });
+
+    // Step 2: 强制 OpenCode 重新加载配置（对齐 OpenWork refreshProviders 流程）
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (client.instance as any).dispose();
+    } catch { /* dispose 失败不阻断流程 */ }
+
+    // Step 3: 等待 OpenCode 重启就绪
+    try {
+      await waitForHealthy(client, { timeoutMs: 8_000, pollMs: 250 });
+    } catch { /* 超时不阻断流程 */ }
+
+    // Step 4: 验证 provider 是否已被 OpenCode 识别
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const providerResult = await (client.provider as any).list();
+      const raw = providerResult?.data ?? providerResult;
+      const allList = Array.isArray(raw?.all) ? raw.all : (Array.isArray(raw) ? raw : []);
+      const providerIds = allList.map((p: { id?: string }) => p.id);
+      if (providerIds.includes(providerID)) {
+        _lastVerifiedAuthKey = cacheKey;
+      }
+      console.log('[xingjing] setProviderAuth 完成', { providerID, verified: providerIds.includes(providerID) });
+    } catch {
+      // provider.list 失败不阻断流程，不缓存
+      console.log('[xingjing] setProviderAuth 完成（未验证）', { providerID });
+    }
+
     return true;
   } catch (e) {
-    console.warn('[xingjing] setProviderAuth failed:', e);
+    console.warn('[xingjing] setProviderAuth 失败:', { providerID, error: e });
     return false;
   }
+}
+
+// ─── 全局 ensureAuth 钩子 ────────────────────────────────────────────────────
+
+let _ensureAuthFn: (() => Promise<void>) | null = null;
+
+/**
+ * 注册 session.create 前的认证保障钩子。
+ * 由 AppStoreProvider 在初始化时调用，确保每次创建 Session 前
+ * 当前 LLM Provider 的 API Key 已同步到 OpenCode。
+ */
+export function registerEnsureAuth(fn: () => Promise<void>): void {
+  _ensureAuthFn = fn;
 }
 
 // ─── 多平台 Skill 发现 ──────────────────────────────────────────────────────
@@ -637,6 +872,12 @@ async function runAgentSession(
 
   // 新建 session（Layer 2 或首次调用）
   if (!sid) {
+    // ▸ 确保 API Key 已同步到 OpenCode（防止 ConfigInvalidError）
+    if (_ensureAuthFn) {
+      console.log('[xingjing-diag] ensureAuth 钩子触发');
+      try { await _ensureAuthFn(); } catch (e) { console.warn('[xingjing-diag] ensureAuth 异常:', e); }
+    }
+
     let lastErrName: string | undefined;
     try {
       // 权限策略：对齐 OpenWork 模式 —— 不在 session 创建时设置 deny-all 限制。
@@ -666,16 +907,33 @@ async function runAgentSession(
       const result = await client.session.create(
         createParams as Parameters<typeof client.session.create>[0]
       );
+      // 完整记录原始响应，便于诊断
+      console.log('[xingjing-diag] session.create raw response', {
+        hasData: !!result.data,
+        dataKeys: result.data ? Object.keys(result.data as Record<string, unknown>) : [],
+        hasError: !!result.error,
+        errorFull: result.error,
+        responseStatus: result.response?.status,
+        responseUrl: result.response?.url,
+      });
       sid = (result.data as { id: string } | undefined)?.id ?? null;
+      if (sid) {
+        console.log('[xingjing-diag] session.create 成功', { sessionId: sid });
+      }
       if (!sid) {
-        const errName = (result.error as { name?: string } | undefined)?.name;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const err = result.error as any;
+        const errName = err?.name;
         lastErrName = errName;
-        if (errName === 'ConfigInvalidError') {
-          console.error('[xingjing] session.create ConfigInvalidError — OpenCode 未配置有效的 LLM Provider/API Key');
-        } else {
-          console.error('[xingjing] session.create returned no id. error:', result.error,
-            '| data:', result.data);
-        }
+        // 单独打印 error.data.issues（ConfigInvalidError 的核心诊断信息）
+        console.error('[xingjing] session.create 失败', {
+          name: errName,
+          message: err?.message,
+          configPath: err?.data?.path,
+          issues: err?.data?.issues,
+        });
+        // 完整错误对象
+        console.error('[xingjing] session.create error.data:', JSON.stringify(err?.data, null, 2));
       }
     } catch (e) {
       console.error('[xingjing] session.create threw:', e);
@@ -683,6 +941,8 @@ async function runAgentSession(
     }
 
     if (!sid) {
+      // session.create 失败时清除 auth 缓存，使下次重试触发完整流程（含 dispose 强制 OpenCode 重读配置）
+      clearProviderAuthCache();
       const msg = lastErrName === 'ConfigInvalidError'
         ? '大模型未配置，请在设置页配置 API Key 后重试'
         : '无法创建 AI 会话，请检查 OpenCode 服务是否已启动';
@@ -1093,6 +1353,7 @@ async function runAgentSession(
 
       void (async () => {
         try {
+          console.log('[xingjing-diag] promptAsync 发送', { sessionId: finalSid, hasModel: !!opts.model, modelID: opts.model?.modelID });
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           await (client.session as any).promptAsync({
             sessionID: finalSid,
@@ -1102,6 +1363,7 @@ async function runAgentSession(
             // 传 tools:{} 会导致 OpenCode 状态机无法从 busy 转为 idle，session 永远不完成。
             parts: [{ type: 'text', text: fullPrompt }],
           });
+          console.log('[xingjing-diag] promptAsync 已发送', { sessionId: finalSid });
         } catch {
           if (!done) {
             cleanup();
@@ -1196,6 +1458,15 @@ export async function callAgentWithClient(
  * 使用 OpenWork 注入的共享 client。
  */
 export async function callAgent(opts: CallAgentOptions): Promise<void> {
+  console.log('[xingjing] callAgent 入口', {
+    hasModel: !!opts.model,
+    modelID: opts.model?.modelID,
+    providerID: opts.model?.providerID,
+    title: opts.title,
+    existingSessionId: opts.existingSessionId,
+    directory: opts.directory,
+    hasSystemPrompt: !!opts.systemPrompt,
+  });
   return executeAgentWithRetry(() => getXingjingClient(), opts);
 }
 

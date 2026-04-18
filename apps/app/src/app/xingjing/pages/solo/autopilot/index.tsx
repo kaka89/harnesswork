@@ -45,7 +45,7 @@ import {
   type AutopilotAgent,
   type AgentExecutionStatus,
 } from '../../../services/autopilot-executor';
-import { callAgent, isClientReady } from '../../../services/opencode-client';
+import { callAgent, isClientReady, setProviderAuth } from '../../../services/opencode-client';
 import ArtifactWorkspace, {
   type ArtifactItem,
   detectArtifactFormat,
@@ -789,24 +789,41 @@ const SoloAutopilot = () => {
     }
   };
 
-  // ── onMount ────────────────────────────────────────────────────────────────────
-  onMount(async () => {
-    const workDir = productStore.activeProduct()?.workDir;
+  // ── 加载/刷新 providerKeys 的通用函数（onMount 和 activeProduct 变化时复用）──
+  const loadProviderKeys = async (workDir: string | undefined) => {
+    // 无论有无 workDir，始终先把全局 llmConfig 中的 key 加载进来
+    const cur = state.llmConfig;
+    const keys: Record<string, string> = {};
+    if (cur.providerID && cur.apiKey) keys[cur.providerID] = cur.apiKey;
+
     if (workDir) {
       try {
         const settings = await loadProjectSettings(workDir);
-        const keys: Record<string, string> = { ...(settings.llmProviderKeys ?? {}) };
-        const cur = state.llmConfig;
-        if (cur.providerID && cur.apiKey) keys[cur.providerID] = cur.apiKey;
-        setProviderKeys(keys);
-        const configured = modelOptions.filter(
-          (opt) => opt.providerID !== 'custom' && (keys[opt.providerID]?.trim().length ?? 0) > 0,
-        );
-        if (configured.length > 0 && !configured.find((o) => o.modelID === sessionModelId())) {
-          setSessionModelId(configured[0].modelID);
-        }
+        // 项目级 key 优先级更高，merge 到全局 key 之上
+        Object.assign(keys, settings.llmProviderKeys ?? {});
       } catch {}
+    }
 
+    setProviderKeys(keys);
+    const configured = modelOptions.filter(
+      (opt) => opt.providerID !== 'custom' && (keys[opt.providerID]?.trim().length ?? 0) > 0,
+    );
+    if (configured.length > 0 && !configured.find((o) => o.modelID === sessionModelId())) {
+      setSessionModelId(configured[0].modelID);
+    }
+  };
+
+  // ── 响应式监听：activeProduct 变化时自动刷新 providerKeys ──────────────────────
+  createEffect(() => {
+    const workDir = productStore.activeProduct()?.workDir;
+    loadProviderKeys(workDir);
+  });
+
+  // ── onMount ────────────────────────────────────────────────────────────────────
+  onMount(async () => {
+    const workDir = productStore.activeProduct()?.workDir;
+
+    if (workDir) {
       // 知识健康度
       buildKnowledgeIndex(workDir, null).then((idx) => {
         if (idx) return getHealthScore(workDir, idx);
@@ -832,6 +849,13 @@ const SoloAutopilot = () => {
       const m = getSessionModel();
       if (!m) return null;
       return { providerID: m.providerID, modelID: m.modelID };
+    },
+    // session.create 前确保 API Key 已同步到 OpenCode（防止 ConfigInvalidError）
+    ensureAuth: async () => {
+      const cfg = state.llmConfig;
+      if (cfg.providerID && cfg.providerID !== 'custom' && cfg.apiKey && cfg.apiKey.length > 4) {
+        await setProviderAuth(cfg.providerID, cfg.apiKey);
+      }
     },
     skillApi: null,
     onArtifactExtracted: (artifact) => {
@@ -880,6 +904,23 @@ const SoloAutopilot = () => {
   const handleChatSend = async () => {
     const text = goal().trim();
     if (!text || chatLoading()) return;
+
+    // ▸ 诊断日志：记录入口状态
+    const _model = getSessionModel();
+    console.log('[solo-chat] handleChatSend 入口', {
+      hasModel: !!_model,
+      modelID: _model?.modelID,
+      providerID: _model?.providerID,
+      existingSessionId: currentChatSessionId(),
+      configuredModelsCount: configuredModels().length,
+      workDir: productStore.activeProduct()?.workDir,
+    });
+
+    // ▸ 前置模型验证（与 dispatch 模式保持一致）
+    if (!_model && configuredModels().length === 0) {
+      setAgentError('尚未配置可用的大模型，请先前往「设置 → 大模型配置」填写 API Key');
+      return;
+    }
 
     const userMsgId = genMsgId();
     const aiMsgId = genMsgId();
@@ -948,6 +989,13 @@ const SoloAutopilot = () => {
     const text = goal().trim();
     if (!text) return;
 
+    console.log('[solo-chat] handleStart 入口', {
+      mode: chatMode(),
+      hasModel: !!getSessionModel(),
+      modelID: getSessionModel()?.modelID,
+      configuredModelsCount: configuredModels().length,
+    });
+
     // ── chat 模式：走直接对话路径 ──
     if (chatMode() === 'chat') {
       await handleChatSend();
@@ -978,6 +1026,8 @@ const SoloAutopilot = () => {
       await loadHistory();
     } catch (err) {
       console.error('[solo-autopilot] handleStart error:', err);
+      clearTimers();
+      orchestrator.abort();
       setAgentError(`执行失败：${err}`);
       setRunState('idle');
     }
@@ -1088,7 +1138,9 @@ const SoloAutopilot = () => {
   };
 
   onCleanup(() => {
+    console.log('[solo-chat] onCleanup: 清理资源');
     clearTimers();
+    orchestrator.abort();
     if (elapsedTimerRef) { clearInterval(elapsedTimerRef); elapsedTimerRef = undefined; }
     document.removeEventListener('pointermove', handleResizeMove);
     document.removeEventListener('pointerup', handleResizeEnd);

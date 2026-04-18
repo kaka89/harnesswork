@@ -87,6 +87,8 @@ export interface TeamSessionOrchestratorOptions {
     title: string;
     content: string;
   }) => void;
+  /** session.create 前确保 API Key 已同步到 OpenCode */
+  ensureAuth?: () => Promise<void>;
 }
 
 export function createTeamSessionOrchestrator(opts: TeamSessionOrchestratorOptions): TeamSessionOrchestrator {
@@ -121,6 +123,11 @@ export function createTeamSessionOrchestrator(opts: TeamSessionOrchestratorOptio
     if (!client || !workspaceId) return null;
 
     try {
+      // ▸ 确保 API Key 已同步到 OpenCode（防止 ConfigInvalidError）
+      if (opts.ensureAuth) {
+        try { await opts.ensureAuth(); } catch { /* silent */ }
+      }
+
       const result = await client.session.create({
         body: {
           title: `xingjing-orchestrator-${Date.now()}`,
@@ -175,6 +182,11 @@ export function createTeamSessionOrchestrator(opts: TeamSessionOrchestratorOptio
     if (!client || !workspaceId) return null;
 
     try {
+      // ▸ 确保 API Key 已同步到 OpenCode（防止 ConfigInvalidError）
+      if (opts.ensureAuth) {
+        try { await opts.ensureAuth(); } catch { /* silent */ }
+      }
+
       const result = await client.session.create({
         body: {
           title: `xingjing-${agentId}-${Date.now()}`,
@@ -225,7 +237,8 @@ export function createTeamSessionOrchestrator(opts: TeamSessionOrchestratorOptio
         const fullText = textParts.map((p) => (p as { text?: string }).text ?? '').join('');
 
         // 解析产出物标记
-        const artifactMatch = fullText.match(/###\s*产出物[：:]\s*(.+?)\n([\s\S]*?)(?=\n##|\n---|\n###|$)/);
+        const artifactRegex = new RegExp('###\\s*产出物[：:]\\s*(.+?)\\n([\\s\\S]*?)(?=\\n##|\\n---|\\n###|$)');
+        const artifactMatch = fullText.match(artifactRegex);
         if (artifactMatch) {
           const title = artifactMatch[1].trim();
           const content = artifactMatch[2].trim();

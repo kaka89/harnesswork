@@ -1,16 +1,17 @@
 /**
- * 知识索引服务（三源聚合）
+ * 知识索引服务（两源聚合）
  *
- * 聚合三个知识来源构建统一索引：
+ * 聚合两个知识来源构建统一索引：
  * 1. 行为知识（OpenWork Skill API）
- * 2. 私有知识（本地文件 .xingjing/solo/knowledge/）
- * 3. Workspace 文档知识（dir-graph.yaml 驱动扫描）
+ * 2. Workspace 文档知识（dir-graph.yaml 驱动扫描，覆盖 product/、iterations/、knowledge/ 等）
  *
  * 提供关键词检索 + 多维排序（融合文档链路距离和知识层级近邻度）。
+ *
+ * 索引仅保留在内存中（由 knowledge-retrieval 管理 5 分钟 TTL），不再持久化到磁盘。
  */
 
 import { fileRead, fileWrite } from './opencode-client';
-import { loadSoloKnowledge, type SoloKnowledgeItem } from './file-store';
+import { scanWorkspaceDocs } from './knowledge-scanner';
 import { listBehaviorKnowledge, type BehaviorKnowledge, type SkillApiAdapter, type ApplicableScene } from './knowledge-behavior';
 import { extractKeywords } from './memory-store';
 
@@ -98,14 +99,15 @@ export interface KnowledgeIndex {
 
 // ─── 常量 ─────────────────────────────────────────────────────────────────────
 
-const INDEX_PATH = '.xingjing/solo/knowledge/_index.json';
-const DOC_INDEX_PATH = '.xingjing/solo/knowledge/_doc-index.json';
-const META_DIR = '.xingjing/solo/knowledge/_meta';
+const META_DIR = '.xingjing/knowledge/_meta';
 
 // ─── 索引构建 ──────────────────────────────────────────────────────────────────
 
 /**
- * 构建三源知识索引
+ * 构建两源知识索引
+ *
+ * Source 1: 行为知识（Skill API）
+ * Source 2: Workspace 文档知识（dir-graph.yaml 驱动扫描）
  */
 export async function buildKnowledgeIndex(
   workDir: string,
@@ -126,34 +128,15 @@ export async function buildKnowledgeIndex(
     }
   }
 
-  // 2. 私有知识（本地文件）
+  // 2. Workspace 文档知识（dir-graph.yaml 驱动）
+  // 优先使用调用方直接传入的扫描结果，否则实时扫描
   try {
-    const privateItems = await loadSoloKnowledge(workDir);
-    for (const item of privateItems) {
-      entries.push(privateToEntry(item));
-    }
-  } catch (e) {
-    console.warn('[knowledge-index] Failed to load private knowledge:', e);
-  }
-
-  // 3. Workspace 文档知识
-  // 优先使用调用方直接传入的扫描结果（避免依赖文件中转），
-  // 回退到从 _doc-index.json 加载（由 knowledge-scanner 生成）
-  try {
-    let docItems: WorkspaceDocKnowledge[] | null = preloadedDocs ?? null;
-    if (!docItems) {
-      const docContent = await fileRead(DOC_INDEX_PATH, workDir);
-      if (docContent) {
-        docItems = JSON.parse(docContent) as WorkspaceDocKnowledge[];
-      }
-    }
-    if (docItems) {
-      for (const item of docItems) {
-        entries.push(docToEntry(item));
-      }
+    const docItems = preloadedDocs ?? await scanWorkspaceDocs(workDir);
+    for (const item of docItems) {
+      entries.push(docToEntry(item));
     }
   } catch {
-    // 文档索引不存在或解析失败，跳过
+    // 扫描失败，跳过
   }
 
   // 4. 构建多维索引
@@ -206,33 +189,7 @@ export async function buildKnowledgeIndex(
     builtAt: new Date().toISOString(),
   };
 
-  // 缓存到本地
-  await cacheIndex(workDir, index);
-
   return index;
-}
-
-/**
- * 加载缓存的索引（避免每次重建）
- */
-export async function loadCachedIndex(workDir: string): Promise<KnowledgeIndex | null> {
-  try {
-    const content = await fileRead(INDEX_PATH, workDir);
-    if (!content) return null;
-    const parsed = JSON.parse(content);
-    if (parsed.version !== 1) return null;
-    return parsed as KnowledgeIndex;
-  } catch {
-    return null;
-  }
-}
-
-async function cacheIndex(workDir: string, index: KnowledgeIndex): Promise<void> {
-  try {
-    await fileWrite(INDEX_PATH, JSON.stringify(index, null, 2), workDir);
-  } catch {
-    // silent
-  }
 }
 
 // ─── 知识检索 ──────────────────────────────────────────────────────────────────
@@ -479,22 +436,6 @@ function behaviorToEntry(item: BehaviorKnowledge): KnowledgeEntry {
   };
 }
 
-function privateToEntry(item: SoloKnowledgeItem): KnowledgeEntry {
-  return {
-    id: `pv-${item.id}`,
-    source: 'private',
-    title: item.title,
-    summary: item.content.slice(0, 200),
-    tags: item.tags,
-    category: item.category,
-    applicableScenes: mapCategoryToScenes(item.category),
-    lifecycle: 'living',
-    date: item.date,
-    sourceAgentId: item.sourceAgentId,
-    sourceSessionId: item.sourceSessionId,
-  };
-}
-
 function docToEntry(item: WorkspaceDocKnowledge): KnowledgeEntry {
   return {
     id: `doc-${item.id}`,
@@ -513,15 +454,6 @@ function docToEntry(item: WorkspaceDocKnowledge): KnowledgeEntry {
     date: item.indexedAt,
     filePath: item.filePath,
   };
-}
-
-function mapCategoryToScenes(category: string): string[] {
-  switch (category) {
-    case 'pitfall': return ['code-development', 'technical-design'];
-    case 'user-insight': return ['product-planning', 'requirement-design'];
-    case 'tech-note': return ['technical-design', 'code-development'];
-    default: return [];
-  }
 }
 
 function mapDocTypeToScenes(docType: string): string[] {

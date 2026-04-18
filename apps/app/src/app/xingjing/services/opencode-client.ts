@@ -136,6 +136,30 @@ export function isClientReady(): boolean {
   return _sharedClient !== null || _localClient !== null;
 }
 
+/**
+ * 重置本地 OpenCode 客户端实例。
+ * 用于自动重连：清空 _localClient 后下次 getXingjingClient() 会以最新 _baseUrl 重建实例。
+ * Tauri 环境下可配合 engineInfo 先更新 _baseUrl，再调用此函数。
+ */
+export async function refreshLocalClient(): Promise<void> {
+  // OpenWork shared client 模式无需重置
+  if (_sharedClient) return;
+  // Tauri 运行时：尝试从 engineInfo 获取最新端口/认证信息
+  if (isTauriRuntime()) {
+    try {
+      const { engineInfo } = await import('../../lib/tauri');
+      const info = await engineInfo();
+      if (info.running && info.baseUrl) {
+        _baseUrl = info.baseUrl.replace(/\/$/, '');
+      }
+    } catch {
+      // 降级：保持当前 _baseUrl
+    }
+  }
+  // 清空本地实例，下次调用 getXingjingClient() 时以新 _baseUrl 重建
+  _localClient = null;
+}
+
 // ─── 文件 API ───────────────────────────────────────────────────────────────
 
 export interface FileNode {

@@ -466,7 +466,9 @@ const MainLayout: ParentComponent = (props) => {
                         ? 'var(--green-9, #16a34a)'
                         : opencodeStatus() === 'connected'
                           ? 'var(--green-9, #16a34a)'
-                          : 'var(--red-9, #dc2626)',
+                          : opencodeStatus() === 'reconnecting'
+                            ? 'var(--amber-9, #d97706)'
+                            : 'var(--red-9, #dc2626)',
                   }}
                 />
               </div>
@@ -512,7 +514,9 @@ const MainLayout: ParentComponent = (props) => {
                           ? 'var(--green-9, #16a34a)'
                           : opencodeStatus() === 'connected'
                             ? 'var(--green-9, #16a34a)'
-                            : 'var(--red-9, #dc2626)',
+                            : opencodeStatus() === 'reconnecting'
+                              ? 'var(--amber-9, #d97706)'
+                              : 'var(--red-9, #dc2626)',
                     }}
                   />
                   <span class="text-xs text-[var(--dls-text-secondary)]">OpenCode</span>
@@ -525,14 +529,18 @@ const MainLayout: ParentComponent = (props) => {
                         ? 'var(--green-9, #16a34a)'
                         : opencodeStatus() === 'connected'
                           ? 'var(--green-9, #16a34a)'
-                          : 'var(--red-9, #dc2626)',
+                          : opencodeStatus() === 'reconnecting'
+                            ? 'var(--amber-9, #d97706)'
+                            : 'var(--red-9, #dc2626)',
                   }}
                 >
                   {openworkStatus() !== 'disconnected'
                     ? '通过 OpenWork'
                     : opencodeStatus() === 'connected'
                       ? '已连接'
-                      : '断开'}
+                      : opencodeStatus() === 'reconnecting'
+                        ? '重连中...'
+                        : '断开'}
                 </span>
               </div>
             </div>

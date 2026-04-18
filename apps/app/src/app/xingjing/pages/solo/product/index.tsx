@@ -20,6 +20,7 @@ import {
   type SoloBusinessMetric,
 } from '../../../services/file-store';
 import { SOLO_AGENTS } from '../../../services/autopilot-executor';
+import { invalidateKnowledgeCache } from '../../../services/knowledge-retrieval';
 import { useAppStore } from '../../../stores/app-store';
 import { themeColors, chartColors } from '../../../utils/colors';
 import { marked } from 'marked';
@@ -280,6 +281,7 @@ const SoloProduct: Component = () => {
   const [requirements, setRequirements] = createSignal<RequirementOutput[]>([]);
   const [insightRecords, setInsightRecords] = createSignal<InsightRecord[]>([]);
   const [insightLoading, setInsightLoading] = createSignal(false);
+  const [pageLoading, setPageLoading] = createSignal(false);
   // New real-data signals
   const [features, setFeatures] = createSignal<SoloProductFeature[]>([]);
   const [feedbacks, setFeedbacks] = createSignal<SoloUserFeedback[]>([]);
@@ -314,9 +316,10 @@ const SoloProduct: Component = () => {
     },
   ]);
 
-  onMount(async () => {
+  const loadAllData = async () => {
     const workDir = productStore.activeProduct()?.workDir;
     if (!workDir) return;
+    setPageLoading(true);
     try {
       const [fileHypo, fileReqs, fileFeedbacks, fileFeatures, overview, roadmap, metricsData, records] = await Promise.all([
         loadHypotheses(workDir),
@@ -338,8 +341,12 @@ const SoloProduct: Component = () => {
       setInsightRecords(records);
     } catch {
       // Graceful fallback: signals remain at empty defaults
+    } finally {
+      setPageLoading(false);
     }
-  });
+  };
+
+  onMount(() => void loadAllData());
 
   const testingItems = () => hypotheses().filter((h) => h.status === 'testing');
   const validatedItems = () => hypotheses().filter((h) => h.status === 'validated');
@@ -407,7 +414,10 @@ const SoloProduct: Component = () => {
       setDragOverStatus(null);
       // 持久化到 workspace
       const workDir = productStore.activeProduct()?.workDir;
-      if (workDir) void saveHypothesis(workDir, updated as unknown as Parameters<typeof saveHypothesis>[1]);
+      if (workDir) {
+        void saveHypothesis(workDir, updated as unknown as Parameters<typeof saveHypothesis>[1]);
+        invalidateKnowledgeCache();
+      }
     },
     onDragEnter: (status) => setDragOverStatus(status),
     onDragLeave: () => setDragOverStatus(null),
@@ -435,7 +445,10 @@ const SoloProduct: Component = () => {
     };
     setHypotheses(prev => [newH, ...prev]);
     const workDir = productStore.activeProduct()?.workDir;
-    if (workDir) void saveHypothesis(workDir, newH as unknown as Parameters<typeof saveHypothesis>[1]);
+    if (workDir) {
+      void saveHypothesis(workDir, newH as unknown as Parameters<typeof saveHypothesis>[1]);
+      invalidateKnowledgeCache();
+    }
     showToast();
   };
 
@@ -554,7 +567,10 @@ ${reqSummary}
     };
     setHypotheses(prev => [newH, ...prev]);
     const workDir = productStore.activeProduct()?.workDir;
-    if (workDir) void saveHypothesis(workDir, newH as unknown as Parameters<typeof saveHypothesis>[1]);
+    if (workDir) {
+      void saveHypothesis(workDir, newH as unknown as Parameters<typeof saveHypothesis>[1]);
+      invalidateKnowledgeCache();
+    }
   };
 
   const handleConvertSuggestionToRequirement = (sug: ProductSuggestion, _insightId: string) => {
@@ -577,7 +593,10 @@ ${reqSummary}
       return exists ? prev.map(item => item.id === h.id ? h : item) : [h, ...prev];
     });
     const workDir = productStore.activeProduct()?.workDir;
-    if (workDir) void saveHypothesis(workDir, h as unknown as Parameters<typeof saveHypothesis>[1]);
+    if (workDir) {
+      void saveHypothesis(workDir, h as unknown as Parameters<typeof saveHypothesis>[1]);
+      invalidateKnowledgeCache();
+    }
   };
 
   const handleRequirementSaveFromAgent = (r: RequirementOutput) => {
@@ -632,7 +651,7 @@ ${reqSummary}
         <div style={{ flex: 1, 'min-width': 0 }}>
           <div style={{ border: `1px solid ${themeColors.border}`, 'border-radius': '8px', background: themeColors.surface }}>
             {/* Tabs */}
-            <div style={{ display: 'flex', 'border-bottom': `1px solid ${themeColors.borderLight}` }}>
+            <div style={{ display: 'flex', 'align-items': 'center', 'border-bottom': `1px solid ${themeColors.borderLight}` }}>
               <button style={tabStyle(activeTab() === 'hypotheses')} onClick={() => setActiveTab('hypotheses')}>
                 🧪 产品假设
                 <span style={{ 'margin-left': '6px', 'font-size': '12px', padding: '1px 6px', background: themeColors.primaryBg, color: chartColors.primary, 'border-radius': '9999px' }}>{testingItems().length} 验证中</span>
@@ -648,6 +667,14 @@ ${reqSummary}
               <button style={tabStyle(activeTab() === 'insights')} onClick={() => setActiveTab('insights')}>
                 🔍 外部洞察
                 <span style={{ 'margin-left': '6px', 'font-size': '12px', padding: '1px 6px', background: themeColors.hover, color: themeColors.textSecondary, 'border-radius': '9999px' }}>{insightRecords().length}</span>
+              </button>
+              <button
+                style={{ 'margin-left': 'auto', padding: '4px 10px', background: 'none', border: `1px solid ${themeColors.border}`, 'border-radius': '6px', cursor: pageLoading() ? 'not-allowed' : 'pointer', color: themeColors.textSecondary, 'font-size': '13px', 'align-self': 'center', 'margin-right': '8px', opacity: pageLoading() ? 0.5 : 1, transition: 'opacity 0.2s' }}
+                onClick={() => { if (!pageLoading()) void loadAllData(); }}
+                disabled={pageLoading()}
+                title="刷新页面数据"
+              >
+                {pageLoading() ? '⟳ 刷新中...' : '↻ 刷新'}
               </button>
             </div>
 
@@ -937,7 +964,10 @@ ${reqSummary}
                   };
                   setHypotheses(prev => [newH, ...prev]);
                   const workDir = productStore.activeProduct()?.workDir;
-                  if (workDir) void saveHypothesis(workDir, newH as unknown as Parameters<typeof saveHypothesis>[1]);
+                  if (workDir) {
+                    void saveHypothesis(workDir, newH as unknown as Parameters<typeof saveHypothesis>[1]);
+                    invalidateKnowledgeCache();
+                  }
                   setNewHypothesisModal(false);
                   setNewHypothesisText('');
                   setNewHypothesisMethod('');

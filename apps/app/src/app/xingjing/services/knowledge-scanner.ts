@@ -252,25 +252,23 @@ async function scanDocType(
             return;
           }
 
-          // 目录路径：台账优先，台账无结果则降级文件系统扫描
-          let scannedFromIndex = false;
-          if (docTypeDef.index) {
-            const relativeIndexPath = expanded.endsWith('/') ? `${expanded}${docTypeDef.index}` : `${expanded}/${docTypeDef.index}`;
-            const indexContent = await fileRead(relativeIndexPath, workDir);
-            if (indexContent) {
-              const docs = await scanFromIndex(workDir, indexContent, docTypeKey, docTypeDef, dirGraph, expanded);
-              if (docs.length > 0) {
-                locationDocs.push(...docs);
-                scannedFromIndex = true;
-              }
-            }
-          }
+          // 目录路径：台账 + 文件系统并集扫描
+          // 两路并发执行，台账结果优先（保留 status/refs 元数据），文件系统补充台账未覆盖的文件
+          const [indexDocs, fsDocs] = await Promise.all([
+            (async () => {
+              if (!docTypeDef.index) return [] as WorkspaceDocKnowledge[];
+              const relativeIndexPath = expanded.endsWith('/') ? `${expanded}${docTypeDef.index}` : `${expanded}/${docTypeDef.index}`;
+              const indexContent = await fileRead(relativeIndexPath, workDir);
+              if (!indexContent) return [] as WorkspaceDocKnowledge[];
+              return scanFromIndex(workDir, indexContent, docTypeKey, docTypeDef, dirGraph, expanded).catch(() => [] as WorkspaceDocKnowledge[]);
+            })(),
+            scanFromFileSystem(workDir, expanded, docTypeKey, docTypeDef, dirGraph).catch(() => [] as WorkspaceDocKnowledge[]),
+          ]);
 
-          // 降级：台账不存在或台账无有效条目时，文件系统扫描
-          if (!scannedFromIndex) {
-            const docs = await scanFromFileSystem(workDir, expanded, docTypeKey, docTypeDef, dirGraph);
-            locationDocs.push(...docs);
-          }
+          // 合并：台账结果优先，文件系统补充台账未覆盖的文件
+          const indexPathSet = new Set(indexDocs.map(d => d.filePath));
+          const supplementaryDocs = fsDocs.filter(d => !indexPathSet.has(d.filePath));
+          locationDocs.push(...indexDocs, ...supplementaryDocs);
         }),
       );
 

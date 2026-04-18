@@ -698,7 +698,12 @@ async function fallbackScan(workDir: string): Promise<WorkspaceDocKnowledge[]> {
     // Solo 结构
     { dir: 'product',                 docType: 'PRODUCT' },
     { dir: 'product/features',        docType: 'PRD' },
-    { dir: 'iterations',              docType: 'ITERATION' },
+    // SDD-013: 迭代子目录细化扫描，确保无 dir-graph 时也能正确分类
+    { dir: 'iterations/feedbacks',    docType: 'Feedback' },
+    { dir: 'iterations/hypotheses',   docType: 'Hypothesis' },
+    { dir: 'iterations/tasks',        docType: 'Task' },
+    { dir: 'iterations/releases',     docType: 'Release' },
+    { dir: 'iterations/archive',      docType: 'ARCHIVE' },
     { dir: 'knowledge',               docType: 'KNOWLEDGE' },
     // Team / 多层结构
     { dir: 'docs',                    docType: 'DOC' },

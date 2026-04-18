@@ -412,8 +412,27 @@ export interface KnowledgeTreeGroup {
 }
 
 export function groupEntriesForTree(index: KnowledgeIndex): KnowledgeTreeGroup[] {
-  const workspaceDocs = index.entries.filter((e) => e.source === 'workspace-doc');
-  const privateNotes = index.entries.filter((e) => e.source === 'private');
+  // SDD-013: knowledge/ 路径条目在分组层重分类为 private（ADR-7）
+  const isKnowledgePath = (e: KnowledgeEntry) =>
+    e.source === 'workspace-doc' && e.filePath?.startsWith('knowledge/');
+
+  const workspaceDocs = index.entries.filter(
+    (e) => e.source === 'workspace-doc' && !isKnowledgePath(e),
+  );
+
+  // 将 knowledge/ 条目转为 private，并按子目录推断 category
+  const knowledgeAsPrivate = index.entries
+    .filter(isKnowledgePath)
+    .map((e) => ({
+      ...e,
+      source: 'private' as const,
+      category: inferKnowledgeCategory(e.filePath ?? ''),
+    }));
+
+  const privateNotes = [
+    ...index.entries.filter((e) => e.source === 'private'),
+    ...knowledgeAsPrivate,
+  ];
   const behaviorItems = index.entries.filter((e) => e.source === 'behavior');
 
   return [
@@ -421,6 +440,14 @@ export function groupEntriesForTree(index: KnowledgeIndex): KnowledgeTreeGroup[]
     { id: 'private-notes', label: '个人笔记', source: 'private', entries: privateNotes },
     { id: 'behavior', label: '行为知识', source: 'behavior', entries: behaviorItems },
   ];
+}
+
+/** SDD-013: 从 knowledge/ 子目录路径推断笔记分类 */
+function inferKnowledgeCategory(filePath: string): string {
+  if (filePath.includes('pitfalls/')) return 'pitfall';
+  if (filePath.includes('insights/')) return 'user-insight';
+  if (filePath.includes('tech-notes/')) return 'tech-note';
+  return 'tech-note'; // 默认归入技术笔记
 }
 
 // ─── 类型转换工具 ──────────────────────────────────────────────────────────────

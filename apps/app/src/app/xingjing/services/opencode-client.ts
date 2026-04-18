@@ -81,23 +81,23 @@ export function setOpenworkFileOps(
 /** 断线重试退避时间（ms）：1s / 2s / 5s */
 const RETRY_DELAYS = [1000, 2000, 5000] as const;
 
-/** SSE 事件流无活动超时（ms）：90 秒内无任何新事件则视为连接挂起，触发 sse-fail 重试 */
-const SSE_INACTIVITY_TIMEOUT_MS = 90_000;
+/** SSE 事件流无活动超时（ms）：连接存活检测——包括心跳在内的所有事件均证明连接正常。
+ *  若此时间内无任何 SSE 事件（含心跳），视为连接已断，触发 sse-fail 重试。
+ *  内容进度由独立的 contentIdleTimer 检测。 */
+const SSE_INACTIVITY_TIMEOUT_MS = 120_000;
 
-/** 首事件等待超时（ms）：prompt 发送后若 30 秒内未收到任何 SSE 事件，
- *  高概率为 API Key 未配置 / 模型不可用等配置问题，提前报错而非等满 90 秒 */
-const SSE_FIRST_EVENT_TIMEOUT_MS = 30_000;
+/** 首事件等待超时（ms）：prompt 发送后若 60 秒内未收到任何 SSE 事件，
+ *  高概率为 API Key 未配置 / 模型不可用等配置问题，提前报错 */
+const SSE_FIRST_EVENT_TIMEOUT_MS = 60_000;
 
 /** 内容空闲超时（ms）：已有累积内容后，若指定时间内无新内容增长，
  *  视为模型已完成输出但 OpenCode 未发 completion 信号，直接判定完成。
- *  注：此值为兜底上限，正常情况下 owSessionStatusById 会更早检测到完成。 */
-const CONTENT_IDLE_TIMEOUT_MS = 8_000;
+ *  此值为兼容模型 “思考后追加内容” 场景，设置较长以避免误判完成。
+ *  正常情况下 owSessionStatusById 会更早检测到完成。 */
+const CONTENT_IDLE_TIMEOUT_MS = 15_000;
 
 /** 首次内容到达后延迟多久开始检柡（ms）：避免模型还在生成时过早检测 */
 const SESSION_POLL_START_DELAY_MS = 1_000;
-
-/** 不应重置无活动计时器的 SSE 事件类型（服务器级 keep-alive，非会话进度） */
-const NON_ACTIVITY_EVENT_TYPES = new Set(['server.heartbeat', 'server.connected']);
 
 /** 异步等待指定毫秒 */
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -1016,7 +1016,7 @@ async function runAgentSession(
       if (done) return;
       if (acc.length === 0) return; // 无内容时不启动
       if (acc.length === lastAccLen) return; // 内容未变化，保留现有定时器继续倒计时
-      // 内容增长了 → 清除旧定时器，重新开始 8s 倒计时
+      // 内容增长了 → 清除旧定时器，重新开始倒计时
       if (contentIdleTimer) clearTimeout(contentIdleTimer);
       lastAccLen = acc.length;
       contentIdleTimer = setTimeout(() => {
@@ -1102,11 +1102,9 @@ async function runAgentSession(
           const evt = normalizeRawEvent(raw);
           if (!evt) continue;
 
-          // 只有非 keep-alive 事件才重置无活动计时器
-          // server.heartbeat / server.connected 是服务器级心跳，不代表会话有进展
-          if (!NON_ACTIVITY_EVENT_TYPES.has(evt.type)) {
-            resetInactivityTimer();
-          }
+          // 所有 SSE 事件（含心跳）均重置无活动计时器 — 证明连接存活
+          // 内容进度由独立的 contentIdleTimer 检测
+          resetInactivityTimer();
 
           const p = evt.props;
           // [诊断日志] 打印每个SSE事件类型和sessionID，用于排查完成信号丢失

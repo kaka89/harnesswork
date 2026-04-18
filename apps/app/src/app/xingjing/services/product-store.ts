@@ -79,6 +79,8 @@ export interface XingjingProduct {
   code?: string;
   workDir: string;
   gitUrl?: string;
+  /** 独立版：默认 Git 分支（默认 main）*/
+  defaultBranch?: string;
   createdAt: string;
   /** 最后更新时间：切换产品、修改内容均会更新 */
   updatedAt?: string;

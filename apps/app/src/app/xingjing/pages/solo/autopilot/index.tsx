@@ -38,14 +38,14 @@ import { loadProjectSettings, readYaml } from '../../../services/file-store';
 import { initProductDir } from '../../../../lib/tauri';
 import { getHealthScore } from '../../../services/knowledge-health';
 import { buildKnowledgeIndex } from '../../../services/knowledge-index';
-import { loadSession as loadMemorySession } from '../../../services/memory-store';
+import { loadSession as loadMemorySession, loadMemoryIndex, saveMemoryMeta } from '../../../services/memory-store';
 import {
   SOLO_AGENTS,
   parseMention,
   type AutopilotAgent,
   type AgentExecutionStatus,
 } from '../../../services/autopilot-executor';
-import { callAgent, isClientReady, setProviderAuth } from '../../../services/opencode-client';
+import { callAgent, isClientReady, setProviderAuth, buildGitSystemContext } from '../../../services/opencode-client';
 import ArtifactWorkspace, {
   type ArtifactItem,
   detectArtifactFormat,
@@ -105,6 +105,31 @@ function stripSystemContext(content: string): string {
   // 用户输入始终在最后一段
   const userInput = parts[parts.length - 1]?.trim();
   return userInput || content;
+}
+
+/**
+ * 对 accumulator 消息中含有系统上下文注入标记的 text part 进行剥离。
+ *
+ * 不依赖 role 字段：OpenCode 的 message.part.updated 事件先于 message.updated 到达时，
+ * 占位 message 的 role 默认为 'assistant'，导致用户消息被误判。
+ * 改为通过内容特征（## 当前系统时间 标记）识别注入消息，并同时修正 role 为 'user'。
+ */
+function stripAccUserMsg(msg: MessageWithParts): MessageWithParts {
+  const hasSystemCtx = msg.parts.some(
+    p => p.type === 'text' && ((p as any).text ?? '').includes('## 当前系统时间')
+  );
+  if (!hasSystemCtx) return msg;
+  // 含有系统上下文 → 剥离注入内容，并将 role 修正为 'user'
+  return {
+    ...msg,
+    info: { ...(msg.info as any), role: 'user' as const } as any,
+    parts: msg.parts.map(part => {
+      if (part.type !== 'text') return part;
+      const raw = (part as any).text ?? '';
+      const stripped = stripSystemContext(raw);
+      return stripped === raw ? part : { ...part, text: stripped } as any;
+    }),
+  };
 }
 
 // ─── 产出物自动检测 ──────────────────────────────────────────────────────────
@@ -273,7 +298,7 @@ const AgentPanelSidebar = (props: {
   activeTabId: string;
   onAgentClick: (agentId: string) => void;
 }) => {
-  const [isCollapsed, setIsCollapsed] = createSignal(false);
+  const [isCollapsed, setIsCollapsed] = createSignal(true); // 默认收起
 
   const doneCount = () => props.agents.filter((a) => props.agentStatuses[a.id] === 'done').length;
   const runCount = () => props.agents.filter(
@@ -511,7 +536,16 @@ const HistorySidebar = (props: {
                   overflow: 'hidden', 'text-overflow': 'ellipsis', 'white-space': 'nowrap',
                   display: 'flex', 'align-items': 'center', gap: '4px',
                 }}>
-                  <span>{item.mode === 'chat' ? '💬' : '🚀'}</span>
+                  {/* 模式 badge：常显且放在标题行更显眼 */}
+                  <span style={{
+                    'flex-shrink': '0',
+                    padding: '1px 5px', 'border-radius': '3px', 'font-size': '9px', 'font-weight': '600',
+                    background: item.mode === 'dispatch' ? 'rgba(168,85,247,0.15)' : 'rgba(34,197,94,0.15)',
+                    color: item.mode === 'dispatch' ? '#a855f7' : '#16a34a',
+                    border: `1px solid ${item.mode === 'dispatch' ? 'rgba(168,85,247,0.3)' : 'rgba(34,197,94,0.3)'}`,
+                  }}>
+                    {item.mode === 'dispatch' ? '🚀团队' : '💬对话'}
+                  </span>
                   <span style={{ flex: '1', overflow: 'hidden', 'text-overflow': 'ellipsis', 'white-space': 'nowrap' }}>
                     {item.title}
                   </span>
@@ -519,9 +553,11 @@ const HistorySidebar = (props: {
                     <span style={{ 'font-size': '10px', color: chartColors.primary, 'flex-shrink': '0' }}>加载中…</span>
                   </Show>
                 </div>
-                <div style={{ 'font-size': '10px', color: themeColors.textMuted, 'margin-top': '2px' }}>
-                  {item.ts}
-                </div>
+                <Show when={!!item.ts}>
+                  <div style={{ 'font-size': '10px', color: themeColors.textMuted, 'margin-top': '2px' }}>
+                    {item.ts}
+                  </div>
+                </Show>
               </button>
             );
           }}
@@ -666,9 +702,10 @@ const SoloAutopilot = () => {
       result.push(...legacy.map(legacyToMessageWithParts));
     }
 
-    // 累积器消息（实时会话）优先级最高，直接返回
+    // 累积器消息（实时会话）完全接管，不与 legacy 合并（防止重复显示）
+    // 同时对用户消息剥离注入的系统上下文（去除 systemPrompt/时间/知识库内容）
     if (accMsgs.length > 0) {
-      return [...result, ...accMsgs];
+      return accMsgs.map(stripAccUserMsg);
     }
 
     // 乐观占位消息（仅在 accumulator 尚无消息时显示）
@@ -680,11 +717,25 @@ const SoloAutopilot = () => {
   });
 
   // 副作用独立到 createEffect：accumulator 收到用户消息后清除乐观占位
+  // 同时检测含系统上下文标记的消息（role 可能被误判为 assistant）
   createEffect(() => {
     const accMsgs = chatAccumulator.messages();
-    if (pendingUserMsg() && accMsgs.some(m => (m.info as any).role === 'user')) {
+    if (pendingUserMsg() && accMsgs.some(m =>
+      (m.info as any).role === 'user' ||
+      m.parts.some(p => p.type === 'text' && ((p as any).text ?? '').includes('## 当前系统时间'))
+    )) {
       setPendingUserMsg(null);
     }
+  });
+
+  // 新消息出现或流式更新时自动滚到底部
+  createEffect(() => {
+    chatDisplayMessages(); // 响应消息内容变化（含流式增量）
+    requestAnimationFrame(() => {
+      if (chatScrollRef) {
+        chatScrollRef.scrollTop = chatScrollRef.scrollHeight;
+      }
+    });
   });
 
   // MessageList 工具步骤展开状态
@@ -760,13 +811,30 @@ const SoloAutopilot = () => {
 
   // ── 加载历史会话 ──────────────────────────────────────────────────────────────
   const loadHistory = async () => {
-    const client = openworkCtx?.opencodeClient?.();
     const workDir = productStore.activeProduct()?.workDir;
-    if (!client || !workDir) return;
+    if (!workDir) return;
+    try {
+      // 优先通过 loadMemoryIndex 获取（已融合 sidecar.json 中的 mode 信息）
+      const memIndex = await loadMemoryIndex(workDir);
+      if (memIndex.sessions.length > 0) {
+        const items: HistoryItem[] = memIndex.sessions.slice(0, 30).map((entry) => ({
+          id: entry.id,
+          title: entry.summary || entry.id.slice(0, 12),
+          ts: entry.createdAt,
+          // entry.type 来自 sidecar，'dispatch' = 团队模式，其余默认对话
+          mode: entry.type === 'dispatch' ? 'dispatch' : 'chat',
+        }));
+        setHistoryItems(items);
+        return;
+      }
+    } catch { /* 降级到原始 title 判断 */ }
+
+    // 降级：直接从 OpenCode session.list 读取，通过 title 前缀判断（历史数据兼容）
+    const client = openworkCtx?.opencodeClient?.();
+    if (!client) return;
     try {
       const result = await client.session.list({ directory: workDir });
       const sessions = Array.isArray(result.data) ? result.data : [];
-      // Session.time 是 { created: number, updated: number }，单位毫秒
       const toTs = (s: any) => {
         const ms = s.time?.updated ?? s.time?.created;
         if (!ms) return '—';
@@ -774,7 +842,6 @@ const SoloAutopilot = () => {
           month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit',
         });
       };
-      // 按最后活跃时间倒序排列
       const sorted = [...sessions].sort((a: any, b: any) => {
         const ta = a.time?.updated ?? a.time?.created ?? 0;
         const tb = b.time?.updated ?? b.time?.created ?? 0;
@@ -784,6 +851,7 @@ const SoloAutopilot = () => {
         id: s.id,
         title: s.title || s.id.slice(0, 12),
         ts: toTs(s),
+        // 历史数据无 sidecar 记录，通过 title 前缀推断（默认对话模式）
         mode: s.title?.startsWith('xingjing-orchestrator') ? 'dispatch' : 'chat',
       }));
       setHistoryItems(items);
@@ -823,9 +891,10 @@ const SoloAutopilot = () => {
         });
       }
 
-      // 用历史消息替换当前 chat 消息，并切换到 chat 模式
+      // 用历史消息替换当前 chat 消息，并按历史记录的模式切换
       setChatMessages(converted);
-      setChatMode('chat');
+      // 根据历史条目的模式切换：对话模式或团队调度模式
+      setChatMode(item.mode === 'dispatch' ? 'dispatch' : 'chat');
       // 恢复历史时，让用户可继续在同一 session 中对话
       if (item.mode === 'chat') {
         setCurrentChatSessionId(item.id);
@@ -934,6 +1003,14 @@ const SoloAutopilot = () => {
       const linkMessage = `\n\n📄 **产出物已生成**：[${artifact.title}](artifact://${newArtifact.id})`;
       orchestrator.sendTo(artifact.agentId, linkMessage).catch(() => {});
     },
+    // 每当 orchestrator 内部成功创建任何 session 时立即写入 sidecar，
+    // await 确保落盘完成后再继续（防止 loadHistory 读到旧数据）
+    onSessionCreated: async (sessionId) => {
+      const workDir = productStore.activeProduct()?.workDir;
+      if (workDir) {
+        await saveMemoryMeta(workDir, sessionId, { tags: [], mode: 'dispatch' });
+      }
+    },
   });
 
   const timersRef: ReturnType<typeof setTimeout>[] = [];
@@ -1001,7 +1078,7 @@ const SoloAutopilot = () => {
 
     await callAgent({
       userPrompt: text,
-      systemPrompt: `你是「${productName}」产品的 AI 助手，精通产品策略、技术架构与增长分析。请用简洁、专业的中文回答用户的问题。`,
+      systemPrompt: `你是「${productName}」产品的 AI 助手，精通产品策略、技术架构与增长分析。请用简洁、专业的中文回答用户的问题。${buildGitSystemContext(productStore.activeProduct()?.gitUrl)}`,
       title: currentChatSessionId()
         ? undefined
         : (text.length > 50 ? text.slice(0, 50) + '...' : text),
@@ -1013,6 +1090,8 @@ const SoloAutopilot = () => {
       onSessionCreated: (sid) => {
         setCurrentChatSessionId(sid);
         setChatAccSessionId(sid);    // 触发 accumulator 的 createEffect → SSE 订阅
+        // 将 chat 模式记录到 sidecar，供历史列表正确判断模式
+        if (workDir) void saveMemoryMeta(workDir, sid, { tags: [], mode: 'chat' });
       },
       // 保留 onText 用于产出物提取（不再用于 UI 渲染）
       onText: (accumulated) => {
@@ -1071,6 +1150,7 @@ const SoloAutopilot = () => {
         await orchestrator.run(cleanText);
       }
       setRunState('done');
+
       await loadHistory();
     } catch (err) {
       console.error('[solo-autopilot] handleStart error:', err);
@@ -1301,8 +1381,10 @@ const SoloAutopilot = () => {
           onClose={() => setShowHistory(false)}
           onNewSession={() => {
             // 新建会话：重置所有状态，关闭历史侧边栏
+            orchestrator.resetState();
             reset();
             setChatMessages([]);
+            setChatMode('dispatch');
             setCurrentChatSessionId(null);
             setChatAccSessionId(null);
             setPendingUserMsg(null);
@@ -1408,8 +1490,10 @@ const SoloAutopilot = () => {
             <Show when={hasContent()}>
               <button
                 onClick={() => {
+                  orchestrator.resetState();
                   reset();
                   setChatMessages([]);
+                  setChatMode('dispatch');
                   setCurrentChatSessionId(null);
                   setChatAccSessionId(null);
                   setPendingUserMsg(null);
@@ -1544,7 +1628,7 @@ const SoloAutopilot = () => {
               expandedStepIds={chatExpandedStepIds()}
               setExpandedStepIds={setChatExpandedStepIds}
               scrollElement={() => chatScrollRef}
-              variant="default"
+              variant="bubble"
               onOpenArtifact={(artifactId) => {
                 setArtifactCollapsed(false);
                 setActiveArtifactId(artifactId);

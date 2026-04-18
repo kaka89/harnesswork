@@ -31,6 +31,7 @@ const EditProductModal: Component<Props> = (props) => {
   // ── 可编辑字段 ──
   const [name, setName] = createSignal(props.product.name);
   const [description, setDescription] = createSignal(props.product.description ?? '');
+  const [defaultBranch, setDefaultBranch] = createSignal(props.product.defaultBranch ?? 'main');
   const [saving, setSaving] = createSignal(false);
   const [error, setError] = createSignal('');
 
@@ -45,6 +46,7 @@ const EditProductModal: Component<Props> = (props) => {
   const resetForm = () => {
     setName(props.product.name);
     setDescription(props.product.description ?? '');
+    setDefaultBranch(props.product.defaultBranch ?? 'main');
     setError('');
     gitInput.reset(
       props.product.productType === 'team'
@@ -83,8 +85,9 @@ const EditProductModal: Component<Props> = (props) => {
           };
         }
       } else {
-        // solo 产品：更新主 Git 地址
+        // solo 产品：更新主 Git 地址和默认分支
         patch.gitUrl = gitInput.gitUrl().trim() || undefined;
+        patch.defaultBranch = defaultBranch().trim() || 'main';
       }
 
       await productStore.updateProduct(props.product.id, patch);
@@ -196,6 +199,24 @@ const EditProductModal: Component<Props> = (props) => {
                 saveToken={gitInput.saveToken()}
                 onSaveTokenChange={gitInput.setSaveToken}
               />
+              {/* 默认分支 */}
+              <div>
+                <label class="block text-sm font-medium mb-1" style={{ color: themeColors.textSecondary }}>
+                  默认分支
+                </label>
+                <input
+                  type="text"
+                  class="w-full rounded-lg px-3 py-2 text-sm outline-none font-mono"
+                  style={inputStyle()}
+                  placeholder="main"
+                  value={defaultBranch()}
+                  onInput={(e) => setDefaultBranch(e.currentTarget.value)}
+                  disabled={saving()}
+                />
+                <p class="text-xs mt-1" style={{ color: themeColors.textMuted }}>
+                  Agent 自动提交时使用的目标分支
+                </p>
+              </div>
             </Show>
 
             {/* 团队版：产品线 Git 地址 */}

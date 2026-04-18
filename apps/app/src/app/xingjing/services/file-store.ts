@@ -1112,6 +1112,17 @@ export async function saveSoloKnowledge(workDir: string, item: SoloKnowledgeItem
   );
 }
 
+/**
+ * 删除个人知识条目（按 filePath 直接删除文件）
+ * filePath 形如 "knowledge/pitfalls/K-001-xxx.md"
+ */
+export async function deleteSoloKnowledgeByPath(
+  workDir: string,
+  filePath: string,
+): Promise<boolean> {
+  return deleteFile(`${workDir}/${filePath}`);
+}
+
 // ─── Solo: User Feedbacks ───────────────────────────────────────────────────
 
 export interface SoloUserFeedback {

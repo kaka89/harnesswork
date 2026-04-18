@@ -55,6 +55,9 @@ export interface TeamSessionOrchestrator {
   /** 取消当前运行 */
   abort(): void;
 
+  /** 重置全部运行状态（新建会话时使用） */
+  resetState(): void;
+
   /** 切换活动 tab */
   setActiveTab(tabId: string): void;
 
@@ -87,6 +90,14 @@ export interface TeamSessionOrchestratorOptions {
     title: string;
     content: string;
   }) => void;
+  /**
+   * 每当 orchestrator 内部成功创建任何 session 后立即回调。
+   * 外部可在此时机写 sidecar mode，无需等待 run 完成。
+   * 支持返回 Promise，orchestrator 会 await 它，确保 sidecar 落盘后再继续。
+   * @param sessionId 新创建的 session ID
+   * @param role 'orchestrator' | 'agent'
+   */
+  onSessionCreated?: (sessionId: string, role: 'orchestrator' | 'agent') => void | Promise<void>;
   /** session.create 前确保 API Key 已同步到 OpenCode */
   ensureAuth?: () => Promise<void>;
 }
@@ -162,6 +173,9 @@ export function createTeamSessionOrchestrator(opts: TeamSessionOrchestratorOptio
       setState('orchestratorSessionId', session.id);
       setSessionCache((prev) => ({ ...prev, [session.id]: session }));
 
+      // 立即通知外部：session 已创建，可写 sidecar（await 确保落盘完成）
+      await opts.onSessionCreated?.(session.id, 'orchestrator');
+
       return session.id;
     } catch (err) {
       console.error('[team-orchestrator] Failed to create orchestrator session:', err);
@@ -197,6 +211,9 @@ export function createTeamSessionOrchestrator(opts: TeamSessionOrchestratorOptio
 
       if (!result.data) return null;
       const session = result.data;
+
+      // 立即通知外部：agent session 已创建，可写 sidecar（await 确保落盘完成）
+      await opts.onSessionCreated?.(session.id, 'agent');
 
       const [status, setStatus] = createSignal<AgentExecutionStatus>('pending');
 
@@ -521,12 +538,22 @@ export function createTeamSessionOrchestrator(opts: TeamSessionOrchestratorOptio
     return state.agentSlots.get(activeId) ?? null;
   }
 
+  function resetState(): void {
+    abort();
+    setState('orchestratorSessionId', null);
+    setState('agentSlots', new Map());
+    setState('isRunning', false);
+    setState('dispatchPlan', null);
+    setState('activeTabId', 'orchestrator');
+  }
+
   return {
     state: () => state,
     run,
     sendTo,
     runDirect,
     abort,
+    resetState,
     setActiveTab,
     getActiveSlot,
     replyPermission,

@@ -607,3 +607,47 @@ select:disabled {
 .ai-bubble:hover {
   box-shadow: 0 2px 12px rgba(0,0,0,0.07);
 }
+
+/* ─── Solo 驾驶舱气泡消息样式 ─────────────────────────────────────────────────── */
+
+/* 思考块折叠行 */
+.reasoning-collapse {
+  margin-bottom: 8px;
+}
+
+.reasoning-collapse-btn {
+  display: flex;
+  align-items: center;
+  padding: 4px 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  transition: opacity 0.15s;
+  opacity: 0.75;
+}
+.reasoning-collapse-btn:hover {
+  opacity: 1;
+}
+
+/* 展开的思考内容区块 */
+.reasoning-collapse-content {
+  margin-top: 6px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.03);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--gray-10, #6b7280);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+/* 暗色模式覆盖 */
+[data-theme="dark"] .reasoning-collapse-content {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.08);
+  color: var(--gray-9, #9ca3af);
+}

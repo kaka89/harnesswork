@@ -27,6 +27,7 @@ import {
   type MemorySession,
   type MemoryMessage,
   saveSession as saveMemorySession,
+  saveMemoryMeta,
   loadMemoryIndex,
   loadSession as loadMemorySession,
   generateSessionSummary,
@@ -202,6 +203,7 @@ interface SessionRecord {
   summary: string;
   messages: AiMessage[];
   ts: string;
+  mode?: 'chat' | 'dispatch'; // 对话模式或团队调度模式，无标志时默认对话
 }
 
 /** AiMessage → PersistedSessionRecord messages 格式转换 */
@@ -760,6 +762,8 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
             summary: entry.summary,
             messages: [], // 详情按需加载
             ts: entry.createdAt,
+            // entry.type 已由 loadMemoryIndex 从 sidecar 读取，'dispatch' 表示团队模式，其余默认对话
+            mode: entry.type === 'dispatch' ? 'dispatch' : 'chat',
           })));
           return;
         }
@@ -858,17 +862,18 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
     const fallbackSummary = first.slice(0, 30) + (first.length > 30 ? '...' : '');
     const sessionId = genSessionId();
     const sessionTs = nowDateTimeStr();
-    const session: SessionRecord = { id: sessionId, summary: fallbackSummary, messages: msgs, ts: sessionTs };
+    const sessionMode: 'chat' | 'dispatch' = dispatchMode() ? 'dispatch' : 'chat';
+    const session: SessionRecord = { id: sessionId, summary: fallbackSummary, messages: msgs, ts: sessionTs, mode: sessionMode };
     setSessionHistory(prev => [session, ...prev]);
-
-    // 持久化到 localStorage（降级兜底）
+    
+    // 持久化到 localStorage（降级底底）
     appendLegacySession({
       id: session.id,
       summary: session.summary,
       ts: session.ts,
       messages: toPersistedMessages(session.messages),
     });
-
+    
     // 异步持久化到 memory-store（新的统一存储）
     const workDir = props.workDir;
     if (workDir) {
@@ -882,13 +887,15 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
       }));
       const memSession: MemorySession = {
         id: sessionId,
-        type: 'chat',
+        type: sessionMode, // 记录对话或团队模式
         summary: fallbackSummary,
         tags: [],
         messages: memMessages,
         createdAt: nowISO(),
         updatedAt: nowISO(),
       };
+      // 将 mode 写入 sidecar.json，供加载历史时读取
+      void saveMemoryMeta(workDir, sessionId, { tags: [], mode: sessionMode });
       // 先存 fallback 摘要，再异步生成 AI 摘要更新
       void saveMemorySession(workDir, memSession).then(() => {
         // 异步生成 AI 摘要（不阻塞 UI）
@@ -1349,8 +1356,15 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
                               <div class={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${idx() === 0 ? (props.isSoloMode ? 'bg-[var(--green-9)]' : 'bg-[var(--purple-9)]') : 'bg-[var(--dls-border)]'}`} />
                               <div class="flex-1 min-w-0">
                                 <div class="text-sm text-[var(--dls-text-primary)] truncate">{session.summary}</div>
-                                <div class="text-xs text-[var(--dls-text-muted)] mt-0.5">
+                                <div class="text-xs text-[var(--dls-text-muted)] mt-0.5 flex items-center gap-1.5">
                                   {session.ts} · {session.messages.filter(m => m.role === 'user').length} 条消息
+                                  <span class={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                                    session.mode === 'dispatch'
+                                      ? 'bg-[var(--purple-3)] text-[var(--purple-9)]'
+                                      : 'bg-[var(--green-3)] text-[var(--green-9)]'
+                                  }`}>
+                                    {session.mode === 'dispatch' ? '团队' : '对话'}
+                                  </span>
                                 </div>
                               </div>
                               <ChevronRight size={13} class="text-[var(--dls-text-muted)] mt-1 flex-shrink-0" />

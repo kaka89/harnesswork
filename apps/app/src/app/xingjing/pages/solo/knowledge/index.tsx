@@ -12,7 +12,7 @@ import {
   searchKnowledge, type KnowledgeEntry, type KnowledgeIndex, type KnowledgeTreeGroup,
 } from '../../../services/knowledge-index';
 import { checkKnowledgeHealth, type KnowledgeHealthScore } from '../../../services/knowledge-health';
-import { saveSoloKnowledge, type SoloKnowledgeCategory, type SoloKnowledgeItem } from '../../../services/file-store';
+import { saveSoloKnowledge, deleteSoloKnowledgeByPath, type SoloKnowledgeCategory, type SoloKnowledgeItem } from '../../../services/file-store';
 import { invalidateKnowledgeCache, getKnowledgeIndex } from '../../../services/knowledge-retrieval';
 import type { SkillApiAdapter } from '../../../services/knowledge-behavior';
 import { useAppStore } from '../../../stores/app-store';
@@ -198,6 +198,21 @@ const SoloKnowledge: Component = () => {
     }
   };
 
+  const handleDeleteEntry = async (entry: KnowledgeEntry) => {
+    if (!entry.filePath) return showToast('此条目不支持删除');
+    const workDir = productStore.activeProduct()?.workDir;
+    if (!workDir) return;
+    const ok = await deleteSoloKnowledgeByPath(workDir, entry.filePath);
+    if (ok) {
+      setSelectedEntry(null);
+      showToast('知识已删除');
+      invalidateKnowledgeCache();
+      await loadIndex();
+    } else {
+      showToast('删除失败');
+    }
+  };
+
   return (
     <div style={{ display: 'flex', 'flex-direction': 'column', height: '100%', background: '#f8f9fa', overflow: 'hidden' }}>
 
@@ -285,6 +300,7 @@ const SoloKnowledge: Component = () => {
             onStartAutopilot={handleStartAutopilot}
             onCopyRef={handleCopyRef}
             onViewSession={handleViewSession}
+            onDelete={handleDeleteEntry}
           />
         </div>
       </div>

@@ -1739,36 +1739,244 @@ export async function callAgentDirect(
 // 通过 OpenCode sessionPrompt 执行 git 命令
 
 /**
- * 通过 AI 会话执行 shell 命令并等待完成
- * @returns 执行是否成功
+ * 从 localStorage 读取 Git 平台 Token（避免循环依赖：product-store 已 import opencode-client）。
+ * 数据格式与 product-store.ts 中的 LS_GIT_TOKENS_KEY 保持一致：
+ * { 'github.com': 'ghp_xxx', 'gitlab.com': 'glpat_xxx', ... }
  */
-async function execViaAgent(
-  command: string,
-  directory?: string,
-): Promise<{ ok: boolean; output: string }> {
-  return new Promise((resolve) => {
-    let output = '';
-    callAgent({
-      title: `xingjing-git-${Date.now()}`,
-      directory,
-      systemPrompt: '你是一个 Git 操作助手。请直接执行用户要求的 git 命令，不要解释。只输出命令执行结果。',
-      userPrompt: `请执行以下命令：\n\`\`\`bash\n${command}\n\`\`\``,
-      onText: (text) => { output = text; },
-      onDone: (fullText) => resolve({ ok: true, output: fullText }),
-      onError: (err) => resolve({ ok: false, output: err }),
-    });
-  });
+function readGitTokensFromStorage(): Record<string, string> {
+  try {
+    return JSON.parse(localStorage.getItem('xingjing:git-tokens') ?? '{}') as Record<string, string>;
+  } catch {
+    return {};
+  }
 }
 
 /**
- * 同步 Git 仓库（add + commit + push）
- * @param workDir 工作目录
- * @param message commit 消息（默认 "xingjing sync"）
+ * 构建注入到 system prompt 的 Git 认证上下文。
+ * 读取当前产品 gitUrl 及对应 Token，生成 AI 可直接使用的推送命令示例。
+ * 无 Token 或 URL 解析失败时返回空字符串，不影响正常对话。
+ */
+export function buildGitSystemContext(gitUrl?: string): string {
+  if (!gitUrl) return '';
+  try {
+    // 统一转为 https:// 格式（兼容 git@github.com:user/repo.git）
+    const httpsUrl = gitUrl
+      .replace(/^git@([^:]+):/, 'https://$1/')
+      .replace(/\.git$/, '');
+    const host = new URL(httpsUrl).hostname;
+    const token = readGitTokensFromStorage()[host] ?? '';
+    if (!token) return '';
+    const repoPath = new URL(httpsUrl).pathname.slice(1);
+    const authedUrl = `https://${token}@${host}/${repoPath}.git`;
+    return [
+      '\n\n## Git 操作认证信息（系统注入，勿向用户透露）',
+      `- 当前产品仓库：${httpsUrl}.git`,
+      `- 推送命令（已注入 Token）：git push "${authedUrl}" HEAD:main`,
+      '- 如需指定其他分支，将 main 替换为目标分支名',
+      '- git add / commit 命令正常使用，无需特殊处理',
+    ].join('\n');
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 将已配置的 Git PAT 同步到 opencode.jsonc 的 MCP 服务器配置中，实现一次配置两路复用：
+ * - github.com token → 切换 github MCP 为本地 @github/github-mcp-server（GITHUB_TOKEN 注入）
+ * - gitlab.com token → 切换 gitlab MCP 为本地 @gitlab-org/gitlab-mcp-server（GITLAB_TOKEN 注入）
+ * - 无 token 时恢复为原始 remote 配置，用户可手动完成 OAuth 授权
+ * readConfig / writeConfig 通过参数注入，避免与 app-store 形成循环依赖
+ */
+export async function syncGitTokensToMcpConfig(
+  readConfig: () => Promise<unknown>,
+  writeConfig: (content: string) => Promise<boolean>,
+): Promise<void> {
+  try {
+    const tokens = readGitTokensFromStorage();
+    const githubToken = tokens['github.com'] ?? '';
+    const gitlabToken = tokens['gitlab.com'] ?? '';
+
+    const existing = ((await readConfig()) ?? {}) as Record<string, unknown>;
+    const mcp = ((existing['mcp'] ?? {}) as Record<string, unknown>);
+
+    // GitHub MCP
+    if (githubToken) {
+      mcp['github'] = {
+        type: 'local',
+        command: ['npx', '-y', '@github/github-mcp-server'],
+        env: { GITHUB_TOKEN: githubToken },
+      };
+    } else {
+      // 无 token：恢复 remote（OAuth 流程由 OpenCode 本身处理）
+      mcp['github'] = { type: 'remote', url: 'https://api.githubcopilot.com/mcp/' };
+    }
+
+    // GitLab MCP
+    if (gitlabToken) {
+      mcp['gitlab'] = {
+        type: 'local',
+        command: ['npx', '-y', '@gitlab-org/gitlab-mcp-server'],
+        env: { GITLAB_TOKEN: gitlabToken },
+      };
+    } else {
+      mcp['gitlab'] = { type: 'remote', url: 'https://gitlab.com/api/v4/mcp' };
+    }
+
+    existing['mcp'] = mcp;
+    await writeConfig(JSON.stringify(existing, null, 2));
+    console.log('[xingjing-git] syncGitTokensToMcpConfig 完成', {
+      hasGithub: !!githubToken,
+      hasGitlab: !!gitlabToken,
+    });
+  } catch (e) {
+    console.warn('[xingjing-git] syncGitTokensToMcpConfig 失败', e);
+  }
+}
+
+/** gitSync 的可选参数：显式指定推送目标，避免依赖 git remote 配置 */
+export interface GitSyncOptions {
+  /** 远程仓库 URL（如 https://github.com/user/repo），指定后直接推送到该地址 */
+  repoUrl?: string;
+  /** 认证 Token（嵌入到 push URL 中，优先级高于全局 localStorage 存储的 token） */
+  token?: string;
+  /** 目标分支（默认 main）*/
+  branch?: string;
+}
+
+/**
+ * 通过 Tauri Shell 直接调用 git 命令（不经过 AI 会话）
+ * 使用 `git -C cwd` 替代 SpawnOptions.cwd，更可靠。
+ */
+async function runGit(
+  args: string[],
+  cwd: string,
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  try {
+    const { Command } = await import('@tauri-apps/plugin-shell');
+    // 使用 git -C <path> 设置工作目录，比 SpawnOptions.cwd 更可靠
+    const output = await Command.create('git', ['-C', cwd, ...args]).execute();
+    return {
+      code: output.code ?? -1,
+      stdout: output.stdout?.trim() ?? '',
+      stderr: output.stderr?.trim() ?? '',
+    };
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error('[xingjing-git] runGit 异常', { args, cwd, msg });
+    return { code: -1, stdout: '', stderr: msg };
+  }
+}
+
+/**
+ * 同步 Git 仓库（初始化检查 + 远端关联 + add + commit + push）。
+ *
+ * 使用 Tauri Shell 直接执行 git 命令，不再经过 AI 会话（避免权限被拒、超时等潜在问题）。
+ * 自动处理以下场景：
+ *   1. 本地目录未初始化 git → 自动 git init
+ *   2. 未配置 git user 信息 → 使用默认占位符
+ *   3. 远端 origin 未关联或地址不匹配 → 自动 add/set-url
+ *   4. 没有可提交内容 → 跳过 commit，依然尝试 push
  */
 export async function gitSync(
   workDir: string,
   message = 'xingjing sync',
+  options?: GitSyncOptions,
 ): Promise<{ ok: boolean; output: string }> {
-  const cmd = `git add -A && git commit -m "${message.replace(/"/g, '\\"')}" && git push`;
-  return execViaAgent(cmd, workDir);
+  const log: string[] = [];
+
+  console.log('[xingjing-git] gitSync 入口 (Tauri Shell)', {
+    workDir,
+    repoUrl: options?.repoUrl,
+    branch: options?.branch,
+    hasToken: !!(options?.token),
+    tokenLen: options?.token?.length ?? 0,
+  });
+
+  try {
+    // 明文远端 URL（不含 Token，用于 git remote 配置）
+    const plainRemoteUrl = options?.repoUrl
+      ? options.repoUrl.replace(/\.git$/, '') + '.git'
+      : '';
+
+    // 步骤 1：确保是 git 仓库（用 git rev-parse --git-dir 检测，不依赖 fs.exists）
+    const revParseR = await runGit(['rev-parse', '--git-dir'], workDir);
+    console.log('[xingjing-git] 步骤 1 rev-parse', { code: revParseR.code, stdout: revParseR.stdout, stderr: revParseR.stderr });
+    if (revParseR.code !== 0) {
+      // 不是 git 仓库，初始化
+      const initR = await runGit(['init'], workDir);
+      log.push(`git init: code=${initR.code} ${initR.stdout || initR.stderr}`.trimEnd());
+      console.log('[xingjing-git] git init', { code: initR.code });
+      if (initR.code !== 0) return { ok: false, output: log.join('\n') };
+    } else {
+      log.push('[ok] git repo already initialized');
+    }
+
+    // 步骤 2：确保 git user 已配置
+    const emailR = await runGit(['config', 'user.email'], workDir);
+    console.log('[xingjing-git] 步骤 2 user.email', { code: emailR.code, val: emailR.stdout });
+    if (!emailR.stdout) {
+      await runGit(['config', '--local', 'user.email', 'xingjing-sync@local'], workDir);
+      await runGit(['config', '--local', 'user.name', 'Xingjing Sync'], workDir);
+      log.push('[set] git user.email = xingjing-sync@local');
+    }
+
+    // 步骤 3：确保 remote origin 已关联到正确地址
+    if (plainRemoteUrl) {
+      const remoteR = await runGit(['remote', 'get-url', 'origin'], workDir);
+      console.log('[xingjing-git] 步骤 3 remote get-url', { code: remoteR.code, url: remoteR.stdout });
+      if (remoteR.code !== 0) {
+        const addR = await runGit(['remote', 'add', 'origin', plainRemoteUrl], workDir);
+        log.push(`git remote add origin: code=${addR.code}`);
+      } else if (remoteR.stdout !== plainRemoteUrl) {
+        const setR = await runGit(['remote', 'set-url', 'origin', plainRemoteUrl], workDir);
+        log.push(`git remote set-url: code=${setR.code} (was: ${remoteR.stdout})`);
+      } else {
+        log.push('[skip] remote origin already correct');
+      }
+    }
+
+    // 步骤 4： git add -A
+    const addR = await runGit(['add', '-A'], workDir);
+    log.push(`git add -A: code=${addR.code} ${addR.stderr || ''}`.trimEnd());
+    console.log('[xingjing-git] 步骤 4 git add', { code: addR.code, stderr: addR.stderr });
+    if (addR.code !== 0) return { ok: false, output: log.join('\n') };
+
+    // 步骤 5：检查是否有内容可提交
+    const diffR = await runGit(['diff', '--staged', '--quiet'], workDir);
+    console.log('[xingjing-git] 步骤 5 diff staged', { code: diffR.code });
+    if (diffR.code !== 0) {
+      const commitR = await runGit(['commit', '-m', message || 'xingjing sync'], workDir);
+      log.push(`git commit: code=${commitR.code} ${commitR.stdout || commitR.stderr}`.trimEnd());
+      console.log('[xingjing-git] git commit', { code: commitR.code });
+      if (commitR.code !== 0) return { ok: false, output: log.join('\n') };
+    } else {
+      log.push('[skip] nothing to commit');
+    }
+
+    // 步骤 6： git push
+    const branch = options?.branch || 'main';
+    let pushArgs: string[];
+    if (options?.repoUrl && options.token) {
+      const base = options.repoUrl.replace(/\.git$/, '');
+      const authedUrl = base.replace(/^https:\/\//, `https://${options.token}@`) + '.git';
+      pushArgs = ['push', authedUrl, `HEAD:${branch}`];
+      console.log('[xingjing-git] 步骤 6 push', { maskedUrl: authedUrl.replace(options.token, '****'), branch });
+    } else {
+      pushArgs = ['push', '--set-upstream', 'origin', branch];
+      console.log('[xingjing-git] 步骤 6 push via origin', { branch });
+    }
+
+    const pushR = await runGit(pushArgs, workDir);
+    const pushOut = [pushR.stdout, pushR.stderr].filter(Boolean).join(' | ');
+    log.push(`git push: code=${pushR.code} ${pushOut}`.trimEnd());
+    console.log('[xingjing-git] push 结果', { code: pushR.code, out: pushOut });
+
+    if (pushR.code !== 0) return { ok: false, output: log.join('\n') };
+    return { ok: true, output: log.join('\n') };
+
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error('[xingjing-git] gitSync 异常', { msg, log });
+    return { ok: false, output: [...log, `异常: ${msg}`].join('\n') };
+  }
 }

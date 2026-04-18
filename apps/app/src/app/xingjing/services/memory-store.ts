@@ -28,7 +28,7 @@ export interface MemoryMessage {
 
 export interface MemorySession {
   id: string;
-  type: 'chat' | 'autopilot' | 'pipeline';
+  type: 'chat' | 'dispatch' | 'autopilot' | 'pipeline';
   summary: string;
   goal?: string;
   tags: string[];
@@ -72,7 +72,7 @@ export async function loadMemoryIndex(workDir: string): Promise<MemoryIndex> {
     const sessions = Array.isArray(result.data) ? result.data : [];
 
     // 加载 sidecar 元数据（tags/goal）
-    let sidecar: Record<string, { tags?: string[]; goal?: string }> = {};
+    let sidecar: Record<string, { tags?: string[]; goal?: string; mode?: 'chat' | 'dispatch' }> = {};
     try {
       const raw = await fileRead(`${workDir}/${SIDECAR_PATH}`);
       if (raw) sidecar = JSON.parse(raw);
@@ -85,20 +85,31 @@ export async function loadMemoryIndex(workDir: string): Promise<MemoryIndex> {
           const tb = b.time?.updated ?? b.time?.created ?? 0;
           return tb - ta; // 倒序：最新在前
         })
-        .map((s: any) => ({
-          id: s.id ?? '',
-          type: 'chat' as const,
-          summary: s.title ?? s.description ?? '',
-          tags: sidecar[s.id]?.tags ?? [],
-          createdAt: (() => {
-            const ms = s.time?.updated ?? s.time?.created;
-            if (!ms) return '';
-            return new Date(ms).toLocaleString('zh-CN', {
-              month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit',
-            });
-          })(),
-          messageCount: 0,
-        })),
+        .map((s: any) => {
+          // mode 优先从 sidecar 读取；无记录时通过 title 前缀判断（兼容旧数据）
+          const sidecarMode = sidecar[s.id]?.mode;
+          // titleMode 兑底：
+          // - xingjing-orchestrator-xxx → dispatch（编排器 session）
+          // - xingjing-{agentId}-xxx → dispatch（@mention 直连 agent session）
+          // - 其他 → chat
+          const title = s.title as string | undefined;
+          const titleMode = title?.startsWith('xingjing-') ? 'dispatch' : 'chat';
+          const resolvedMode = sidecarMode ?? titleMode;
+          return {
+            id: s.id ?? '',
+            type: resolvedMode as MemorySession['type'],
+            summary: s.title ?? s.description ?? '',
+            tags: sidecar[s.id]?.tags ?? [],
+            createdAt: (() => {
+              const ms = s.time?.updated ?? s.time?.created;
+              if (!ms) return '';
+              return new Date(ms).toLocaleString('zh-CN', {
+                month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit',
+              });
+            })(),
+            messageCount: 0,
+          };
+        }),
     };
   } catch {
     return { sessions: [] };
@@ -112,7 +123,7 @@ export async function loadMemoryIndex(workDir: string): Promise<MemoryIndex> {
 export async function saveMemoryMeta(
   workDir: string,
   sessionId: string,
-  meta: { tags: string[]; goal?: string },
+  meta: { tags: string[]; goal?: string; mode?: 'chat' | 'dispatch' },
 ): Promise<void> {
   try {
     let sidecar: Record<string, any> = {};
@@ -120,7 +131,7 @@ export async function saveMemoryMeta(
       const raw = await fileRead(`${workDir}/${SIDECAR_PATH}`);
       if (raw) sidecar = JSON.parse(raw);
     } catch { /* new file */ }
-    sidecar[sessionId] = meta;
+    sidecar[sessionId] = { ...sidecar[sessionId], ...meta };
     await fileWrite(`${workDir}/${SIDECAR_PATH}`, JSON.stringify(sidecar, null, 2));
   } catch { /* silent */ }
 }

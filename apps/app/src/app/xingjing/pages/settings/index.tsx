@@ -3,11 +3,10 @@ import { useSearchParams } from '@solidjs/router';
 import { Palette, Bot, Github, Clock, ShieldCheck, Sun, Moon, Save, FlaskConical, Zap, CheckCircle, AlertCircle, MessageSquare, X, Send, Loader, Package, Trash2, ChevronDown, ChevronUp, FolderOpen, User, Lock, AlertTriangle, Eye, EyeOff, Pencil, Wrench, RefreshCw, PlugZap, Plus, Download } from 'lucide-solid';
 import { useAppStore } from '../../stores/app-store';
 import { themeColors, chartColors } from '../../utils/colors';
-import { callAgent, setProviderAuth, gitSync } from '../../services/opencode-client';
+import { callAgent, setProviderAuth, gitSync, syncGitTokensToMcpConfig, type GitSyncOptions } from '../../services/opencode-client';
 import { saveGlobalSettings, loadGlobalSettings, saveProjectSettings, loadProjectSettings } from '../../services/file-store';
 import {
   defaultLLMConfig, modelOptions, LLMConfig, ModelOption,
-  defaultGitRepos, GitRepoConfig,
   defaultScheduledTasks, ScheduledTask,
   defaultGateNodes, GateNode,
   builtinTools, type BuiltinToolDef,
@@ -888,44 +887,83 @@ const LLMTab: Component = () => {
 
 // ===================== Tab3: Git repos =====================
 const GitTab: Component = () => {
-  const { productStore } = useAppStore();
-  const [repos, setRepos] = createSignal<GitRepoConfig[]>([...defaultGitRepos]);
-  const [editRepo, setEditRepo] = createSignal<GitRepoConfig | null>(null);
-  const [editForm, setEditForm] = createSignal<Partial<GitRepoConfig>>({});
+  const { productStore, actions } = useAppStore();
   const [syncing, setSyncing] = createSignal(false);
   const [syncResult, setSyncResult] = createSignal('');
 
-  // 从文件加载 Git 仓库配置
-  onMount(async () => {
-    const workDir = productStore.activeProduct()?.workDir;
-    if (!workDir) return;
-    try {
-      const settings = await loadProjectSettings(workDir);
-      if (settings.gitRepos && settings.gitRepos.length > 0) {
-        setRepos(settings.gitRepos as GitRepoConfig[]);
-      }
-    } catch { /* keep defaults */ }
-  });
+  /** 推送确认弹窗暂存的信息 */
+  interface SyncConfirmInfo {
+    productName: string;
+    repoUrl: string;
+    branch: string;
+    syncOpts: GitSyncOptions;
+    workDir: string;
+  }
+  const [syncConfirm, setSyncConfirm] = createSignal<SyncConfirmInfo | null>(null);
 
-  // 持久化 Git 配置
-  const persistGitRepos = async (updated: GitRepoConfig[]) => {
-    const workDir = productStore.activeProduct()?.workDir;
-    if (!workDir) return;
+  // Git 同步——解析仓库信息并弹出确认弹窗
+  const handleGitSync = async () => {
+    const product = productStore.activeProduct();
+    if (!product?.workDir) { setSyncResult('⚠️ 请先选择一个产品项目'); return; }
+
+    const workDir = product.workDir;
+    const productName = product.name;
+
+    // 主要源：产品对象上的 gitUrl（新建/编辑产品时配置）
+    let repoUrl = product.gitUrl?.trim() ?? '';
+    let branch = 'main';
+
+    // 降级源：项目级设置文件的 git.repoUrl
+    if (!repoUrl) {
+      try {
+        const projSettings = await loadProjectSettings(workDir);
+        if (projSettings.git?.repoUrl) {
+          repoUrl = projSettings.git.repoUrl;
+          branch = projSettings.git.defaultBranch || 'main';
+        }
+      } catch { /* ignore */ }
+    }
+
+    if (!repoUrl) {
+      setSyncResult('⚠️ 当前产品未配置 Git 地址，请在「产品配置」页面编辑并填写地址');
+      return;
+    }
+
+    // Token：从全局 localStorage 中按主机名匹配
+    let tokenValue = '';
     try {
-      const settings = await loadProjectSettings(workDir);
-      await saveProjectSettings(workDir, { ...settings, gitRepos: updated as unknown as typeof settings.gitRepos });
-    } catch { /* ignore */ }
+      const host = new URL(repoUrl).hostname;
+      tokenValue = getAllGitTokens()[host] ?? '';
+    } catch { /* URL 解析失败 */ }
+
+    if (!tokenValue) {
+      setSyncResult('⚠️ 未找到有效 Token，请在「平台 Token 管理」中填写 Access Token');
+      return;
+    }
+
+    // 信息解析成功——弹出确认弹窗
+    setSyncResult('');
+    setSyncConfirm({
+      productName,
+      repoUrl,
+      branch,
+      workDir,
+      syncOpts: { repoUrl, token: tokenValue, branch },
+    });
   };
 
-  // Git 同步
-  const handleGitSync = async () => {
-    const workDir = productStore.activeProduct()?.workDir;
-    if (!workDir) { setSyncResult('⚠️ 请先选择一个产品项目'); return; }
+  // 用户点击「确认推送」后真正执行
+  const doGitSync = async () => {
+    const confirm = syncConfirm();
+    if (!confirm) return;
+    setSyncConfirm(null);
     setSyncing(true);
     setSyncResult('');
     try {
-      const result = await gitSync(workDir);
-      setSyncResult(result.ok ? `✅ Git 同步成功` : `❌ 同步失败: ${result.output.slice(0, 100)}`);
+      const result = await gitSync(confirm.workDir, undefined, confirm.syncOpts);
+      setSyncResult(result.ok
+        ? `✅ 同步成功（→ ${confirm.repoUrl}）`
+        : `❌ 同步失败: ${result.output.slice(0, 800)}`);
     } catch (e: unknown) {
       setSyncResult(`❌ ${e instanceof Error ? e.message : '同步失败'}`);
     } finally {
@@ -953,6 +991,11 @@ const GitTab: Component = () => {
     setPlatformTokens(getAllGitTokens());
     setNewTokenHost('');
     setNewTokenValue('');
+    // 将更新后的 PAT 同步到 MCP 配置（GitHub/GitLab MCP 本地化）
+    void syncGitTokensToMcpConfig(
+      () => actions.readOpencodeConfig(),
+      (content) => actions.writeOpencodeConfig(content),
+    );
   };
 
   const handleUpdateToken = (host: string) => {
@@ -962,25 +1005,11 @@ const GitTab: Component = () => {
     setPlatformTokens(getAllGitTokens());
     setEditingHost(null);
     setEditingValue('');
-  };
-
-  const openEdit = (repo: GitRepoConfig) => {
-    setEditRepo(repo);
-    setEditForm({ ...repo });
-  };
-
-  const handleSave = () => {
-    const repo = editRepo();
-    if (!repo) return;
-    const form = editForm();
-    const updated = repos().map((r) =>
-      r.id === repo.id
-        ? { ...r, ...form, tokenConfigured: !!(form.accessToken && form.accessToken !== '') }
-        : r
+    // 将更新后的 PAT 同步到 MCP 配置（GitHub/GitLab MCP 本地化）
+    void syncGitTokensToMcpConfig(
+      () => actions.readOpencodeConfig(),
+      (content) => actions.writeOpencodeConfig(content),
     );
-    setRepos(updated);
-    persistGitRepos(updated);
-    setEditRepo(null);
   };
 
   return (
@@ -1112,113 +1141,52 @@ const GitTab: Component = () => {
           </div>
         </div>
       </div>
-      <div class="rounded-xl overflow-hidden" style={{ background: themeColors.surface, border: `1px solid ${themeColors.border}` }}>
-        <table class="w-full text-xs">
-          <thead>
-            <tr style={{ background: themeColors.bgSubtle }}>
-              <For each={['产品名称', '仓库 URL', '默认分支', 'Token 状态', '操作']}>
-                {(h) => <th class="text-left py-3 px-4 font-medium" style={{ color: themeColors.textMuted }}>{h}</th>}
-              </For>
-            </tr>
-          </thead>
-          <tbody>
-            <For each={repos()}>
-              {(repo) => (
-                <tr style={{ 'border-top': `1px solid ${themeColors.borderLight}` }}>
-                  <td class="py-3 px-4 font-medium" style={{ color: themeColors.text }}>{repo.productName}</td>
-                  <td class="py-3 px-4 font-mono text-xs truncate max-w-xs" style={{ color: themeColors.textSecondary }}>{repo.repoUrl}</td>
-                  <td class="py-3 px-4">
-                    <span class="px-1.5 py-0.5 rounded" style={{ background: themeColors.primaryBg, color: chartColors.primary }}>{repo.defaultBranch}</span>
-                  </td>
-                  <td class="py-3 px-4">
-                    <span class="px-1.5 py-0.5 rounded" style={{
-                      background: repo.tokenConfigured ? themeColors.successBg : themeColors.errorBg,
-                      color: repo.tokenConfigured ? chartColors.success : chartColors.error,
-                    }}>
-                      {repo.tokenConfigured ? '● 已配置' : '● 未配置'}
-                    </span>
-                  </td>
-                  <td class="py-3 px-4">
-                    <button
-                      class="text-xs"
-                      style={{ color: chartColors.primary }}
-                      onClick={() => openEdit(repo)}
-                    >
-                      编辑
-                    </button>
-                  </td>
-                </tr>
-              )}
-            </For>
-          </tbody>
-        </table>
-      </div>
+      {/* 推送确认弹窗 */}
+      <Show when={syncConfirm()}>
+        {(info) => (
+          <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+            <div class="rounded-xl shadow-2xl w-full max-w-sm p-6 space-y-5" style={{ background: themeColors.surface }}>
+              <div class="flex items-center gap-2">
+                <span class="text-lg">🚀</span>
+                <h3 class="font-semibold text-base" style={{ color: themeColors.text }}>确认推送到 GitHub</h3>
+              </div>
 
-      {/* Edit modal */}
-      <Show when={editRepo()}>
-        <div class="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
-          <div class="rounded-xl shadow-xl w-full max-w-md p-6" style={{ background: themeColors.surface }}>
-            <h3 class="font-semibold text-base mb-4" style={{ color: themeColors.text }}>编辑仓库配置</h3>
-            <div class="space-y-3">
-              <div>
-                <label class="text-xs block mb-1" style={{ color: themeColors.textMuted }}>产品名称</label>
-                <input
-                  class="w-full px-3 py-2 rounded-lg text-sm"
-                  style={{ ...inputStyle(), background: themeColors.bgSubtle }}
-                  value={editForm().productName ?? ''}
-                  disabled
-                />
+              <div class="rounded-lg p-4 space-y-3 text-sm" style={{ background: themeColors.bgSubtle, border: `1px solid ${themeColors.border}` }}>
+                <div class="flex items-start gap-3">
+                  <span class="text-xs font-medium w-14 pt-0.5 shrink-0" style={{ color: themeColors.textMuted }}>产品</span>
+                  <span class="font-medium break-all" style={{ color: themeColors.text }}>{info().productName}</span>
+                </div>
+                <div class="flex items-start gap-3">
+                  <span class="text-xs font-medium w-14 pt-0.5 shrink-0" style={{ color: themeColors.textMuted }}>Git 地址</span>
+                  <span class="break-all text-xs" style={{ color: chartColors.primary }}>{info().repoUrl}</span>
+                </div>
+                <div class="flex items-start gap-3">
+                  <span class="text-xs font-medium w-14 pt-0.5 shrink-0" style={{ color: themeColors.textMuted }}>分支</span>
+                  <span class="font-medium" style={{ color: themeColors.text }}>{info().branch}</span>
+                </div>
               </div>
-              <div>
-                <label class="text-xs block mb-1" style={{ color: themeColors.textMuted }}>仓库 URL *</label>
-                <input
-                  class="w-full px-3 py-2 rounded-lg text-sm outline-none"
-                  style={inputStyle()}
-                  value={editForm().repoUrl ?? ''}
-                  onInput={(e) => setEditForm({ ...editForm(), repoUrl: e.currentTarget.value })}
-                  placeholder="https://github.com/org/repo.git"
-                />
+
+              <p class="text-xs" style={{ color: themeColors.textMuted }}>将对当前工作目录执行 <code class="px-1 rounded" style={{ background: themeColors.bgSubtle }}>git add -A &amp;&amp; commit &amp;&amp; push</code>，确认后将无法取消。</p>
+
+              <div class="flex justify-end gap-2">
+                <button
+                  class="px-4 py-2 text-sm rounded-lg transition-colors"
+                  style={{ background: themeColors.bgSubtle, color: themeColors.text, border: `1px solid ${themeColors.border}` }}
+                  onClick={() => setSyncConfirm(null)}
+                >
+                  取消
+                </button>
+                <button
+                  class="px-4 py-2 text-sm rounded-lg font-medium transition-colors"
+                  style={{ background: chartColors.success, color: 'white' }}
+                  onClick={doGitSync}
+                >
+                  确认推送
+                </button>
               </div>
-              <div>
-                <label class="text-xs block mb-1" style={{ color: themeColors.textMuted }}>默认分支 *</label>
-                <input
-                  class="w-full px-3 py-2 rounded-lg text-sm outline-none"
-                  style={inputStyle()}
-                  value={editForm().defaultBranch ?? ''}
-                  onInput={(e) => setEditForm({ ...editForm(), defaultBranch: e.currentTarget.value })}
-                  placeholder="main"
-                />
-              </div>
-              <div>
-                <label class="text-xs block mb-1" style={{ color: themeColors.textMuted }}>Access Token</label>
-                <input
-                  type="password"
-                  class="w-full px-3 py-2 rounded-lg text-sm outline-none"
-                  style={inputStyle()}
-                  value={editForm().accessToken ?? ''}
-                  onInput={(e) => setEditForm({ ...editForm(), accessToken: e.currentTarget.value })}
-                  placeholder="GitHub Personal Access Token"
-                />
-              </div>
-            </div>
-            <div class="flex justify-end gap-2 mt-4">
-              <button
-                class="px-4 py-2 text-sm rounded-lg transition-colors"
-                style={{ border: `1px solid ${themeColors.border}`, color: themeColors.textSecondary, background: themeColors.surface }}
-                onClick={() => setEditRepo(null)}
-              >
-                取消
-              </button>
-              <button
-                class="px-4 py-2 text-sm rounded-lg transition-colors"
-                style={{ background: chartColors.primary, color: 'white' }}
-                onClick={handleSave}
-              >
-                保存
-              </button>
             </div>
           </div>
-        </div>
+        )}
       </Show>
     </div>
   );

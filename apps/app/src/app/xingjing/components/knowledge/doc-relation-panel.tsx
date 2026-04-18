@@ -2,7 +2,7 @@
  * 右侧文档关联面板
  * 三分区：文档关联 / AI 使用路径 / 知识溯源
  */
-import { Component, For, Show } from 'solid-js';
+import { Component, For, Show, createSignal } from 'solid-js';
 import type { KnowledgeEntry } from '../../services/knowledge-index';
 import { themeColors, chartColors } from '../../utils/colors';
 
@@ -14,6 +14,7 @@ interface DocRelationPanelProps {
   onStartAutopilot: (entry: KnowledgeEntry) => void;
   onCopyRef: (entry: KnowledgeEntry) => void;
   onViewSession?: (sessionId: string) => void;
+  onDelete?: (entry: KnowledgeEntry) => void;
 }
 
 const sectionStyle = {
@@ -36,6 +37,8 @@ const actionBtnStyle = (bg: string, color: string) => ({
 });
 
 export const DocRelationPanel: Component<DocRelationPanelProps> = (props) => {
+  const [deleteConfirm, setDeleteConfirm] = createSignal(false);
+
   const upstream = () =>
     (props.entry?.upstream ?? [])
       .map((id) => props.allEntries.find((e) => e.id === id || e.filePath?.includes(id)))
@@ -45,6 +48,23 @@ export const DocRelationPanel: Component<DocRelationPanelProps> = (props) => {
     (props.entry?.downstream ?? [])
       .map((id) => props.allEntries.find((e) => e.id === id || e.filePath?.includes(id)))
       .filter(Boolean) as KnowledgeEntry[];
+
+  // 当条目变化时重置确认状态
+  const isDeletable = () => {
+    const e = props.entry;
+    if (!e) return false;
+    return e.source === 'private' ||
+      (e.source === 'workspace-doc' && e.filePath?.startsWith('knowledge/'));
+  };
+
+  const handleDeleteClick = () => {
+    if (!deleteConfirm()) {
+      setDeleteConfirm(true);
+    } else {
+      setDeleteConfirm(false);
+      if (props.entry) props.onDelete?.(props.entry);
+    }
+  };
 
   return (
     <div style={{ padding: '12px', 'font-size': '12px', overflow: 'auto', height: '100%' }}>
@@ -108,6 +128,21 @@ export const DocRelationPanel: Component<DocRelationPanelProps> = (props) => {
           >
             📋 复制引用
           </button>
+          <Show when={isDeletable()}>
+            <button
+              style={{
+                ...actionBtnStyle(
+                  deleteConfirm() ? '#fef2f2' : '#f9fafb',
+                  deleteConfirm() ? '#dc2626' : '#6b7280',
+                ),
+                border: deleteConfirm() ? '1px solid #fca5a5' : '1px solid transparent',
+              }}
+              onClick={handleDeleteClick}
+              onBlur={() => setDeleteConfirm(false)}
+            >
+              {deleteConfirm() ? '⚠️ 再次点击确认删除' : '🗑️ 删除此知识'}
+            </button>
+          </Show>
         </div>
 
         {/* ③ 知识溯源 */}

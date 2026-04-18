@@ -15,6 +15,7 @@ import {
   CircleAlert,
   Copy,
   File,
+  Loader2,
 } from "lucide-solid";
 import { createVirtualizer } from "@tanstack/solid-virtual";
 
@@ -54,7 +55,7 @@ export type MessageListProps = {
     handler: ((messageId: string, behavior?: ScrollBehavior) => boolean) | null,
   ) => void;
   footer?: JSX.Element;
-  variant?: "default" | "nested";
+  variant?: "default" | "nested" | "bubble";
   onOpenArtifact?: (artifactId: string) => void;
 };
 
@@ -297,6 +298,7 @@ export default function MessageList(props: MessageListProps) {
   let previousBlockRenderKey = "";
   let copyTimeout: number | undefined;
   const isNestedVariant = () => props.variant === "nested";
+  const isBubbleVariant = () => props.variant === "bubble";
   const isAttachmentPart = (part: Part) => {
     if (part.type !== "file") return false;
     const url = (part as { url?: string }).url;
@@ -822,10 +824,48 @@ export default function MessageList(props: MessageListProps) {
       return cleanReasoningPreview(raw);
     });
 
+    // 可折叠思考块本地状态（reasoning 类型时使用）
+    const [reasoningOpen, setReasoningOpen] = createSignal(true);
+    createEffect(() => {
+      // 流式输出结束后自动折叠
+      if (!props.isStreaming) {
+        setReasoningOpen(false);
+      }
+    });
+
     if (rowProps.part.type === "reasoning") {
       return (
-        <div class="text-[14px] leading-[1.7] text-gray-9 whitespace-pre-wrap">
-          <div class="max-w-[720px]">{reasoningText() || headline()}</div>
+        <div class="reasoning-collapse">
+          <button
+            type="button"
+            class="reasoning-collapse-btn w-full text-left"
+            onClick={() => setReasoningOpen((v) => !v)}
+          >
+            <span class="inline-flex items-center gap-1.5">
+              <Show
+                when={props.isStreaming}
+                fallback={<span class="text-[12px] text-gray-8">思考过程</span>}
+              >
+                <span class="text-[12px] text-gray-8">思考中...</span>
+              </Show>
+              <Show
+                when={props.isStreaming}
+                fallback={
+                  <ChevronDown
+                    size={12}
+                    class={`text-gray-7 transition-transform ${reasoningOpen() ? "" : "-rotate-90"}`}
+                  />
+                }
+              >
+                <Loader2 size={12} class="text-gray-7 animate-spin" />
+              </Show>
+            </span>
+          </button>
+          <Show when={reasoningOpen()}>
+            <div class="reasoning-collapse-content">
+              {reasoningText() || headline()}
+            </div>
+          </Show>
         </div>
       );
     }
@@ -966,9 +1006,11 @@ export default function MessageList(props: MessageListProps) {
                 ? isNestedVariant()
                   ? "relative max-w-[92%] rounded-[20px] border border-dls-border bg-dls-sidebar px-4 py-3 text-[14px] leading-relaxed text-dls-text"
                   : "relative max-w-[85%] rounded-[24px] border border-dls-border bg-dls-sidebar px-6 py-4 text-[15px] leading-relaxed text-dls-text"
-                : isNestedVariant()
-                  ? "w-full relative text-[14px] leading-[1.65] text-dls-text group"
-                  : "w-full relative max-w-[760px] text-[15px] leading-[1.7] text-dls-text group"
+                : isBubbleVariant()
+                  ? "relative max-w-[88%] rounded-[18px] border border-dls-border/60 bg-dls-surface px-5 py-3 text-[14px] leading-[1.7] text-dls-text group shadow-[0_1px_4px_rgba(0,0,0,0.05)]"
+                  : isNestedVariant()
+                    ? "w-full relative text-[14px] leading-[1.65] text-dls-text group"
+                    : "w-full relative max-w-[760px] text-[15px] leading-[1.7] text-dls-text group"
             } ${searchOutlineClass}`}
           >
             <StepsContainer
@@ -1030,9 +1072,11 @@ export default function MessageList(props: MessageListProps) {
               ? isNestedVariant()
                 ? "relative max-w-[92%] rounded-[20px] border border-dls-border bg-dls-sidebar px-4 py-3 text-[14px] leading-relaxed text-dls-text"
                 : "relative max-w-[85%] rounded-[24px] border border-dls-border bg-dls-sidebar px-6 py-4 text-[15px] leading-relaxed text-dls-text"
-              : isNestedVariant()
-                ? "w-full relative text-[14px] leading-[1.65] text-dls-text antialiased group"
-                : "w-full relative max-w-[760px] text-[15px] leading-[1.72] text-dls-text antialiased group"
+              : isBubbleVariant()
+                ? "relative max-w-[88%] rounded-[18px] border border-dls-border/60 bg-dls-surface px-5 py-4 text-[14px] leading-[1.72] text-dls-text antialiased group shadow-[0_1px_4px_rgba(0,0,0,0.05)]"
+                : isNestedVariant()
+                  ? "w-full relative text-[14px] leading-[1.65] text-dls-text antialiased group"
+                  : "w-full relative max-w-[760px] text-[15px] leading-[1.72] text-dls-text antialiased group"
           } ${searchOutlineClass}`}
         >
           <Show when={block.attachments.length > 0}>

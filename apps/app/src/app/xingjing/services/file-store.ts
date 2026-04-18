@@ -599,6 +599,8 @@ export interface SoloFocusItem {
   reason: string;
   action: string;
   linkedRoute?: string;
+  linkedTask?: string;
+  linkedHypothesis?: string;
 }
 
 export async function loadTodayFocus(workDir: string): Promise<SoloFocusItem[]> {
@@ -811,6 +813,10 @@ export interface SoloTaskRecord {
   dod: string[];
   note?: string;
   createdAt: string;
+  feature?: string;
+  hypothesis?: string;
+  completedAt?: string;
+  archived?: boolean;
 }
 
 export async function loadSoloTasks(workDir: string): Promise<SoloTaskRecord[]> {

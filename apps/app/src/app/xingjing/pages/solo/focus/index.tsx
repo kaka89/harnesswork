@@ -1,18 +1,12 @@
 import { Component, createSignal, For, Show, onMount } from 'solid-js';
 import { useNavigate } from '@solidjs/router';
 import {
-  todayFocus as mockTodayFocus,
-  businessMetrics as mockBusinessMetrics,
-  soloTasks as mockSoloTasks,
-  SoloTask,
-  BusinessMetric,
-  FocusItem,
-} from '../../../mock/solo';
-import {
   loadTodayFocus,
   loadSoloMetrics,
   loadSoloTasks,
   saveSoloTask,
+  type SoloFocusItem,
+  type SoloBusinessMetric,
   type SoloTaskRecord,
 } from '../../../services/file-store';
 import { useAppStore } from '../../../stores/app-store';
@@ -61,18 +55,50 @@ const typeLabel: Record<string, string> = {
   dev: '开发', product: '产品', ops: '运营', growth: '增长',
 };
 
+/** 从任务完成日期推算连续构建天数（从今天往回数连续有 done 任务的天数） */
+function calcBuildStreak(tasks: SoloTaskRecord[]): number {
+  const doneSet = new Set<string>();
+  for (const t of tasks) {
+    if (t.status === 'done' && t.completedAt) {
+      // 只取日期部分 YYYY-MM-DD
+      doneSet.add(t.completedAt.slice(0, 10));
+    }
+  }
+  if (doneSet.size === 0) return 0;
+
+  let streak = 0;
+  const now = new Date();
+  for (let i = 0; i < 365; i++) {
+    const d = new Date(now);
+    d.setDate(d.getDate() - i);
+    const key = d.toISOString().slice(0, 10);
+    if (doneSet.has(key)) {
+      streak++;
+    } else {
+      break;
+    }
+  }
+  return streak;
+}
+
+const STREAK_TOTAL_CELLS = 21;
+
 const SoloFocus: Component = () => {
   const navigate = useNavigate();
   const { productStore } = useAppStore();
 
-  const [metrics, setMetrics] = createSignal<BusinessMetric[]>(mockBusinessMetrics);
-  const [tasks, setTasks] = createSignal<SoloTask[]>(mockSoloTasks);
-  const [focusItems, setFocusItems] = createSignal<FocusItem[]>(mockTodayFocus);
+  const [metrics, setMetrics] = createSignal<SoloBusinessMetric[]>([]);
+  const [tasks, setTasks] = createSignal<SoloTaskRecord[]>([]);
+  const [focusItems, setFocusItems] = createSignal<SoloFocusItem[]>([]);
   const [checkedTasks, setCheckedTasks] = createSignal<Set<string>>(new Set());
+  const [loading, setLoading] = createSignal(true);
 
   onMount(async () => {
     const workDir = productStore.activeProduct()?.workDir;
-    if (!workDir) return;
+    if (!workDir) {
+      setLoading(false);
+      return;
+    }
 
     try {
       const [fileTasks, fileMetrics, fileFocus] = await Promise.all([
@@ -80,18 +106,32 @@ const SoloFocus: Component = () => {
         loadSoloMetrics(workDir),
         loadTodayFocus(workDir),
       ]);
-      if (fileTasks.length > 0) setTasks(fileTasks as unknown as SoloTask[]);
-      if (fileMetrics.businessMetrics.length > 0) setMetrics(fileMetrics.businessMetrics as unknown as BusinessMetric[]);
-      if (fileFocus.length > 0) setFocusItems(fileFocus as unknown as FocusItem[]);
+      if (fileTasks.length > 0) {
+        setTasks(fileTasks);
+        // 回填已完成任务到 checkedTasks
+        const doneIds = new Set(fileTasks.filter(t => t.status === 'done').map(t => t.id));
+        setCheckedTasks(doneIds);
+      }
+      if (fileMetrics.businessMetrics.length > 0) setMetrics(fileMetrics.businessMetrics);
+      if (fileFocus.length > 0) setFocusItems(fileFocus);
     } catch {
-      // Mock fallback — keep initial mock data
+      // 加载失败时保持空状态
+    } finally {
+      setLoading(false);
     }
   });
 
-  const todayTasks = (): SoloTask[] => [
-    ...tasks().filter((t) => t.status === 'doing'),
-    ...tasks().filter((t) => t.status === 'todo').slice(0, 4),
-  ].slice(0, 5);
+  /** 今日任务：过滤已归档，优先展示 doing，再展示 todo，最多 5 个 */
+  const todayTasks = () => {
+    const active = tasks().filter(t => !t.archived);
+    return [
+      ...active.filter(t => t.status === 'doing'),
+      ...active.filter(t => t.status === 'todo').slice(0, 4),
+    ].slice(0, 5);
+  };
+
+  /** 连续构建天数 */
+  const buildStreak = () => calcBuildStreak(tasks());
 
   const toggleTask = async (id: string) => {
     setCheckedTasks((prev) => {
@@ -105,10 +145,15 @@ const SoloFocus: Component = () => {
     if (!workDir) return;
     const task = tasks().find((t) => t.id === id);
     if (!task) return;
+    const now = new Date().toISOString().slice(0, 10);
     const newStatus = checkedTasks().has(id) ? 'done' : 'doing';
-    const updated = { ...task, status: newStatus as SoloTask['status'] };
+    const updated: SoloTaskRecord = {
+      ...task,
+      status: newStatus,
+      ...(newStatus === 'done' ? { completedAt: task.completedAt ?? now } : {}),
+    };
     setTasks((prev) => prev.map((t) => (t.id === id ? updated : t)));
-    await saveSoloTask(workDir, updated as unknown as SoloTaskRecord);
+    await saveSoloTask(workDir, updated);
   };
 
   const dateStr = new Date().toLocaleDateString('zh-CN', { weekday: 'long', month: 'long', day: 'numeric' });
@@ -135,9 +180,14 @@ const SoloFocus: Component = () => {
           </div>
           <div style={{ flex: 1 }}>
             <div style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text, 'margin-bottom': '8px' }}>AI 今日简报</div>
-            <p style={{ 'font-size': '14px', color: themeColors.textSecondary, 'margin-bottom': '12px' }}>
-              今天有 <strong>{focusItems().length} 件最重要的事</strong>需要你关注。
-            </p>
+            <Show when={!loading() && focusItems().length === 0}>
+              <p style={{ 'font-size': '13px', color: themeColors.textMuted }}>暂无焦点项，AI 将在下次驾驶舱运行时为你生成。</p>
+            </Show>
+            <Show when={focusItems().length > 0}>
+              <p style={{ 'font-size': '14px', color: themeColors.textSecondary, 'margin-bottom': '12px' }}>
+                今天有 <strong>{focusItems().length} 件最重要的事</strong>需要你关注。
+              </p>
+            </Show>
             <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
               <For each={focusItems()}>
                 {(item, idx) => {
@@ -191,6 +241,9 @@ const SoloFocus: Component = () => {
               </button>
             </div>
             <div style={{ padding: '16px', display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
+              <Show when={!loading() && todayTasks().length === 0}>
+                <div style={{ 'text-align': 'center', padding: '16px 0', color: themeColors.textMuted, 'font-size': '13px' }}>暂无任务</div>
+              </Show>
               <For each={todayTasks()}>
                 {(task) => {
                   const done = () => checkedTasks().has(task.id);
@@ -256,6 +309,9 @@ const SoloFocus: Component = () => {
               </button>
             </div>
             <div style={{ padding: '12px', display: 'grid', 'grid-template-columns': 'repeat(2, 1fr)', gap: '12px' }}>
+              <Show when={!loading() && metrics().length === 0}>
+                <div style={{ 'grid-column': 'span 2', 'text-align': 'center', padding: '16px 0', color: themeColors.textMuted, 'font-size': '13px' }}>暂无指标数据</div>
+              </Show>
               <For each={metrics()}>
                 {(m) => (
                   <div style={{ padding: '12px', 'border-radius': '12px', border: `1px solid ${m.color}33`, background: `${m.color}08` }}>
@@ -278,17 +334,21 @@ const SoloFocus: Component = () => {
             <div style={{ display: 'flex', 'align-items': 'center', gap: '12px', 'margin-bottom': '12px' }}>
               <span style={{ 'font-size': '30px' }}>🔥</span>
               <div>
-                <div style={{ 'font-weight': 700, 'font-size': '16px', color: themeColors.text }}>连续构建 14 天 🔥</div>
-                <div style={{ 'font-size': '12px', color: themeColors.textMuted }}>保持每日发布节奏，用户感知到你在快速迭代</div>
+                <div style={{ 'font-weight': 700, 'font-size': '16px', color: themeColors.text }}>
+                  {buildStreak() > 0 ? `连续构建 ${buildStreak()} 天 🔥` : '开始你的连续构建之旅'}
+                </div>
+                <div style={{ 'font-size': '12px', color: themeColors.textMuted }}>
+                  {buildStreak() > 0 ? '保持每日发布节奏，用户感知到你在快速迭代' : '每天完成一个任务，点亮你的构建火焰图'}
+                </div>
               </div>
             </div>
             <div style={{ display: 'flex', gap: '4px', 'flex-wrap': 'wrap' }}>
-              <For each={Array.from({ length: 14 })}>
+              <For each={Array.from({ length: Math.min(buildStreak(), STREAK_TOTAL_CELLS) })}>
                 {() => (
                   <div style={{ width: '14px', height: '14px', 'border-radius': '2px', background: chartColors.warning }} />
                 )}
               </For>
-              <For each={Array.from({ length: 7 })}>
+              <For each={Array.from({ length: Math.max(0, STREAK_TOTAL_CELLS - buildStreak()) })}>
                 {() => (
                   <div style={{ width: '14px', height: '14px', 'border-radius': '2px', background: themeColors.border }} />
                 )}

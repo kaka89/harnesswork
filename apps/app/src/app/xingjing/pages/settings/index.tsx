@@ -1,6 +1,6 @@
 import { Component, createSignal, For, Show, createEffect, onMount } from 'solid-js';
 import { useSearchParams } from '@solidjs/router';
-import { Palette, Bot, Github, Clock, ShieldCheck, Sun, Moon, Save, FlaskConical, Zap, CheckCircle, AlertCircle, MessageSquare, X, Send, Loader, Package, Trash2, ChevronDown, ChevronUp, FolderOpen, User, Lock, AlertTriangle, Eye, EyeOff, Pencil, Wrench, RefreshCw, PlugZap } from 'lucide-solid';
+import { Palette, Bot, Github, Clock, ShieldCheck, Sun, Moon, Save, FlaskConical, Zap, CheckCircle, AlertCircle, MessageSquare, X, Send, Loader, Package, Trash2, ChevronDown, ChevronUp, FolderOpen, User, Lock, AlertTriangle, Eye, EyeOff, Pencil, Wrench, RefreshCw, PlugZap, Plus, Download } from 'lucide-solid';
 import { useAppStore } from '../../stores/app-store';
 import { themeColors, chartColors } from '../../utils/colors';
 import { callAgent, setProviderAuth, gitSync } from '../../services/opencode-client';
@@ -2390,6 +2390,12 @@ const McpToolsTab: Component = () => {
   const [mcpLoading, setMcpLoading] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [saveResult, setSaveResult] = createSignal('');
+  const [removingMcp, setRemovingMcp] = createSignal<string | null>(null);
+  const [showAddForm, setShowAddForm] = createSignal(false);
+  const [newMcpName, setNewMcpName] = createSignal('');
+  const [newMcpUrl, setNewMcpUrl] = createSignal('');
+  const [newMcpType, setNewMcpType] = createSignal<'remote' | 'local'>('remote');
+  const [addingMcp, setAddingMcp] = createSignal(false);
 
   // 同步 store 变化
   createEffect(() => {
@@ -2430,6 +2436,48 @@ const McpToolsTab: Component = () => {
       setSaveResult('\u274c \u4fdd\u5b58\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleAddMcp = async () => {
+    const name = newMcpName().trim();
+    const url = newMcpUrl().trim();
+    if (!name) return;
+    setAddingMcp(true);
+    try {
+      const config: Record<string, unknown> = { type: newMcpType(), enabled: true };
+      if (newMcpType() === 'remote' && url) config.url = url;
+      const ok = await actions.addMcp({ name, config });
+      if (ok) {
+        setNewMcpName('');
+        setNewMcpUrl('');
+        setShowAddForm(false);
+        await loadMcpServers();
+        setSaveResult(`\u2705 \u5df2\u6dfb\u52a0 MCP \u670d\u52a1\u5668: ${name}`);
+      } else {
+        setSaveResult('\u274c \u6dfb\u52a0\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5 OpenWork \u8fde\u63a5');
+      }
+    } catch {
+      setSaveResult('\u274c \u6dfb\u52a0 MCP \u670d\u52a1\u5668\u5931\u8d25');
+    } finally {
+      setAddingMcp(false);
+    }
+  };
+
+  const handleRemoveMcp = async (name: string) => {
+    setRemovingMcp(name);
+    try {
+      const ok = await actions.removeMcp(name);
+      if (ok) {
+        await loadMcpServers();
+        setSaveResult(`\u2705 \u5df2\u5220\u9664 MCP \u670d\u52a1\u5668: ${name}`);
+      } else {
+        setSaveResult('\u274c \u5220\u9664\u5931\u8d25');
+      }
+    } catch {
+      setSaveResult('\u274c \u5220\u9664 MCP \u670d\u52a1\u5668\u5931\u8d25');
+    } finally {
+      setRemovingMcp(null);
     }
   };
 
@@ -2565,6 +2613,26 @@ const McpToolsTab: Component = () => {
             <RefreshCw size={12} class={mcpLoading() ? 'animate-spin' : ''} />
             刷新
           </button>
+          <button
+            onClick={() => setShowAddForm(!showAddForm())}
+            disabled={openworkStatus() === 'disconnected'}
+            style={{
+              display: 'flex',
+              'align-items': 'center',
+              gap: '4px',
+              padding: '4px 10px',
+              'border-radius': '6px',
+              border: `1px solid ${themeColors.border}`,
+              background: showAddForm() ? themeColors.primaryBg : 'transparent',
+              color: showAddForm() ? chartColors.primary : themeColors.textMuted,
+              'font-size': '12px',
+              cursor: openworkStatus() === 'disconnected' ? 'not-allowed' : 'pointer',
+              opacity: openworkStatus() === 'disconnected' ? '0.5' : '1',
+            }}
+          >
+            <Plus size={12} />
+            添加
+          </button>
         </div>
 
         <Show when={openworkStatus() === 'disconnected'}>
@@ -2615,18 +2683,113 @@ const McpToolsTab: Component = () => {
                   {(server) => {
                     const cfgType = typeof server.config?.type === 'string' ? server.config.type : 'unknown';
                     return (
-                      <ToolRow
-                        name={server.name}
-                        label={server.name}
-                        description={`类型: ${cfgType}`}
-                        badge="MCP"
-                      />
+                      <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
+                        <div style={{ flex: '1' }}>
+                          <ToolRow
+                            name={server.name}
+                            label={server.name}
+                            description={`类型: ${cfgType}`}
+                            badge="MCP"
+                          />
+                        </div>
+                        <button
+                          onClick={() => handleRemoveMcp(server.name)}
+                          disabled={removingMcp() === server.name}
+                          title={`删除 ${server.name}`}
+                          style={{
+                            display: 'flex', 'align-items': 'center', 'justify-content': 'center',
+                            width: '28px', height: '28px', 'border-radius': '6px',
+                            border: `1px solid ${themeColors.border}`, background: 'transparent',
+                            color: themeColors.textMuted, cursor: 'pointer', 'flex-shrink': '0',
+                            opacity: removingMcp() === server.name ? '0.5' : '1',
+                          }}
+                        >
+                          {removingMcp() === server.name
+                            ? <Loader size={12} class="animate-spin" />
+                            : <Trash2 size={12} />}
+                        </button>
+                      </div>
                     );
                   }}
                 </For>
               </div>
             </div>
           </Show>
+        </Show>
+
+        {/* 添加 MCP 服务器表单 */}
+        <Show when={showAddForm()}>
+          <div style={{
+            'margin-top': '12px', 'border-top': `1px solid ${themeColors.border}`,
+            'padding-top': '12px',
+          }}>
+            <p style={{ margin: '0 0 8px', 'font-size': '12px', 'font-weight': '500', color: themeColors.text }}>
+              添加 MCP 服务器
+            </p>
+            <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <input
+                  value={newMcpName()}
+                  onInput={(e) => setNewMcpName(e.currentTarget.value)}
+                  placeholder="服务器名称（如 my-mcp）"
+                  style={{
+                    flex: '1', padding: '6px 10px', 'border-radius': '6px',
+                    border: `1px solid ${themeColors.border}`, background: themeColors.surface,
+                    color: themeColors.text, 'font-size': '12px', outline: 'none',
+                  }}
+                />
+                <select
+                  value={newMcpType()}
+                  onChange={(e) => setNewMcpType(e.currentTarget.value as 'remote' | 'local')}
+                  style={{
+                    padding: '6px 10px', 'border-radius': '6px',
+                    border: `1px solid ${themeColors.border}`, background: themeColors.surface,
+                    color: themeColors.text, 'font-size': '12px', outline: 'none',
+                  }}
+                >
+                  <option value="remote">Remote (HTTP)</option>
+                  <option value="local">Local (Stdio)</option>
+                </select>
+              </div>
+              <Show when={newMcpType() === 'remote'}>
+                <input
+                  value={newMcpUrl()}
+                  onInput={(e) => setNewMcpUrl(e.currentTarget.value)}
+                  placeholder="MCP 服务器 URL（如 https://mcp.example.com/sse）"
+                  style={{
+                    padding: '6px 10px', 'border-radius': '6px',
+                    border: `1px solid ${themeColors.border}`, background: themeColors.surface,
+                    color: themeColors.text, 'font-size': '12px', outline: 'none',
+                  }}
+                />
+              </Show>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  onClick={handleAddMcp}
+                  disabled={addingMcp() || !newMcpName().trim()}
+                  style={{
+                    display: 'flex', 'align-items': 'center', gap: '4px',
+                    padding: '6px 14px', 'border-radius': '6px', border: 'none',
+                    background: chartColors.primary, color: '#fff',
+                    'font-size': '12px', cursor: addingMcp() ? 'not-allowed' : 'pointer',
+                    opacity: (addingMcp() || !newMcpName().trim()) ? '0.6' : '1',
+                  }}
+                >
+                  {addingMcp() ? <><Loader size={12} class="animate-spin" /> 添加中...</> : '确认添加'}
+                </button>
+                <button
+                  onClick={() => { setShowAddForm(false); setNewMcpName(''); setNewMcpUrl(''); }}
+                  style={{
+                    padding: '6px 14px', 'border-radius': '6px',
+                    border: `1px solid ${themeColors.border}`, background: 'transparent',
+                    color: themeColors.textMuted, 'font-size': '12px', cursor: 'pointer',
+                  }}
+                >
+                  取消
+                </button>
+              </div>
+            </div>
+          </div>
         </Show>
       </div>
 
@@ -2665,9 +2828,211 @@ const McpToolsTab: Component = () => {
     </div>
   );
 };
+const SkillsTab: Component = () => {
+  const { actions, openworkStatus } = useAppStore();
+  const [wsSkills, setWsSkills] = createSignal<Array<{ name: string; description: string; scope?: string }>>([]);
+  const [hubSkills, setHubSkills] = createSignal<Array<{ name: string; description: string }>>([]);
+  const [loading, setLoading] = createSignal(false);
+  const [installedSet, setInstalledSet] = createSignal<Set<string>>(new Set());
+  const [installingSkill, setInstallingSkill] = createSignal<string | null>(null);
+  const [statusMsg, setStatusMsg] = createSignal('');
+
+  const loadSkills = async () => {
+    setLoading(true);
+    try {
+      const [ws, hub] = await Promise.all([
+        actions.listOpenworkSkills().catch(() => []),
+        actions.listHubSkills().catch(() => []),
+      ]);
+      setWsSkills(ws.map(s => ({ name: s.name, description: s.description ?? '', scope: s.scope })));
+      setHubSkills(hub);
+      setInstalledSet(new Set(ws.map(s => s.name)));
+    } catch {
+      setWsSkills([]);
+      setHubSkills([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  onMount(() => {
+    if (openworkStatus() !== 'disconnected') loadSkills();
+  });
+
+  const handleInstall = async (name: string) => {
+    setInstallingSkill(name);
+    setStatusMsg('');
+    try {
+      const ok = await actions.installHubSkill(name);
+      if (ok) {
+        setStatusMsg(`\u2705 \u5df2\u5b89\u88c5 Skill: ${name}`);
+        await loadSkills();
+      } else {
+        setStatusMsg(`\u274c \u5b89\u88c5\u5931\u8d25: ${name}`);
+      }
+    } catch {
+      setStatusMsg(`\u274c \u5b89\u88c5 Skill \u5931\u8d25`);
+    } finally {
+      setInstallingSkill(null);
+    }
+  };
+
+  const SkillRow = (props: { name: string; description: string; source: 'workspace' | 'hub'; installed?: boolean }) => (
+    <div style={{
+      display: 'flex', 'align-items': 'center', gap: '12px',
+      padding: '10px 14px', 'border-radius': '8px',
+      background: props.installed ? themeColors.bgSubtle : 'transparent',
+      transition: 'background 0.15s',
+    }}>
+      <div style={{ flex: '1', 'min-width': '0' }}>
+        <div style={{ display: 'flex', 'align-items': 'center', gap: '6px' }}>
+          <span style={{ 'font-size': '13px', 'font-weight': '500', color: themeColors.text }}>{props.name}</span>
+          <span style={{
+            'font-size': '10px', padding: '1px 6px', 'border-radius': '4px',
+            background: props.source === 'workspace' ? themeColors.bgSubtle : `${chartColors.primary}18`,
+            color: props.source === 'workspace' ? themeColors.textMuted : chartColors.primary,
+          }}>{props.source === 'workspace' ? 'Workspace' : 'Hub'}</span>
+        </div>
+        <Show when={props.description}>
+          <p style={{ margin: '2px 0 0', 'font-size': '12px', color: themeColors.textMuted }}>{props.description}</p>
+        </Show>
+      </div>
+      <Show when={props.source === 'hub' && !props.installed}>
+        <button
+          onClick={() => handleInstall(props.name)}
+          disabled={installingSkill() === props.name}
+          style={{
+            display: 'flex', 'align-items': 'center', gap: '4px',
+            padding: '4px 10px', 'border-radius': '6px', border: 'none',
+            background: chartColors.primary, color: '#fff',
+            'font-size': '11px', cursor: installingSkill() === props.name ? 'not-allowed' : 'pointer',
+            opacity: installingSkill() === props.name ? '0.6' : '1',
+          }}
+        >
+          {installingSkill() === props.name
+            ? <><Loader size={11} class="animate-spin" /> \u5b89\u88c5\u4e2d</>
+            : <><Download size={11} /> \u5b89\u88c5</>}
+        </button>
+      </Show>
+      <Show when={props.installed}>
+        <span style={{ display: 'flex', 'align-items': 'center', gap: '3px', 'font-size': '11px', color: chartColors.success }}>
+          <CheckCircle size={12} /> \u5df2\u5b89\u88c5
+        </span>
+      </Show>
+    </div>
+  );
+
+  return (
+    <div style={{ 'max-width': '640px' }}>
+      {/* Workspace Skills */}
+      <div style={{
+        background: themeColors.surface,
+        border: `1px solid ${themeColors.border}`,
+        'border-radius': '10px', padding: '16px', 'margin-bottom': '16px',
+      }}>
+        <div style={{ display: 'flex', 'align-items': 'center', 'justify-content': 'space-between', 'margin-bottom': '12px' }}>
+          <h3 style={{ margin: '0', 'font-size': '14px', 'font-weight': '600', color: themeColors.text }}>
+            <Zap size={14} class="inline mr-1" style={{ 'vertical-align': '-2px' }} />
+            Workspace Skills
+          </h3>
+          <button
+            onClick={loadSkills}
+            disabled={openworkStatus() === 'disconnected' || loading()}
+            style={{
+              display: 'flex', 'align-items': 'center', gap: '4px',
+              padding: '4px 10px', 'border-radius': '6px',
+              border: `1px solid ${themeColors.border}`, background: 'transparent',
+              color: themeColors.textMuted, 'font-size': '12px',
+              cursor: openworkStatus() === 'disconnected' ? 'not-allowed' : 'pointer',
+              opacity: openworkStatus() === 'disconnected' ? '0.5' : '1',
+            }}
+          >
+            <RefreshCw size={12} class={loading() ? 'animate-spin' : ''} />
+            \u5237\u65b0
+          </button>
+        </div>
+
+        <Show when={openworkStatus() === 'disconnected'}>
+          <p style={{ margin: '0', 'font-size': '12px', color: themeColors.textMuted, 'text-align': 'center', padding: '20px 0' }}>
+            OpenWork \u672a\u8fde\u63a5\uff0c\u65e0\u6cd5\u52a0\u8f7d Skills
+          </p>
+        </Show>
+
+        <Show when={openworkStatus() !== 'disconnected' && loading()}>
+          <div style={{ display: 'flex', 'align-items': 'center', 'justify-content': 'center', gap: '8px', padding: '20px 0' }}>
+            <Loader size={16} class="animate-spin" style={{ color: themeColors.textMuted }} />
+            <span style={{ 'font-size': '12px', color: themeColors.textMuted }}>\u52a0\u8f7d\u4e2d...</span>
+          </div>
+        </Show>
+
+        <Show when={openworkStatus() !== 'disconnected' && !loading()}>
+          <Show when={wsSkills().length > 0} fallback={
+            <p style={{ margin: '0', 'font-size': '12px', color: themeColors.textMuted, 'text-align': 'center', padding: '12px 0' }}>
+              \u5f53\u524d\u5de5\u4f5c\u533a\u65e0\u5df2\u5b89\u88c5\u7684 Skill
+            </p>
+          }>
+            <div style={{ display: 'flex', 'flex-direction': 'column', gap: '2px' }}>
+              <For each={wsSkills()}>
+                {(skill) => <SkillRow name={skill.name} description={skill.description} source="workspace" installed />}
+              </For>
+            </div>
+          </Show>
+        </Show>
+      </div>
+
+      {/* Hub Skills */}
+      <div style={{
+        background: themeColors.surface,
+        border: `1px solid ${themeColors.border}`,
+        'border-radius': '10px', padding: '16px',
+      }}>
+        <h3 style={{ margin: '0 0 8px', 'font-size': '14px', 'font-weight': '600', color: themeColors.text }}>
+          <Package size={14} class="inline mr-1" style={{ 'vertical-align': '-2px' }} />
+          Hub Skills\uff08\u793e\u533a\uff09
+        </h3>
+        <p style={{ margin: '0 0 12px', 'font-size': '12px', color: themeColors.textMuted }}>
+          \u6d4f\u89c8\u793e\u533a\u5171\u4eab\u7684 Skills\uff0c\u70b9\u51fb\u5b89\u88c5\u5373\u53ef\u6dfb\u52a0\u5230\u5f53\u524d\u5de5\u4f5c\u533a
+        </p>
+
+        <Show when={openworkStatus() !== 'disconnected' && !loading()}>
+          <Show when={hubSkills().length > 0} fallback={
+            <p style={{ margin: '0', 'font-size': '12px', color: themeColors.textMuted, 'text-align': 'center', padding: '12px 0' }}>
+              Hub \u4e2d\u6682\u65e0\u53ef\u7528 Skill
+            </p>
+          }>
+            <div style={{ display: 'flex', 'flex-direction': 'column', gap: '2px' }}>
+              <For each={hubSkills()}>
+                {(skill) => <SkillRow name={skill.name} description={skill.description} source="hub" installed={installedSet().has(skill.name)} />}
+              </For>
+            </div>
+          </Show>
+        </Show>
+
+        <Show when={openworkStatus() !== 'disconnected' && loading()}>
+          <div style={{ display: 'flex', 'align-items': 'center', 'justify-content': 'center', gap: '8px', padding: '20px 0' }}>
+            <Loader size={16} class="animate-spin" style={{ color: themeColors.textMuted }} />
+          </div>
+        </Show>
+
+        <Show when={openworkStatus() === 'disconnected'}>
+          <p style={{ margin: '0', 'font-size': '12px', color: themeColors.textMuted, 'text-align': 'center', padding: '12px 0' }}>
+            OpenWork \u672a\u8fde\u63a5
+          </p>
+        </Show>
+      </div>
+
+      <Show when={statusMsg()}>
+        <p style={{ margin: '12px 0 0', 'font-size': '12px', color: statusMsg()!.startsWith('\u2705') ? chartColors.success : chartColors.error }}>
+          {statusMsg()}
+        </p>
+      </Show>
+    </div>
+  );
+};
+
 const renderTabIcon = (key: string) => {
   const map: Record<string, any> = {
-    theme: Palette, llm: Bot, git: Github, cron: Clock, gate: ShieldCheck, products: Package, profile: User, tools: Wrench,
+    theme: Palette, llm: Bot, git: Github, cron: Clock, gate: ShieldCheck, products: Package, profile: User, tools: Wrench, skills: Zap,
   };
   const I = map[key];
   return I ? <I size={14} class="inline mr-1" /> : null;
@@ -2676,6 +3041,7 @@ const TABS = [
   { key: 'theme', label: '主题外观' },
   { key: 'llm',   label: '大模型配置' },
   { key: 'tools',  label: 'MCP 工具' },
+  { key: 'skills', label: 'Skills' },
   { key: 'git',   label: 'Git 仓库' },
   { key: 'cron',  label: '定时任务' },
   { key: 'gate',  label: '节点门控' },
@@ -2718,6 +3084,7 @@ const Settings: Component = () => {
       <Show when={activeTab() === 'theme'}><ThemeTab /></Show>
       <Show when={activeTab() === 'llm'}><LLMTab /></Show>
       <Show when={activeTab() === 'tools'}><McpToolsTab /></Show>
+      <Show when={activeTab() === 'skills'}><SkillsTab /></Show>
       <Show when={activeTab() === 'git'}><GitTab /></Show>
       <Show when={activeTab() === 'cron'}><CronTab /></Show>
       <Show when={activeTab() === 'gate'}><GateTab /></Show>

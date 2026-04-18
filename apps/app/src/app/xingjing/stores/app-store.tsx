@@ -76,6 +76,12 @@ export interface XingjingOpenworkContext {
   createWorkspaceByDir: (productDir: string, productName: string) => Promise<string | null>;
   /** 列出指定工作区的 MCP 服务器 */
   listMcp: (workspaceId: string) => Promise<Array<{ name: string; config: Record<string, unknown> }>>;
+  /** 添加/更新一个 MCP 服务器配置 */
+  addMcp?: (workspaceId: string, payload: { name: string; config: Record<string, unknown> }) => Promise<boolean>;
+  /** 删除一个 MCP 服务器 */
+  removeMcp?: (workspaceId: string, name: string) => Promise<boolean>;
+  /** 注销 MCP OAuth 认证 */
+  logoutMcpAuth?: (workspaceId: string, name: string) => Promise<boolean>;
   /** 列出指定工作区的 Command 列表 */
   listCommands: (workspaceId: string) => Promise<OpenworkCommandItem[]>;
   /** 获取指定工作区的审计日志 */
@@ -155,9 +161,14 @@ const AppStoreContext = createContext<{
     setLlmConfig: (config: LLMConfig) => void;
     setAllowedTools: (tools: string[]) => void;
     listMcp: () => Promise<Array<{ name: string; config: Record<string, unknown> }>>;
+    addMcp: (payload: { name: string; config: Record<string, unknown> }) => Promise<boolean>;
+    removeMcp: (name: string) => Promise<boolean>;
+    logoutMcpAuth: (name: string) => Promise<boolean>;
     callAgent: (opts: CallAgentOptions) => Promise<void>;
     // OpenWork Skill/Config API
     listOpenworkSkills: () => Promise<OpenworkSkillItem[]>;
+    listHubSkills: () => Promise<Array<{ name: string; description: string }>>;
+    installHubSkill: (name: string) => Promise<boolean>;
     listCommands: () => Promise<OpenworkCommandItem[]>;
     listAudit: (limit?: number) => Promise<OpenworkAuditEntry[]>;
     getOpenworkSkill: (name: string) => Promise<OpenworkSkillContent | null>;
@@ -451,6 +462,24 @@ export const AppStoreProvider: ParentComponent<{
       return props.openworkCtx.listMcp(wsId);
     },
 
+    addMcp: async (payload: { name: string; config: Record<string, unknown> }): Promise<boolean> => {
+      const wsId = resolvedWorkspaceId();
+      if (!wsId || !props.openworkCtx?.addMcp) return false;
+      return props.openworkCtx.addMcp(wsId, payload);
+    },
+
+    removeMcp: async (name: string): Promise<boolean> => {
+      const wsId = resolvedWorkspaceId();
+      if (!wsId || !props.openworkCtx?.removeMcp) return false;
+      return props.openworkCtx.removeMcp(wsId, name);
+    },
+
+    logoutMcpAuth: async (name: string): Promise<boolean> => {
+      const wsId = resolvedWorkspaceId();
+      if (!wsId || !props.openworkCtx?.logoutMcpAuth) return false;
+      return props.openworkCtx.logoutMcpAuth(wsId, name);
+    },
+
     listCommands: async (): Promise<OpenworkCommandItem[]> => {
       const wsId = resolvedWorkspaceId();
       if (!wsId || !props.openworkCtx?.listCommands) return [];
@@ -546,6 +575,15 @@ export const AppStoreProvider: ParentComponent<{
       const wsId = resolvedWorkspaceId();
       if (!wsId || !props.openworkCtx) return Promise.resolve([]);
       return props.openworkCtx.listSkills(wsId);
+    },
+    listHubSkills: async (): Promise<Array<{ name: string; description: string }>> => {
+      if (!props.openworkCtx?.listHubSkills) return [];
+      return props.openworkCtx.listHubSkills();
+    },
+    installHubSkill: async (name: string): Promise<boolean> => {
+      const wsId = resolvedWorkspaceId();
+      if (!wsId || !props.openworkCtx?.installHubSkill) return false;
+      return props.openworkCtx.installHubSkill(wsId, name);
     },
     getOpenworkSkill: (name: string): Promise<OpenworkSkillContent | null> => {
       const wsId = resolvedWorkspaceId();

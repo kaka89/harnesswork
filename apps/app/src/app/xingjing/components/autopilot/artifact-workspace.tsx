@@ -1,13 +1,16 @@
 import { createSignal, createMemo, createEffect, onMount, onCleanup, Show, For } from 'solid-js';
 import {
-  FileText, Edit3, Code2, Eye, Bold, Italic, Type, List, Link, Quote,
+  FileText, Edit3, Code2, Eye,
   ExternalLink, Minimize2, Save, Loader2, PanelRightClose,
 } from 'lucide-solid';
 import { EditorState } from '@codemirror/state';
 import { EditorView, keymap } from '@codemirror/view';
 import { history, defaultKeymap, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { html } from '@codemirror/lang-html';
+import { marked } from 'marked';
+import DOMPurify from 'dompurify';
 import { themeColors, chartColors } from '../../utils/colors';
+import LiveMarkdownEditor from '../../../components/live-markdown-editor';
 
 // ─── 产出物格式 ────────────────────────────────────────────────────────────────
 export type ArtifactFormat = 'markdown' | 'html';
@@ -51,21 +54,10 @@ interface ArtifactWorkspaceProps {
 
 type ViewMode = 'edit' | 'preview';
 
-// 简单 Markdown 渲染（无额外依赖）
-function renderMarkdown(text: string): string {
-  return text
-    // 标题 h1~h3
-    .replace(/^### (.+)$/gm, '<h3 style="font-size:13px;font-weight:700;margin:12px 0 4px">$1</h3>')
-    .replace(/^## (.+)$/gm, '<h2 style="font-size:14px;font-weight:700;margin:14px 0 5px">$1</h2>')
-    .replace(/^# (.+)$/gm, '<h1 style="font-size:16px;font-weight:700;margin:16px 0 6px">$1</h1>')
-    // 加粗 & 斜体
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.+?)\*/g, '<em>$1</em>')
-    // 列表
-    .replace(/^[-•] (.+)$/gm, '<li style="margin:2px 0;padding-left:4px">• $1</li>')
-    // 换行
-    .replace(/\n\n/g, '</p><p style="margin:6px 0">')
-    .replace(/\n/g, '<br/>');
+// Markdown 渲染（marked + DOMPurify 安全渲染，支持完整 Markdown 语法）
+function renderMarkdownSafe(text: string): string {
+  const rawHtml = marked.parse(text, { async: false }) as string;
+  return DOMPurify.sanitize(rawHtml);
 }
 
 // ─── CodeMirror HTML 编辑器主题 ─────────────────────────────────────────────
@@ -178,25 +170,6 @@ const ArtifactWorkspace = (props: ArtifactWorkspaceProps) => {
     props.onContentChange?.(art.id, val);
   };
 
-  // 工具栏：在 textarea 中插入 Markdown 标记
-  const insertMd = (before: string, after = '') => {
-    const art = activeArtifact();
-    if (!art) return;
-    const ta = document.getElementById(`artifact-textarea-${art.id}`) as HTMLTextAreaElement | null;
-    if (!ta) return;
-    const start = ta.selectionStart;
-    const end = ta.selectionEnd;
-    const val = currentContent();
-    const selected = val.slice(start, end);
-    const newVal = val.slice(0, start) + before + selected + after + val.slice(end);
-    handleContentChange(newVal);
-    // 恢复光标
-    requestAnimationFrame(() => {
-      ta.focus();
-      ta.setSelectionRange(start + before.length, start + before.length + selected.length);
-    });
-  };
-
   // 模式按钮根据格式动态决定
   const modeButtons = createMemo(() => {
     if (currentFormat() === 'html') {
@@ -210,15 +183,6 @@ const ArtifactWorkspace = (props: ArtifactWorkspaceProps) => {
       { mode: 'preview' as ViewMode, icon: Eye, label: '预览' },
     ];
   });
-
-  const toolbarButtons = [
-    { icon: Bold, action: () => insertMd('**', '**'), title: '加粗' },
-    { icon: Italic, action: () => insertMd('*', '*'), title: '斜体' },
-    { icon: Type, action: () => insertMd('## '), title: '标题' },
-    { icon: List, action: () => insertMd('- '), title: '列表' },
-    { icon: Quote, action: () => insertMd('> '), title: '引用' },
-    { icon: Link, action: () => insertMd('[', '](url)'), title: '链接' },
-  ];
 
   return (
     <div
@@ -414,32 +378,6 @@ const ArtifactWorkspace = (props: ArtifactWorkspaceProps) => {
             )}
           </For>
 
-          {/* Markdown 编辑模式：格式工具栏 */}
-          <Show when={viewMode() === 'edit' && currentFormat() === 'markdown'}>
-            <div style={{ width: '1px', height: '16px', background: themeColors.border, margin: '0 4px' }} />
-            <For each={toolbarButtons}>
-              {({ icon: Icon, action, title }) => (
-                <button
-                  onClick={action}
-                  title={title}
-                  style={{
-                    display: 'inline-flex',
-                    'align-items': 'center',
-                    'justify-content': 'center',
-                    width: '24px',
-                    height: '24px',
-                    'border-radius': '4px',
-                    cursor: 'pointer',
-                    border: 'none',
-                    background: 'transparent',
-                    color: themeColors.textMuted,
-                  }}
-                >
-                  <Icon size={13} />
-                </button>
-              )}
-            </For>
-          </Show>
         </div>
 
         {/* 内容区 */}
@@ -447,30 +385,15 @@ const ArtifactWorkspace = (props: ArtifactWorkspaceProps) => {
           <Show when={activeArtifact()}>
             {(art) => (
               <>
-                {/* ── Markdown 编辑模式 ── */}
+                {/* ── Markdown 编辑模式（LiveMarkdownEditor — Obsidian 风格） ── */}
                 <Show when={viewMode() === 'edit' && currentFormat() === 'markdown'}>
-                  <textarea
-                    id={`artifact-textarea-${art().id}`}
-                    value={currentContent()}
-                    onInput={(e) => handleContentChange(e.currentTarget.value)}
-                    style={{
-                      flex: '1',
-                      width: '100%',
-                      resize: 'none',
-                      border: 'none',
-                      outline: 'none',
-                      padding: '12px 14px',
-                      'font-size': '13px',
-                      'line-height': '1.7',
-                      'font-family': 'inherit',
-                      background: themeColors.surface,
-                      color: themeColors.text,
-                      'overflow-y': 'auto',
-                      'box-sizing': 'border-box',
-                      height: '100%',
-                    }}
-                    placeholder="在此编辑 Markdown 内容..."
-                  />
+                  <div style={{ flex: '1', overflow: 'hidden' }}>
+                    <LiveMarkdownEditor
+                      value={currentContent()}
+                      onChange={handleContentChange}
+                      placeholder="在此编辑 Markdown 内容..."
+                    />
+                  </div>
                 </Show>
 
                 {/* ── HTML 源码编辑模式（CodeMirror） ── */}
@@ -481,19 +404,20 @@ const ArtifactWorkspace = (props: ArtifactWorkspaceProps) => {
                   />
                 </Show>
 
-                {/* ── Markdown 预览模式 ── */}
+                {/* ── Markdown 预览模式（marked + DOMPurify 安全渲染） ── */}
                 <Show when={viewMode() === 'preview' && currentFormat() === 'markdown'}>
                   <div
                     style={{
                       flex: '1',
                       'overflow-y': 'auto',
                       padding: '12px 14px',
-                      'font-size': '13px',
+                      'font-size': '14px',
                       'line-height': '1.8',
                       color: themeColors.text,
                     }}
+                    class="prose prose-sm max-w-none"
                     // eslint-disable-next-line solid/no-innerhtml
-                    innerHTML={`<p style="margin:6px 0">${renderMarkdown(currentContent())}</p>`}
+                    innerHTML={renderMarkdownSafe(currentContent())}
                   />
                 </Show>
 

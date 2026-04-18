@@ -115,6 +115,15 @@ export default function XingjingNativePage(props: XingjingNativePageProps) {
           listMcp: (workspaceId) =>
             props.openworkServerClient!.listMcp(workspaceId)
               .then((r) => r.items.map((i) => ({ name: i.name, config: i.config }))).catch(() => []),
+          addMcp: (workspaceId, payload) =>
+            props.openworkServerClient!.addMcp(workspaceId, payload)
+              .then(() => true).catch(() => false),
+          removeMcp: (workspaceId, name) =>
+            props.openworkServerClient!.removeMcp(workspaceId, name)
+              .then(() => true).catch(() => false),
+          logoutMcpAuth: (workspaceId, name) =>
+            props.openworkServerClient!.logoutMcpAuth(workspaceId, name)
+              .then(() => true).catch(() => false),
           readWorkspaceFile: (workspaceId, path) =>
             props.openworkServerClient!.readWorkspaceFile(workspaceId, path)
               .then((r) => ({ content: r.content })).catch(() => null),

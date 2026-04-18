@@ -6,14 +6,14 @@ meta:
   author: architect-agent
   reviewers: [tech-lead]
   source_spec: null
-  revision: "1.0"
+  revision: "2.0"
   created: "2026-04-17"
   updated: "2026-04-17"
 sections:
   background: "独立版 AI 会话调用 session.create 时持续报 ConfigInvalidError，根因是设置页生成的 opencode.jsonc 不符合 OpenCode schema，同时 auth.set 后缺少 dispose+waitForHealthy 导致内存状态不刷新"
-  goals: "修正 opencode.jsonc 生成格式、完善 API Key 到 OpenCode 的全链路同步流程、增加四层诊断日志体系，使独立版 AI 对话能力完全可用"
+  goals: "修正 opencode.jsonc 生成格式、完善 API Key 到 OpenCode 的全链路同步流程、修复 SSE 消息过滤与 Tab 显示 Bug、增加四层诊断日志体系，使独立版 AI 对话能力完全可用"
   architecture: "settings handleSave 改为 read-merge-write 模式保留合法字段；setProviderAuth 四步流程对齐 OpenWork refreshProviders；session.create 失败时清除 auth 缓存触发下次完整重同步"
-  interfaces: "opencode-client.ts: setProviderAuth / clearProviderAuthCache / callAgent / runAgentSession; settings/index.tsx: handleSave / readOpencodeConfig; app-store.tsx: registerEnsureAuth"
+  interfaces: "opencode-client.ts: setProviderAuth / clearProviderAuthCache / callAgent / runAgentSession; settings/index.tsx: handleSave / readOpencodeConfig; app-store.tsx: registerEnsureAuth; team-session-orchestrator.ts: run / runDirect / setActiveTab"
   nfr: "首次对话额外 1-2s（dispose+waitForHealthy）；后续对话走缓存无额外延迟；编译零新增错误；四层日志前缀支持快速定位故障点"
 ---
 
@@ -210,7 +210,7 @@ session.create 返回错误
   → saveGlobalSettings(yaml)              // 本地持久化
 ```
 
-### 5.2 AI 对话流程
+### 5.2 Chat 模式对话流程
 
 ```
 用户发送消息
@@ -223,9 +223,29 @@ session.create 返回错误
   │               ├─ session.create(title, directory)
   │               │   ├─ 成功 → promptAsync → SSE 流
   │               │   └─ 失败 → clearProviderAuthCache → hard-error
-  │               └─ SSE 流式接收 → onText → onDone
+  │               └─ SSE 事件分流
+  │                   ├─ message.updated → 追踪 userMsgId（role 在 message 级别）
+  │                   ├─ message.part.updated → 过滤 user 消息 → 累积 AI 文本 → onText
+  │                   ├─ message.part.delta → 增量追加 → onText
+  │                   └─ session.completed/idle → onDone
   └─ 用户重试（如失败）
       └─ 缓存已清 → setProviderAuth 完整流程 → dispose → 重读配置
+```
+
+### 5.3 Dispatch 模式调度流程
+
+```
+用户发送消息
+  → handleStart()
+  │   └─ orchestrator.run(goal)
+  │       ├─ Phase 1: createOrchestratorSession → promptAsync → 解析 dispatchPlan
+  │       └─ Phase 2: Promise.all(createAgentSession × N)
+  │           ├─ 设置 agentSlots
+  │           ├─ 自动切换 activeTabId → 第一个 Agent Tab
+  │           └─ 各 Agent 的 MessageAccumulator 独立订阅 SSE → messages() 响应式更新
+  └─ UI 渲染
+      ├─ activeTabId !== 'orchestrator' → AgentSessionView 显示实时 AI 输出
+      └─ SessionTabBar 展示各 Agent 状态与切换
 ```
 
 ---
@@ -243,7 +263,37 @@ session.create 返回错误
 
 ---
 
-## 7. 风险与约束
+## 7. SSE 消息过滤与 Tab 显示修复（v2.0 新增）
+
+### 7.1 Dispatch 模式 Tab 不自动切换
+
+**根因**: `orchestrator.run()` Phase 2 完成后 `activeTabId` 仍停留在 `'orchestrator'`，渲染条件 `activeTabId !== 'orchestrator' && getActiveSlot()` 为 false，用户只看到占位文案 "点击上方 Tab 查看"。对比 `runDirect()` 有显式 `setState('activeTabId', agentId)` 切换。
+
+**修复**: Phase 2 `Promise.all` 完成后，自动切换 `activeTabId` 到第一个 Agent。
+
+### 7.2 Chat 模式 userMsgId 误判
+
+**根因**: 旧代码 `sendPrompt && !userMsgId && partMsgId` 回退逻辑将首个到达且无 `role` 的消息无条件标记为用户消息。若 AI 响应先于 prompt 回显到达（或 `part.role` 未定义），AI 消息 ID 被误设为 `userMsgId` → 所有 AI 文本被过滤 → `onText` 永远不被调用。
+
+**修复**: 移除激进回退，仅通过以下两个可靠路径识别用户消息：
+1. `message.updated` 事件的 `msg.role === 'user'`（message 级别最可靠）
+2. `message.part.updated` 事件的 `part.role === 'user'`（part 级别补充）
+
+### 7.3 Delta 事件竞态
+
+**根因**: `message.part.delta` 处理要求 `sessionMsgIds.has(msgId)` 预注册，但 delta 可能先于 `message.part.updated` 到达。
+
+**修复**: 放宽条件为 `msgId !== userMsgId` 即可处理 delta，并自动将 msgId 注册到 `sessionMsgIds`。
+
+### 7.4 缺少 message.updated 事件处理
+
+**根因**: `runAgentSession` 只处理 `message.part.*` 事件，不处理 `message.updated`。而 `message.updated` 是 OpenCode 中携带可靠 `msg.role` 字段的事件类型。
+
+**修复**: 新增 `message.updated` handler，从 `msg.role` 可靠追踪 userMsgId 和 assistantMsgId，并注册到 `sessionMsgIds`。
+
+---
+
+## 8. 风险与约束
 
 | 风险 | 缓解 |
 |------|------|
@@ -254,8 +304,9 @@ session.create 返回错误
 
 ---
 
-## 8. 验证清单
+## 9. 验证清单
 
+### v1.0 — ConfigInvalidError 修复
 - [x] opencode.jsonc 生成格式符合 `https://opencode.ai/config.json` schema
 - [x] setProviderAuth 四步流程（auth.set → dispose → waitForHealthy → provider.list）
 - [x] provider.list 返回值正确解析 `{all: [...]}` 结构
@@ -265,3 +316,10 @@ session.create 返回错误
 - [x] 诊断日志四层前缀覆盖全链路
 - [x] 编译零新增错误（仅 2 个预存错误）
 - [x] 批量修正存量 opencode.jsonc 文件（6 个产品目录）
+
+### v2.0 — SSE 消息过滤与 Tab 显示修复
+- [x] dispatch 模式 Phase 2 完成后自动切换到第一个 Agent Tab
+- [x] 移除 userMsgId 激进回退逻辑，防止 AI 消息被误过滤
+- [x] message.part.delta 放宽 sessionMsgIds 注册要求，修复竞态
+- [x] 新增 message.updated 事件处理器，可靠追踪用户/助手消息 ID
+- [x] 编译零新增错误

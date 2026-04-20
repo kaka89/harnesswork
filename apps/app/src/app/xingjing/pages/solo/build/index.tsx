@@ -91,6 +91,21 @@ const TaskCard: Component<{ task: SoloTask; active?: boolean }> = (props) => {
               📝 {props.task.note}
             </div>
           </Show>
+          {/* SDD-007: 来源需求 & 所属功能 */}
+          <Show when={(props.task as any).linkedReqTitle || (props.task as any).feature}>
+            <div style={{ display: 'flex', gap: '8px', 'flex-wrap': 'wrap', 'margin-bottom': '8px', 'font-size': '11px' }}>
+              <Show when={(props.task as any).linkedReqTitle}>
+                <span style={{ padding: '2px 6px', 'border-radius': '4px', background: themeColors.primaryBg, color: chartColors.primary }}>
+                  📋 {(props.task as any).linkedReqTitle}
+                </span>
+              </Show>
+              <Show when={(props.task as any).feature}>
+                <span style={{ padding: '2px 6px', 'border-radius': '4px', background: themeColors.hover, color: themeColors.textSecondary }}>
+                  📦 {(props.task as any).feature}
+                </span>
+              </Show>
+            </div>
+          </Show>
         </div>
       </div>
       <div>

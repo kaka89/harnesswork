@@ -265,10 +265,13 @@ export interface RequirementOutput {
   createdAt: string;
 }
 
-const reqTypeLabel: Record<RequirementType, string> = {
+const reqTypeLabel: Record<string, string> = {
   'user-story': '用户故事',
   acceptance: '验收标准',
   nfr: '非功能需求',
+  feature: '功能需求',
+  'bug-fix': '缺陷修复',
+  'tech-debt': '技术债务',
 };
 
 export { reqTypeLabel };

@@ -1000,7 +1000,9 @@ export async function saveCompetitors(workDir: string, items: SoloCompetitor[]):
 
 // ─── Solo: Requirement Outputs ──────────────────────────────────────────────
 
-export type SoloRequirementType = 'user-story' | 'acceptance' | 'nfr';
+export type SoloRequirementType = 'user-story' | 'feature' | 'bug-fix' | 'tech-debt' | 'acceptance' | 'nfr';
+
+export type RequirementStatus = 'draft' | 'review' | 'accepted' | 'in-dev' | 'done' | 'rejected';
 
 export interface SoloRequirementOutput {
   id: string;
@@ -1010,6 +1012,15 @@ export interface SoloRequirementOutput {
   priority: 'P0' | 'P1' | 'P2' | 'P3';
   linkedHypothesis?: string;
   createdAt: string;
+  // ─── SDD-007 新增字段 ───
+  linkedFeatureId?: string;     // 关联的功能模块 ID（product/features/ 下的目录名）
+  status?: RequirementStatus;   // 需求生命周期状态
+  linkedTaskIds?: string[];     // 拆解出的任务 ID 列表
+  sourceInsightId?: string;     // 来源洞察记录 ID
+  sprintId?: string;            // 所属 Sprint
+  assignee?: string;            // 负责人
+  updatedAt?: string;           // 最后更新时间
+  acceptedAt?: string;          // 需求被接受时间
 }
 
 export async function loadRequirementOutputs(workDir: string): Promise<SoloRequirementOutput[]> {
@@ -1027,6 +1038,21 @@ export async function saveRequirementOutput(workDir: string, item: SoloRequireme
     `${workDir}/iterations/requirements/${item.id}.yaml`,
     item as unknown as Record<string, unknown>,
   );
+}
+
+/** 便捷函数：更新需求状态 */
+export async function updateRequirementStatus(
+  workDir: string,
+  id: string,
+  status: RequirementStatus,
+): Promise<boolean> {
+  const items = await loadRequirementOutputs(workDir);
+  const item = items.find((r) => r.id === id);
+  if (!item) return false;
+  item.status = status;
+  item.updatedAt = new Date().toISOString();
+  if (status === 'accepted') item.acceptedAt = new Date().toISOString();
+  return saveRequirementOutput(workDir, item);
 }
 
 // ─── Solo: Tasks ────────────────────────────────────────────────────────────
@@ -1047,6 +1073,10 @@ export interface SoloTaskRecord {
   hypothesis?: string;
   completedAt?: string;
   archived?: boolean;
+  // ─── SDD-007 新增字段 ───
+  requirementId?: string;       // 来源需求 ID（向上溯源）
+  sprintId?: string;            // 所属 Sprint
+  linkedReqTitle?: string;      // 冗余存储来源需求标题
 }
 
 export async function loadSoloTasks(workDir: string): Promise<SoloTaskRecord[]> {

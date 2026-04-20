@@ -7,6 +7,7 @@ import {
   loadRequirementOutputs,
   saveHypothesis,
   saveRequirementOutput,
+  updateRequirementStatus,
   loadUserFeedbacks,
   loadProductFeatures,
   loadProductOverview,
@@ -18,6 +19,7 @@ import {
   type SoloUserFeedback,
   type SoloProductFeature,
   type SoloBusinessMetric,
+  type RequirementStatus,
 } from '../../../services/file-store';
 import { SOLO_AGENTS } from '../../../services/autopilot-executor';
 import { invalidateKnowledgeCache } from '../../../services/knowledge-retrieval';
@@ -30,6 +32,10 @@ import { loadInsightRecords, saveInsightRecord, deleteInsightRecord } from '../.
 import InsightAgentPanel from '../../../components/insight/insight-agent-panel';
 import InsightBoard from '../../../components/insight/insight-board';
 import FeedbackCard from '../../../components/insight/feedback-card';
+import RequirementCard from '../../../components/requirement/requirement-card';
+import PushToDevModal from '../../../components/requirement/push-to-dev-modal';
+import { pushRequirementToDev, type TaskDraft } from '../../../services/requirement-dev-bridge';
+import GitStatusBadge from '../../../components/common/git-status-badge';
 
 const statusConfig: Record<SoloHypothesisStatus, { label: string; icon: string; bg: string; border: string; cardBorder: string }> = {
   testing:     { label: '验证中',  icon: '🧪', bg: themeColors.primaryBg, border: themeColors.primaryBorder, cardBorder: themeColors.border },
@@ -276,7 +282,7 @@ const REQ_DOC_REGEX = /^\[REQ_DOC:([^\]]+)\]/;
 
 const SoloProduct: Component = () => {
   const { productStore, actions } = useAppStore();
-  const [activeTab, setActiveTab] = createSignal<'hypotheses' | 'features' | 'feedbacks' | 'insights'>('hypotheses');
+  const [activeTab, setActiveTab] = createSignal<'hypotheses' | 'requirements' | 'features' | 'feedbacks' | 'insights'>('hypotheses');
   const [hypotheses, setHypotheses] = createSignal<SoloHypothesis[]>([]);
   const [requirements, setRequirements] = createSignal<SoloRequirementOutput[]>([]);
   const [insightRecords, setInsightRecords] = createSignal<InsightRecord[]>([]);
@@ -298,6 +304,20 @@ const SoloProduct: Component = () => {
   const [newHypothesisModal, setNewHypothesisModal] = createSignal(false);
   const [newHypothesisText, setNewHypothesisText] = createSignal('');
   const [newHypothesisMethod, setNewHypothesisMethod] = createSignal('');
+
+  // 需求筛选
+  const [reqFilterFeature, setReqFilterFeature] = createSignal('');
+  const [reqFilterStatus, setReqFilterStatus] = createSignal('');
+  const filteredRequirements = () => {
+    let list = requirements();
+    const feat = reqFilterFeature();
+    const st = reqFilterStatus();
+    if (feat) list = list.filter((r) => r.linkedFeatureId === feat);
+    if (st) list = list.filter((r) => (r.status ?? 'draft') === st);
+    return list;
+  };
+  // 推送至研发目标需求
+  const [pushToDevTarget, setPushToDevTarget] = createSignal<SoloRequirementOutput | null>(null);
 
   // Drag-and-drop
   const [draggingId, setDraggingId] = createSignal<string | null>(null);
@@ -321,6 +341,20 @@ const SoloProduct: Component = () => {
 
   // 竞态保护：loadVersion 递增计数器，防止快速切换产品时旧请求覆盖新数据
   let loadVersion = 0;
+
+  // ─── 需求状态操作 handlers ───
+  const handleRequirementStatusChange = async (id: string, status: RequirementStatus) => {
+    const workDir = productStore.activeProduct()?.workDir;
+    if (!workDir) return;
+    await updateRequirementStatus(workDir, id, status);
+    // 刷新列表
+    const updated = await loadRequirementOutputs(workDir);
+    setRequirements(updated);
+  };
+
+  const handlePushToDev = (requirement: SoloRequirementOutput) => {
+    setPushToDevTarget(requirement);
+  };
 
   const loadAllData = async () => {
     const workDir = productStore.activeProduct()?.workDir;
@@ -662,6 +696,7 @@ ${reqSummary}
             <span style={{ 'font-size': '12px', padding: '4px 8px', background: themeColors.successBg, color: chartColors.success, 'border-radius': '9999px' }}>✅ {validatedItems().length} 个已证实</span>
           </Show>
         </div>
+        <GitStatusBadge workDir={() => productStore.activeProduct()?.workDir} />
       </div>
 
       <div style={{ display: 'flex', gap: '16px', 'align-items': 'flex-start' }}>
@@ -673,6 +708,10 @@ ${reqSummary}
               <button style={tabStyle(activeTab() === 'hypotheses')} onClick={() => setActiveTab('hypotheses')}>
                 🧪 产品假设
                 <span style={{ 'margin-left': '6px', 'font-size': '12px', padding: '1px 6px', background: themeColors.primaryBg, color: chartColors.primary, 'border-radius': '9999px' }}>{testingItems().length} 验证中</span>
+              </button>
+              <button style={tabStyle(activeTab() === 'requirements')} onClick={() => setActiveTab('requirements')}>
+                📋 产品需求
+                <span style={{ 'margin-left': '6px', 'font-size': '12px', padding: '1px 6px', background: themeColors.hover, color: themeColors.textSecondary, 'border-radius': '9999px' }}>{requirements().length}</span>
               </button>
               <button style={tabStyle(activeTab() === 'features')} onClick={() => setActiveTab('features')}>
                 📦 功能注册
@@ -728,6 +767,54 @@ ${reqSummary}
                   <HypothesisColumn title="验证中" status="testing" items={testingItems()} onDetail={openHypoDetail} onAddNew={() => setNewHypothesisModal(true)} drag={drag} />
                   <HypothesisColumn title="已证实" status="validated" items={validatedItems()} onDetail={openHypoDetail} drag={drag} />
                   <HypothesisColumn title="已推翻" status="invalidated" items={invalidatedItems()} onDetail={openHypoDetail} drag={drag} />
+                </div>
+              </Show>
+
+              {/* Product Requirements */}
+              <Show when={activeTab() === 'requirements'}>
+                <div style={{ display: 'flex', 'flex-direction': 'column', gap: '12px' }}>
+                  {/* Filters */}
+                  <div style={{ display: 'flex', gap: '8px', 'flex-wrap': 'wrap', 'margin-bottom': '4px' }}>
+                    <select
+                      style={{ 'font-size': '12px', padding: '4px 8px', 'border-radius': '6px', border: `1px solid ${themeColors.border}`, background: themeColors.surface, color: themeColors.text }}
+                      onChange={(e) => setReqFilterFeature(e.currentTarget.value)}
+                    >
+                      <option value="">全部功能</option>
+                      <For each={features()}>
+                        {(f) => <option value={f.id}>{f.title ?? f.name}</option>}
+                      </For>
+                    </select>
+                    <select
+                      style={{ 'font-size': '12px', padding: '4px 8px', 'border-radius': '6px', border: `1px solid ${themeColors.border}`, background: themeColors.surface, color: themeColors.text }}
+                      onChange={(e) => setReqFilterStatus(e.currentTarget.value)}
+                    >
+                      <option value="">全部状态</option>
+                      <option value="draft">草稿</option>
+                      <option value="review">审核中</option>
+                      <option value="accepted">已确认</option>
+                      <option value="in-dev">研发中</option>
+                      <option value="done">已完成</option>
+                      <option value="rejected">已否决</option>
+                    </select>
+                  </div>
+                  {/* Requirement list */}
+                  <Show when={filteredRequirements().length === 0}>
+                    <div style={{ 'text-align': 'center', padding: '48px 0', color: themeColors.textMuted, 'font-size': '14px' }}>
+                      <div style={{ 'font-size': '32px', 'margin-bottom': '8px' }}>📋</div>
+                      <div>暂无产品需求</div>
+                      <div style={{ 'font-size': '12px', 'margin-top': '4px' }}>通过 AI 产品搭档生成需求，或在洞察面板中转化建议为需求</div>
+                    </div>
+                  </Show>
+                  <For each={filteredRequirements()}>
+                    {(req) => (
+                      <RequirementCard
+                        requirement={req}
+                        features={features()}
+                        onStatusChange={handleRequirementStatusChange}
+                        onPushToDev={handlePushToDev}
+                      />
+                    )}
+                  </For>
                 </div>
               </Show>
 
@@ -1014,6 +1101,28 @@ ${reqSummary}
             </div>
           </div>
         </div>
+      </Show>
+
+      {/* Push to Dev Modal */}
+      <Show when={pushToDevTarget()}>
+        <PushToDevModal
+          requirement={pushToDevTarget()!}
+          features={features()}
+          onCancel={() => setPushToDevTarget(null)}
+          onConfirm={async (tasks: TaskDraft[], sprintId?: string) => {
+            const workDir = productStore.activeProduct()?.workDir;
+            if (!workDir || !pushToDevTarget()) return;
+            await pushRequirementToDev({
+              workDir,
+              requirement: pushToDevTarget()!,
+              tasks,
+              sprintId,
+            });
+            setPushToDevTarget(null);
+            const updated = await loadRequirementOutputs(workDir);
+            setRequirements(updated);
+          }}
+        />
       </Show>
     </div>
   );

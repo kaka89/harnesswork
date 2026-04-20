@@ -346,8 +346,8 @@ ${product.description ? `\n## 描述\n${product.description}` : ''}
     await savePreferences(updatedPrefs);
 
     // Re-initialize OpenCode client with the new product's workDir
-    const { baseUrl } = await resolveOpenCodeInfo();
-    setWorkingDirectory(product.workDir, baseUrl);
+    const { baseUrl, username, password } = await resolveOpenCodeInfo();
+    setWorkingDirectory(product.workDir, baseUrl, { username, password });
   }
 
   async function setViewMode(mode: 'team' | 'solo') {
@@ -579,8 +579,8 @@ ${product.description ? `\n## 描述\n${product.description}` : ''}
   createEffect(() => {
     const product = activeProduct();
     if (product) {
-      resolveOpenCodeInfo().then(({ baseUrl }) => {
-        setWorkingDirectory(product.workDir, baseUrl);
+      resolveOpenCodeInfo().then(({ baseUrl, username, password }) => {
+        setWorkingDirectory(product.workDir, baseUrl, { username, password });
       });
     }
   });

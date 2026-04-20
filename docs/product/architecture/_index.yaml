@@ -66,3 +66,13 @@ items:
     file: ../features/global-path-routing-fix/spec/SDD-011-global-path-routing-fix.md
     created: "2026-04-18"
     updated: "2026-04-18"
+
+  - id: SDD-013
+    title: AI 对话 Git 认证注入——bash push Token 自动携带 + GitHub MCP 本地化
+    status: approved
+    author: architect-agent
+    reviewers: [tech-lead]
+    revision: "1.0"
+    file: ../features/git-auth-injection/spec/SDD-013-git-auth-injection.md
+    created: "2026-04-18"
+    updated: "2026-04-18"

@@ -192,12 +192,11 @@ export async function readMarkdownDir<
   return results;
 }
 
-// ─── Team 模式实体 CRUD ──────────────────────────────────────────────────────
-// 所有数据存储在项目 workDir 的 .xingjing/ 子目录中
-// PRD: .xingjing/prds/{id}.md (frontmatter + body)
-// Task: .xingjing/tasks/{id}.yaml
-// Backlog: .xingjing/backlog/items.yaml
-// Sprint: .xingjing/sprints/current.yaml
+// ─── Solo 模式实体 CRUD（对齐 ENGINEERING-STRUCTURE-SOLO.md）─────────────────
+// PRD:     product/features/{feature-slug}/PRD.md (frontmatter + body)
+// Task:    iterations/tasks/{id}.yaml
+// Backlog: product/backlog.yaml
+// Features Index: product/features/_index.yml
 
 // ─── PRD ─────────────────────────────────────────────────────────────────────
 
@@ -216,15 +215,38 @@ export interface PrdFrontmatter {
 }
 
 /**
- * 从项目目录加载所有 PRD
+ * 从 product/features/ 子目录加载所有 PRD
+ * 遍历 product/features/ 下每个功能子目录，读取其中的 PRD.md
  */
 export async function loadPrds(workDir: string): Promise<PrdFrontmatter[]> {
-  const dir = `${workDir}/.xingjing/prds`;
+  const featuresDir = `${workDir}/product/features`;
   try {
-    const docs = await readMarkdownDir<Record<string, unknown>>(dir);
-    return docs
-      .map((d) => ({ ...(d.frontmatter as unknown as PrdFrontmatter), _body: d.body }))
-      .filter((d) => !!d.id);
+    const nodes = await fileList(featuresDir);
+    // 筛选子目录（功能目录）
+    const featureDirs = nodes.filter((n) => n.type === 'directory');
+    const results: PrdFrontmatter[] = [];
+    await Promise.all(
+      featureDirs.map(async (dir) => {
+        const prdPath = `${dir.path}/PRD.md`;
+        try {
+          const doc = await readMarkdownWithFrontmatter<Record<string, unknown>>(
+            prdPath,
+            { frontmatter: {} as Record<string, unknown>, body: '' },
+          );
+          if (doc.frontmatter && Object.keys(doc.frontmatter).length > 0) {
+            const prd = {
+              ...(doc.frontmatter as unknown as PrdFrontmatter),
+              _body: doc.body,
+              _featureSlug: dir.name,
+            };
+            if (prd.id) results.push(prd);
+          }
+        } catch {
+          // 该功能目录下没有 PRD.md，跳过
+        }
+      }),
+    );
+    return results;
   } catch {
     return [];
   }
@@ -232,15 +254,18 @@ export async function loadPrds(workDir: string): Promise<PrdFrontmatter[]> {
 
 /**
  * 保存单个 PRD（创建或更新）
+ * 写入 product/features/{featureSlug}/PRD.md
  */
 export async function savePrd(
   workDir: string,
-  prd: PrdFrontmatter & { description?: string; userStories?: unknown[] },
+  prd: PrdFrontmatter & { description?: string; userStories?: unknown[]; _featureSlug?: string },
 ): Promise<boolean> {
-  const { description, userStories, ...frontmatter } = prd as PrdFrontmatter & { description?: string; userStories?: unknown[] };
+  const { description, userStories, _featureSlug, ...frontmatter } = prd as PrdFrontmatter & { description?: string; userStories?: unknown[]; _featureSlug?: string };
+  // 确定功能目录 slug：优先使用 _featureSlug，否则从 id 或 title 生成
+  const slug = _featureSlug || toFeatureSlug(prd.id || prd.title);
   const body = description ? `## 需求描述\n\n${description}\n` : '';
   return writeMarkdownWithFrontmatter(
-    `${workDir}/.xingjing/prds/${prd.id}.md`,
+    `${workDir}/product/features/${slug}/PRD.md`,
     {
       frontmatter: frontmatter as unknown as Record<string, unknown>,
       body,
@@ -251,8 +276,21 @@ export async function savePrd(
 /**
  * 删除单个 PRD
  */
-export async function deletePrd(workDir: string, id: string): Promise<boolean> {
-  return deleteFile(`${workDir}/.xingjing/prds/${id}.md`);
+export async function deletePrd(workDir: string, id: string, featureSlug?: string): Promise<boolean> {
+  const slug = featureSlug || toFeatureSlug(id);
+  return deleteFile(`${workDir}/product/features/${slug}/PRD.md`);
+}
+
+/** 将 ID 或 title 转为 kebab-case 功能目录名 */
+function toFeatureSlug(str: string): string {
+  return str
+    .trim()
+    .replace(/[\s_]+/g, '-')
+    .replace(/([a-z])([A-Z])/g, '$1-$2')
+    .replace(/[^a-zA-Z0-9\u4e00-\u9fff-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .toLowerCase();
 }
 
 // ─── Task ─────────────────────────────────────────────────────────────────────
@@ -274,10 +312,10 @@ export interface TaskRecord {
 }
 
 /**
- * 从项目目录加载所有 Task（YAML 目录）
+ * 从 iterations/tasks/ 目录加载所有 Task
  */
 export async function loadTasks(workDir: string): Promise<TaskRecord[]> {
-  const dir = `${workDir}/.xingjing/tasks`;
+  const dir = `${workDir}/iterations/tasks`;
   try {
     const items = await readYamlDir<TaskRecord>(dir);
     return items.filter((t) => !!t.id);
@@ -287,17 +325,17 @@ export async function loadTasks(workDir: string): Promise<TaskRecord[]> {
 }
 
 /**
- * 保存单个 Task（YAML 文件）
+ * 保存单个 Task 到 iterations/tasks/
  */
 export async function saveTask(workDir: string, task: TaskRecord): Promise<boolean> {
   return writeYaml(
-    `${workDir}/.xingjing/tasks/${task.id}.yaml`,
+    `${workDir}/iterations/tasks/${task.id}.yaml`,
     task as unknown as Record<string, unknown>,
   );
 }
 
 /**
- * 批量保存所有 Task（覆写目录）
+ * 批量保存所有 Task
  */
 export async function saveTasks(workDir: string, tasks: TaskRecord[]): Promise<boolean> {
   const results = await Promise.all(tasks.map((t) => saveTask(workDir, t)));
@@ -316,10 +354,10 @@ export interface BacklogRecord {
 }
 
 /**
- * 从项目目录加载 Backlog 列表
+ * 从 product/backlog.yaml 加载 Backlog 列表
  */
 export async function loadBacklog(workDir: string): Promise<BacklogRecord[]> {
-  const path = `${workDir}/.xingjing/backlog/items.yaml`;
+  const path = `${workDir}/product/backlog.yaml`;
   try {
     const data = await readYaml<{ items: BacklogRecord[] }>(path, { items: [] });
     return data.items ?? [];
@@ -329,11 +367,11 @@ export async function loadBacklog(workDir: string): Promise<BacklogRecord[]> {
 }
 
 /**
- * 保存 Backlog 列表
+ * 保存 Backlog 列表到 product/backlog.yaml
  */
 export async function saveBacklog(workDir: string, items: BacklogRecord[]): Promise<boolean> {
   return writeYaml(
-    `${workDir}/.xingjing/backlog/items.yaml`,
+    `${workDir}/product/backlog.yaml`,
     { items } as unknown as Record<string, unknown>,
   );
 }
@@ -464,6 +502,64 @@ export async function saveAgentWorkshopData(
   return writeYaml(
     `${workDir}/.xingjing/agent-workshop-${mode}.yaml`,
     data as unknown as Record<string, unknown>,
+  );
+}
+
+// ── 用户级 Agent Workshop 数据（跨产品共享）──────────────────────────────────
+
+const GLOBAL_AGENT_WORKSHOP_FILE = '~/.xingjing/agent-workshop-solo.yaml';
+
+export interface GlobalAgentWorkshopData {
+  agents?: Array<Record<string, unknown>>;
+  skills?: Array<Record<string, unknown>>;
+  agentSkills?: Record<string, string[]>;
+}
+
+/**
+ * 加载用户级 Agent Workshop 数据（~/.xingjing/agent-workshop-solo.yaml）
+ * `~` 经由 expandTildePath() 展开为用户主目录绝对路径，不会在 workspace 下创建字面量目录。
+ */
+export async function loadGlobalAgentWorkshop(): Promise<GlobalAgentWorkshopData> {
+  return readYaml<GlobalAgentWorkshopData>(GLOBAL_AGENT_WORKSHOP_FILE, {});
+}
+
+/**
+ * 保存用户级 Agent Workshop 数据（~/.xingjing/agent-workshop-solo.yaml）
+ */
+export async function saveGlobalAgentWorkshop(
+  data: GlobalAgentWorkshopData,
+): Promise<boolean> {
+  return writeYaml(
+    GLOBAL_AGENT_WORKSHOP_FILE,
+    data as unknown as Record<string, unknown>,
+  );
+}
+
+// ── 产品级 Agent 任务指派（仅当前产品）────────────────────────────────────────
+
+/**
+ * 加载产品级 Agent 任务指派
+ */
+export async function loadAgentAssignments(
+  workDir: string,
+  mode: 'team' | 'solo' = 'solo',
+): Promise<Array<Record<string, unknown>>> {
+  const path = `${workDir}/.xingjing/agent-assignments-${mode}.yaml`;
+  const data = await readYaml<{ assignments: Array<Record<string, unknown>> }>(path, { assignments: [] });
+  return data.assignments ?? [];
+}
+
+/**
+ * 保存产品级 Agent 任务指派
+ */
+export async function saveAgentAssignments(
+  workDir: string,
+  assignments: Array<Record<string, unknown>>,
+  mode: 'team' | 'solo' = 'solo',
+): Promise<boolean> {
+  return writeYaml(
+    `${workDir}/.xingjing/agent-assignments-${mode}.yaml`,
+    { assignments } as unknown as Record<string, unknown>,
   );
 }
 
@@ -1252,4 +1348,55 @@ export async function loadAgentDefs(workDir: string): Promise<AgentDefRecord[]> 
   } catch {
     return [];
   }
+}
+
+// ─── 产品目录自动初始化 ──────────────────────────────────────────────────────
+
+/** 打开产品时需要确保存在的必要文件列表 */
+const ESSENTIAL_PRODUCT_FILES: Array<{ path: string; defaultContent: string }> = [
+  { path: 'product/overview.md', defaultContent: '---\ntitle: 产品概述\n---\n\n# 产品概述\n\n（请在此描述产品定位、核心价值）\n' },
+  { path: 'product/roadmap.md', defaultContent: '---\ntitle: 产品路线图\n---\n\n# Roadmap\n\n（请在此规划版本迭代路线）\n' },
+  { path: 'product/features/_index.yml', defaultContent: 'features: []\n' },
+  { path: 'product/backlog.yaml', defaultContent: 'items: []\n' },
+  { path: 'iterations/tasks/_index.yml', defaultContent: 'items: []\n' },
+  { path: 'iterations/hypotheses/_index.yml', defaultContent: 'items: []\n' },
+  { path: '.xingjing/config.yaml', defaultContent: 'mode: solo\n' },
+];
+
+/**
+ * 检查并自动创建产品所需的必要文件。
+ * 打开产品时调用：逐一检测文件是否存在，缺失则使用默认内容初始化。
+ * @returns 创建的文件数量
+ */
+export async function ensureProductFiles(workDir: string): Promise<number> {
+  let created = 0;
+  for (const file of ESSENTIAL_PRODUCT_FILES) {
+    const fullPath = `${workDir}/${file.path}`;
+    try {
+      const content = await fileRead(fullPath);
+      if (content === null || content === undefined) {
+        // 文件不存在，创建它
+        const ok = await fileWrite(fullPath, file.defaultContent);
+        if (ok) {
+          created++;
+          console.info(`[xingjing] 自动创建缺失文件: ${file.path}`);
+        }
+      }
+    } catch {
+      // 读取失败（文件不存在），尝试创建
+      try {
+        const ok = await fileWrite(fullPath, file.defaultContent);
+        if (ok) {
+          created++;
+          console.info(`[xingjing] 自动创建缺失文件: ${file.path}`);
+        }
+      } catch {
+        // 写入也失败，静默跳过
+      }
+    }
+  }
+  if (created > 0) {
+    console.info(`[xingjing] ensureProductFiles: 共创建 ${created} 个缺失文件`);
+  }
+  return created;
 }

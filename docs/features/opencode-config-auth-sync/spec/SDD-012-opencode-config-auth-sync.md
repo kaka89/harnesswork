@@ -6,15 +6,15 @@ meta:
   author: architect-agent
   reviewers: [tech-lead]
   source_spec: null
-  revision: "2.0"
+  revision: "3.0"
   created: "2026-04-17"
-  updated: "2026-04-17"
+  updated: "2026-04-19"
 sections:
-  background: "独立版 AI 会话调用 session.create 时持续报 ConfigInvalidError，根因是设置页生成的 opencode.jsonc 不符合 OpenCode schema，同时 auth.set 后缺少 dispose+waitForHealthy 导致内存状态不刷新"
-  goals: "修正 opencode.jsonc 生成格式、完善 API Key 到 OpenCode 的全链路同步流程、修复 SSE 消息过滤与 Tab 显示 Bug、增加四层诊断日志体系，使独立版 AI 对话能力完全可用"
-  architecture: "settings handleSave 改为 read-merge-write 模式保留合法字段；setProviderAuth 四步流程对齐 OpenWork refreshProviders；session.create 失败时清除 auth 缓存触发下次完整重同步"
-  interfaces: "opencode-client.ts: setProviderAuth / clearProviderAuthCache / callAgent / runAgentSession; settings/index.tsx: handleSave / readOpencodeConfig; app-store.tsx: registerEnsureAuth; team-session-orchestrator.ts: run / runDirect / setActiveTab"
-  nfr: "首次对话额外 1-2s（dispose+waitForHealthy）；后续对话走缓存无额外延迟；编译零新增错误；四层日志前缀支持快速定位故障点"
+  background: "独立版 AI 会话调用 session.create 时报 ConfigInvalidError 和 Request timed out，根因是 (v1) 配置格式不合法，(v2) SSE 消息过滤误判，(v3) ensureAuth 将 auth.set+dispose 耦合到 session.create 热路径导致配置重载期间 10s 超时"
+  goals: "修正 opencode.jsonc 格式、完善 Auth 同步流程、将 auth 同步从 session.create 热路径解耦、对齐 OpenWork 原生模式"
+  architecture: "v3 架构：settings handleSave 一次性完成 auth.set+dispose+waitForHealthy+session端点就绪检测；session.create 前仅做 health check，不再触发任何 auth 操作"
+  interfaces: "opencode-client.ts: setProviderAuth / callAgent / runAgentSession; settings/index.tsx: handleSave; app-store.tsx: onMount 启动同步"
+  nfr: "首次对话零额外延迟（auth 在启动/设置时已完成）；编译零新增错误；四层日志前缀支持快速定位故障点"
 ---
 
 # SDD-012 OpenCode 配置格式修正与 Auth 同步全链路治理
@@ -37,13 +37,13 @@ sections:
 
 ```
 用户发送消息 → handleChatSend → callAgent → runAgentSession
-  → ensureAuth（同步 API Key）
+  → health check（前置探测）
   → session.create（创建 OpenCode 会话）
   → promptAsync（发送 prompt）
   → SSE 流式接收 AI 响应
 ```
 
-其中 `session.create` 是关键入口——它在指定 `directory`（产品工作目录）下创建 AI 会话。OpenCode 会读取该目录的 `opencode.jsonc` 配置文件并验证 schema。
+Auth 同步已从 session.create 路径中完全移除，改为在设置页保存和应用启动时一次性完成（对齐 OpenWork 原生模式）。
 
 ### 1.2 故障现象
 
@@ -146,22 +146,21 @@ Step 4: provider.list() 验证
 - `session.create` 失败时调用 `clearProviderAuthCache()` 清除缓存
 - 下次请求自动执行完整流程（含 dispose）
 
-### 3.3 session.create 失败自恢复
+### 3.3 session.create 失败处理（v3 简化）
 
 **变更文件**: `services/opencode-client.ts` — `runAgentSession` 函数
 
 ```
 session.create 返回错误
   → 打印完整 error.data（含 configPath + issues）
-  → clearProviderAuthCache()  // 清除缓存
-  → 返回 hard-error
+  → 返回 hard-error（不再清缓存，避免恶性循环）
   
-下次用户重试
-  → ensureAuth 触发 setProviderAuth
-  → 缓存已清空 → 执行完整流程
-  → dispose 强制 OpenCode 重读修正后的 opencode.jsonc
-  → session.create 成功
+用户重试
+  → 直接 health check → session.create
+  → 若仍失败 → 提示用户检查设置页配置
 ```
+
+> **v3 变更**: 移除了 `clearProviderAuthCache()` 调用。旧版在 session.create 失败时清缓存会导致下次重试触发完整 setProviderAuth（含 dispose），而 dispose 触发配置重载又会导致 session 端点阻塞，形成 session.create 超时 → 清缓存 → 重试 dispose → 再次超时 的恶性循环。
 
 ### 3.4 autopilot Bug 修复
 
@@ -189,9 +188,9 @@ session.create 返回错误
 | 文件 | 变更类型 | 说明 |
 |------|---------|------|
 | `xingjing/pages/settings/index.tsx` | 修改 | handleSave read-merge-write + readOpencodeConfig 双格式兼容 |
-| `xingjing/services/opencode-client.ts` | 修改 | setProviderAuth 四步流程 + clearProviderAuthCache + session.create 错误处理 |
+| `xingjing/services/opencode-client.ts` | 修改 | setProviderAuth 四步流程 + session 就绪检测；移除 ensureAuth/clearProviderAuthCache |
+| `xingjing/stores/app-store.tsx` | 修改 | 启动后台 auth 同步；移除 registerEnsureAuth 和产品切换时 setProviderAuth |
 | `xingjing/pages/solo/autopilot/index.tsx` | 修改 | 模型前置验证 + onCleanup/catch 资源清理 + 诊断日志 |
-| `xingjing/stores/app-store.tsx` | 修改 | ensureAuth 钩子诊断日志 |
 
 ---
 
@@ -210,7 +209,7 @@ session.create 返回错误
   → saveGlobalSettings(yaml)              // 本地持久化
 ```
 
-### 5.2 Chat 模式对话流程
+### 5.2 Chat 模式对话流程（v3 简化）
 
 ```
 用户发送消息
@@ -219,18 +218,21 @@ session.create 返回错误
   │   └─ callAgent(opts)
   │       └─ executeAgentWithRetry()
   │           └─ runAgentSession()
-  │               ├─ ensureAuth → setProviderAuth (缓存/完整流程)
+  │               ├─ refreshLocalClient（Tauri 端口刷新）
+  │               ├─ health check（3s 超时）
   │               ├─ session.create(title, directory)
   │               │   ├─ 成功 → promptAsync → SSE 流
-  │               │   └─ 失败 → clearProviderAuthCache → hard-error
+  │               │   └─ 失败 → hard-error（提示用户检查设置）
   │               └─ SSE 事件分流
-  │                   ├─ message.updated → 追踪 userMsgId（role 在 message 级别）
-  │                   ├─ message.part.updated → 过滤 user 消息 → 累积 AI 文本 → onText
-  │                   ├─ message.part.delta → 增量追加 → onText
+  │                   ├─ message.updated → 追踪 userMsgId
+  │                   ├─ message.part.updated → 过滤 user 消息 → 累积 AI 文本
+  │                   ├─ message.part.delta → 增量追加
   │                   └─ session.completed/idle → onDone
   └─ 用户重试（如失败）
-      └─ 缓存已清 → setProviderAuth 完整流程 → dispose → 重读配置
+      └─ 直接 health check → session.create（无 auth 操作）
 ```
+
+> **v3 关键变更**: session.create 前不再调用 ensureAuth，不再触发 auth.set/dispose/waitForHealthy。
 
 ### 5.3 Dispatch 模式调度流程
 
@@ -254,9 +256,9 @@ session.create 返回错误
 
 | 维度 | 要求 | 实现 |
 |------|------|------|
-| **性能** | 首次对话 < 12s（含 dispose+waitForHealthy） | waitForHealthy 8s 超时 + 250ms 轮询 |
+| **性能** | 对话零额外延迟 | auth 同步在启动/设置时完成，session.create 前仅 health check（3s） |
 | **缓存** | 同 Provider/Key 不重复 dispose | `_lastVerifiedAuthKey` 缓存 + provider.list 验证 |
-| **自恢复** | 配置错误后下次自动修复 | clearProviderAuthCache → 下次完整流程 |
+| **解耦** | auth 与 session.create 完全分离 | 移除 ensureAuth 钩子，session.create 路径零 auth 操作 |
 | **可观测** | 5 分钟内定位故障 | 四层日志前缀 + session.create error.data.issues |
 | **兼容性** | 旧配置无损读取 | readOpencodeConfig 支持 string 和 object 两种 model 格式 |
 | **安全** | API Key 不出现在日志 | maskedKey: `sk-b...217e` 脱敏 |
@@ -293,12 +295,80 @@ session.create 返回错误
 
 ---
 
-## 8. 风险与约束
+## 8. Auth 同步从 session.create 热路径解耦（v3.0 新增）
+
+### 8.1 问题根因
+
+v1/v2 的架构将 `setProviderAuth`（auth.set + dispose + waitForHealthy）通过 `ensureAuth` 钩子插入 `runAgentSession` 的 session.create 前：
+
+```
+session.create 调用链（v1/v2）:
+  health check → ensureAuth → auth.set → dispose → waitForHealthy → session.create
+                                    │
+                                    └─ auth.set 触发 OpenCode 配置热重载
+                                       → health 端点可达但 session 端点阻塞
+                                       → session.create 10s 超时
+```
+
+失败后的恶性循环：
+```
+session.create 超时 → clearProviderAuthCache → 下次重试必走完整 setProviderAuth
+  → 再次 auth.set → 再次配置重载 → 再次超时 → 无限循环
+```
+
+### 8.2 OpenWork 原生模式对比
+
+| 维度 | OpenWork 原生 | 星静 v1/v2 | 星静 v3（修复后） |
+|------|-------------|----------|----------------|
+| auth.set 时机 | Settings 页保存时 | session.create 前（ensureAuth） | Settings 页保存 + 启动时 |
+| dispose 时机 | Settings 页保存时 | session.create 前（ensureAuth） | Settings 页保存时 |
+| session.create 前置 | health check 仅 | health check + ensureAuth | health check 仅 |
+| 失败恢复 | 提示用户检查设置 | clearProviderAuthCache → 恶性循环 | 提示用户检查设置 |
+
+### 8.3 技术方案
+
+**变更文件**:
+
+| 文件 | 变更 |
+|------|------|
+| `services/opencode-client.ts` | 移除 `_ensureAuthFn`/`registerEnsureAuth`/`clearProviderAuthCache`；runAgentSession 不再调用 ensureAuth；dispose 前探测改用 health()；新增 session 端点就绪轮询 |
+| `stores/app-store.tsx` | 移除 `registerEnsureAuth` 注册；移除产品切换时 setProviderAuth；改为启动后台同步 |
+
+**Auth 同步时机（v3）**:
+
+```
+1. 应用启动
+   loadGlobalSettings() → setState(llmConfig) → setProviderAuth() [后台]
+
+2. 设置页保存
+   handleSave() → setProviderAuth() → [auth.set+dispose+waitForHealthy+session就绪]
+
+3. 用户发起对话
+   runAgentSession() → health check → session.create → SSE 流
+   （零 auth 操作）
+```
+
+**setProviderAuth 就绪检测增强**:
+
+```
+Step 1: auth.set() — 写入 API Key
+Step 2: global.health() 探测 → dispose() — 触发重载
+  [探测改用 health() 替代 session.list()，避免误判]
+Step 3: waitForHealthy(8s, 250ms) — 等待 health 端点就绪
+Step 3.5: session.list() 轮询(3s, 250ms) — 等待 session 端点就绪 [v3 新增]
+  [消除“health 可达但 session 阻塞”的半就绪状态]
+Step 4: provider.list() 验证 + 缓存
+```
+
+---
+
+## 9. 风险与约束
 
 | 风险 | 缓解 |
 |------|------|
-| `instance.dispose()` 在共享客户端上可能影响 OpenWork | dispose 是 OpenWork 自身 refreshProviders 的标准操作，已验证兼容 |
-| `waitForHealthy` 超时（8s）导致对话延迟 | 仅首次对话触发，后续走缓存；超时不阻断流程 |
+| `instance.dispose()` 在共享客户端上可能影响 OpenWork | dispose 仅在设置页保存和启动时触发，不在对话热路径上；dispose 是 OpenWork 自身 refreshProviders 的标准操作 |
+| 启动时 OpenCode 未就绪 | setProviderAuth 后台执行，失败不阻断启动；用户发起对话时 health check 会检测到问题并触发重试层 |
+| 用户修改 API Key 后未保存即发起对话 | session.create 会报 ConfigInvalidError，提示“请在设置页配置 API Key” |
 | 旧版 opencode.jsonc 存量用户 | readOpencodeConfig 兼容旧格式；handleSave 自动迁移 |
 | OpenCode schema 变更 | `$schema` 声明 + 仅使用标准字段（model/mcp/plugin） |
 
@@ -323,3 +393,14 @@ session.create 返回错误
 - [x] message.part.delta 放宽 sessionMsgIds 注册要求，修复竞态
 - [x] 新增 message.updated 事件处理器，可靠追踪用户/助手消息 ID
 - [x] 编译零新增错误
+
+### v3.0 — Auth 同步从 session.create 热路径解耦
+- [x] 移除 `_ensureAuthFn` / `registerEnsureAuth` 钩子机制
+- [x] 移除 `runAgentSession` 中的 ensureAuth 调用，session.create 路径仅保留 health check
+- [x] 移除 session.create 失败时的 `clearProviderAuthCache`，打断恶性循环
+- [x] 移除产品切换时的 `setProviderAuth` 调用
+- [x] 启动时一次性后台 `setProviderAuth`（loadGlobalSettings 完成后）
+- [x] `setProviderAuth` dispose 前探测改用 `global.health()` 替代 `session.list()`
+- [x] 新增 session 端点就绪轮询（Step 3.5），消除“半就绪”状态
+- [x] 清理死代码 `clearProviderAuthCache` 导出
+- [x] 编译零错误

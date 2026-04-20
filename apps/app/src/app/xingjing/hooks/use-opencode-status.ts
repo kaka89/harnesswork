@@ -1,7 +1,7 @@
 /**
  * useOpenCodeStatus — 检测 OpenCode 服务连接状态的 SolidJS hook
  *
- * 通过定时 ping OpenCode 服务端 /config/providers 端点判断是否可达。
+ * 通过定时 ping OpenCode 服务端 /session（列表）端点判断是否可达。
  * 首次挂载立即检测，之后每 10 秒轮询一次。
  *
  * 自动重连机制：
@@ -33,11 +33,15 @@ export function useOpenCodeStatus(): () => OpenCodeStatus {
   let reconnecting = false;
 
   /** Ping OpenCode 端点，返回是否可达 */
+  // 对齐 OpenWork 原生模式：使用 client.global.health()，自动走 SDK client 正确网络路径
   async function ping(): Promise<boolean> {
     try {
       const client = getXingjingClient();
-      const result = await client.config.providers();
-      return result.data !== null && result.data !== undefined;
+      await Promise.race([
+        client.global.health(),
+        new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000)),
+      ]);
+      return true;
     } catch {
       return false;
     }

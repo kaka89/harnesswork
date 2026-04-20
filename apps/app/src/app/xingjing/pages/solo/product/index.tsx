@@ -1,8 +1,5 @@
 import { Component, createSignal, createEffect, For, Show } from 'solid-js';
 import {
-  Hypothesis,
-  HypothesisStatus,
-  RequirementOutput,
   reqTypeLabel,
 } from '../../../mock/solo';
 import {
@@ -15,6 +12,9 @@ import {
   loadProductOverview,
   loadProductRoadmap,
   loadSoloMetrics,
+  type SoloHypothesis,
+  type SoloHypothesisStatus,
+  type SoloRequirementOutput,
   type SoloUserFeedback,
   type SoloProductFeature,
   type SoloBusinessMetric,
@@ -31,7 +31,7 @@ import InsightAgentPanel from '../../../components/insight/insight-agent-panel';
 import InsightBoard from '../../../components/insight/insight-board';
 import FeedbackCard from '../../../components/insight/feedback-card';
 
-const statusConfig: Record<HypothesisStatus, { label: string; icon: string; bg: string; border: string; cardBorder: string }> = {
+const statusConfig: Record<SoloHypothesisStatus, { label: string; icon: string; bg: string; border: string; cardBorder: string }> = {
   testing:     { label: '验证中',  icon: '🧪', bg: themeColors.primaryBg, border: themeColors.primaryBorder, cardBorder: themeColors.border },
   validated:   { label: '已证实',  icon: '✅', bg: themeColors.successBg, border: themeColors.successBorder, cardBorder: themeColors.successBorder },
   invalidated: { label: '已推翻',  icon: '❌', bg: themeColors.errorBg, border: themeColors.errorBorder, cardBorder: themeColors.errorBorder },
@@ -54,18 +54,18 @@ const priorityStyle: Record<string, { bg: string }> = {
 
 interface DragHandlers {
   draggingId: () => string | null;
-  dragOverStatus: () => HypothesisStatus | null;
+  dragOverStatus: () => SoloHypothesisStatus | null;
   onDragStart: (id: string) => void;
   onDragEnd: () => void;
-  onDrop: (targetStatus: HypothesisStatus, transferId?: string) => void;
-  onDragEnter: (status: HypothesisStatus) => void;
+  onDrop: (targetStatus: SoloHypothesisStatus, transferId?: string) => void;
+  onDragEnter: (status: SoloHypothesisStatus) => void;
   onDragLeave: () => void;
 }
 
 // ─── HypothesisColumn ───────────────────────────────────────────────────────
 
 /** 每列的颜色主题（普通态 / drag-over 态） */
-const columnTheme: Record<HypothesisStatus, {
+const columnTheme: Record<SoloHypothesisStatus, {
   colBg: string; colBorder: string; accentColor: string;
   overBg: string; overBorder: string;
 }> = {
@@ -94,9 +94,9 @@ const columnTheme: Record<HypothesisStatus, {
 
 const HypothesisColumn: Component<{
   title: string;
-  status: HypothesisStatus;
-  items: Hypothesis[];
-  onDetail: (h: Hypothesis) => void;
+  status: SoloHypothesisStatus;
+  items: SoloHypothesis[];
+  onDetail: (h: SoloHypothesis) => void;
   onAddNew?: () => void;
   drag: DragHandlers;
 }> = (props) => {
@@ -277,8 +277,8 @@ const REQ_DOC_REGEX = /^\[REQ_DOC:([^\]]+)\]/;
 const SoloProduct: Component = () => {
   const { productStore, actions } = useAppStore();
   const [activeTab, setActiveTab] = createSignal<'hypotheses' | 'features' | 'feedbacks' | 'insights'>('hypotheses');
-  const [hypotheses, setHypotheses] = createSignal<Hypothesis[]>([]);
-  const [requirements, setRequirements] = createSignal<RequirementOutput[]>([]);
+  const [hypotheses, setHypotheses] = createSignal<SoloHypothesis[]>([]);
+  const [requirements, setRequirements] = createSignal<SoloRequirementOutput[]>([]);
   const [insightRecords, setInsightRecords] = createSignal<InsightRecord[]>([]);
   const [insightLoading, setInsightLoading] = createSignal(false);
   const [pageLoading, setPageLoading] = createSignal(false);
@@ -288,11 +288,11 @@ const SoloProduct: Component = () => {
   const [productOverview, setProductOverview] = createSignal('');
   const [productRoadmap, setProductRoadmap] = createSignal('');
   const [metrics, setMetrics] = createSignal<SoloBusinessMetric[]>([]);
-  const [detailHypo, setDetailHypo] = createSignal<Hypothesis | null>(null);
+  const [detailHypo, setDetailHypo] = createSignal<SoloHypothesis | null>(null);
   const [editMode, setEditMode] = createSignal<'preview' | 'edit'>('preview');
   const [editContent, setEditContent] = createSignal('');
   // 需求详情悬浮窗
-  const [detailReq, setDetailReq] = createSignal<RequirementOutput | null>(null);
+  const [detailReq, setDetailReq] = createSignal<SoloRequirementOutput | null>(null);
   const [reqEditMode, setReqEditMode] = createSignal<'preview' | 'edit'>('preview');
   const [reqEditContent, setReqEditContent] = createSignal('');
   const [newHypothesisModal, setNewHypothesisModal] = createSignal(false);
@@ -301,7 +301,7 @@ const SoloProduct: Component = () => {
 
   // Drag-and-drop
   const [draggingId, setDraggingId] = createSignal<string | null>(null);
-  const [dragOverStatus, setDragOverStatus] = createSignal<HypothesisStatus | null>(null);
+  const [dragOverStatus, setDragOverStatus] = createSignal<SoloHypothesisStatus | null>(null);
 
   // AI 搭档
   const [agentInput, setAgentInput] = createSignal('');
@@ -316,10 +316,18 @@ const SoloProduct: Component = () => {
     },
   ]);
 
+  // 错误状态
+  const [loadError, setLoadError] = createSignal<string | null>(null);
+
+  // 竞态保护：loadVersion 递增计数器，防止快速切换产品时旧请求覆盖新数据
+  let loadVersion = 0;
+
   const loadAllData = async () => {
     const workDir = productStore.activeProduct()?.workDir;
     if (!workDir) return;
+    const currentVersion = ++loadVersion;
     setPageLoading(true);
+    setLoadError(null);
     try {
       const [fileHypo, fileReqs, fileFeedbacks, fileFeatures, overview, roadmap, metricsData, records] = await Promise.all([
         loadHypotheses(workDir),
@@ -331,18 +339,22 @@ const SoloProduct: Component = () => {
         loadSoloMetrics(workDir),
         loadInsightRecords(workDir),
       ]);
-      if (fileHypo.length > 0) setHypotheses(fileHypo as unknown as Hypothesis[]);
-      if (fileReqs.length > 0) setRequirements(fileReqs as unknown as RequirementOutput[]);
-      setFeedbacks(fileFeedbacks as unknown as SoloUserFeedback[]);
+      // 竞态守卫：如果版本已过期，丢弃结果
+      if (currentVersion !== loadVersion) return;
+      setHypotheses(fileHypo);
+      setRequirements(fileReqs);
+      setFeedbacks(fileFeedbacks);
       setFeatures(fileFeatures);
       setProductOverview(overview);
       setProductRoadmap(roadmap);
       setMetrics(metricsData.businessMetrics ?? []);
       setInsightRecords(records);
-    } catch {
-      // Graceful fallback: signals remain at empty defaults
+    } catch (e) {
+      if (currentVersion !== loadVersion) return;
+      setLoadError('数据加载失败，请检查网络连接后刷新');
+      console.error('[xingjing] 产品洞察数据加载失败:', e);
     } finally {
-      setPageLoading(false);
+      if (currentVersion === loadVersion) setPageLoading(false);
     }
   };
 
@@ -369,7 +381,7 @@ const SoloProduct: Component = () => {
 
   // ─── Hypothesis detail ────────────────────────────────────────────────────
 
-  const openHypoDetail = (h: Hypothesis) => {
+  const openHypoDetail = (h: SoloHypothesis) => {
     setDetailHypo(h);
     setEditMode('preview');
     const md = h.markdownDetail || `## 假设：${h.belief}\n\n### 因为\n\n${h.why}\n\n### 验证方式\n\n${h.method}${h.result ? `\n\n### 实际结果\n\n${h.result}` : ''}`;
@@ -377,7 +389,7 @@ const SoloProduct: Component = () => {
   };
 
   // 打开需求详情
-  const openReqDetail = (req: RequirementOutput) => {
+  const openReqDetail = (req: SoloRequirementOutput) => {
     setDetailReq(req);
     setReqEditMode('preview');
     setReqEditContent(req.content);
@@ -388,7 +400,7 @@ const SoloProduct: Component = () => {
     const match = REQ_DOC_REGEX.exec(rawContent);
     const title = match?.[1] || '新需求文档';
     const content = rawContent.replace(REQ_DOC_REGEX, '').trimStart();
-    const newReq: RequirementOutput = {
+    const newReq: SoloRequirementOutput = {
       id: `req_${Date.now()}`,
       title,
       type: 'user-story',
@@ -398,7 +410,7 @@ const SoloProduct: Component = () => {
     };
     setRequirements(prev => [newReq, ...prev]);
     const workDir = productStore.activeProduct()?.workDir;
-    if (workDir) void saveRequirementOutput(workDir, newReq as unknown as Parameters<typeof saveRequirementOutput>[1]);
+    if (workDir) void saveRequirementOutput(workDir, newReq as Parameters<typeof saveRequirementOutput>[1]);
   };
 
   // ─── Drag-and-drop handlers ───────────────────────────────────────────────
@@ -414,14 +426,14 @@ const SoloProduct: Component = () => {
       if (!id) return;
       const original = hypotheses().find(h => h.id === id);
       if (!original) { setDraggingId(null); setDragOverStatus(null); return; }
-      const updated: Hypothesis = { ...original, status: targetStatus };
+      const updated: SoloHypothesis = { ...original, status: targetStatus };
       setHypotheses(prev => prev.map(h => h.id === id ? updated : h));
       setDraggingId(null);
       setDragOverStatus(null);
       // 持久化到 workspace
       const workDir = productStore.activeProduct()?.workDir;
       if (workDir) {
-        void saveHypothesis(workDir, updated as unknown as Parameters<typeof saveHypothesis>[1]);
+        void saveHypothesis(workDir, updated as Parameters<typeof saveHypothesis>[1]);
         invalidateKnowledgeCache();
       }
     },
@@ -440,7 +452,7 @@ const SoloProduct: Component = () => {
   /** 将解析到的奇想 JSON 创建为新假设并持久化 */
   const createHypothesisFromIdea = (parsed: ReturnType<typeof extractIdeaJson>) => {
     if (!parsed) return;
-    const newH: Hypothesis = {
+    const newH: SoloHypothesis = {
       id: `idea-${Date.now()}`,
       status: 'testing',
       belief: parsed.belief,
@@ -452,7 +464,7 @@ const SoloProduct: Component = () => {
     setHypotheses(prev => [newH, ...prev]);
     const workDir = productStore.activeProduct()?.workDir;
     if (workDir) {
-      void saveHypothesis(workDir, newH as unknown as Parameters<typeof saveHypothesis>[1]);
+      void saveHypothesis(workDir, newH as Parameters<typeof saveHypothesis>[1]);
       invalidateKnowledgeCache();
     }
     showToast();
@@ -562,7 +574,7 @@ ${reqSummary}
   };
 
   const handleConvertSuggestionToHypothesis = (sug: ProductSuggestion) => {
-    const newH: Hypothesis = {
+    const newH: SoloHypothesis = {
       id: `h-sug-${Date.now()}`,
       status: 'testing',
       belief: sug.title,
@@ -574,13 +586,13 @@ ${reqSummary}
     setHypotheses(prev => [newH, ...prev]);
     const workDir = productStore.activeProduct()?.workDir;
     if (workDir) {
-      void saveHypothesis(workDir, newH as unknown as Parameters<typeof saveHypothesis>[1]);
+      void saveHypothesis(workDir, newH as Parameters<typeof saveHypothesis>[1]);
       invalidateKnowledgeCache();
     }
   };
 
   const handleConvertSuggestionToRequirement = (sug: ProductSuggestion, _insightId: string) => {
-    const newReq: RequirementOutput = {
+    const newReq: SoloRequirementOutput = {
       id: `req-sug-${Date.now()}`,
       title: sug.title,
       type: 'user-story',
@@ -590,28 +602,28 @@ ${reqSummary}
     };
     setRequirements(prev => [newReq, ...prev]);
     const workDir = productStore.activeProduct()?.workDir;
-    if (workDir) void saveRequirementOutput(workDir, newReq as unknown as Parameters<typeof saveRequirementOutput>[1]);
+    if (workDir) void saveRequirementOutput(workDir, newReq as Parameters<typeof saveRequirementOutput>[1]);
   };
 
-  const handleHypothesisSaveFromAgent = (h: Hypothesis) => {
+  const handleHypothesisSaveFromAgent = (h: SoloHypothesis) => {
     setHypotheses(prev => {
       const exists = prev.some(item => item.id === h.id);
       return exists ? prev.map(item => item.id === h.id ? h : item) : [h, ...prev];
     });
     const workDir = productStore.activeProduct()?.workDir;
     if (workDir) {
-      void saveHypothesis(workDir, h as unknown as Parameters<typeof saveHypothesis>[1]);
+      void saveHypothesis(workDir, h as Parameters<typeof saveHypothesis>[1]);
       invalidateKnowledgeCache();
     }
   };
 
-  const handleRequirementSaveFromAgent = (r: RequirementOutput) => {
+  const handleRequirementSaveFromAgent = (r: SoloRequirementOutput) => {
     setRequirements(prev => {
       const exists = prev.some(item => item.id === r.id);
       return exists ? prev.map(item => item.id === r.id ? r : item) : [r, ...prev];
     });
     const workDir = productStore.activeProduct()?.workDir;
-    if (workDir) void saveRequirementOutput(workDir, r as unknown as Parameters<typeof saveRequirementOutput>[1]);
+    if (workDir) void saveRequirementOutput(workDir, r as Parameters<typeof saveRequirementOutput>[1]);
   };
 
   // ─── Tab style ────────────────────────────────────────────────────────────
@@ -685,6 +697,26 @@ ${reqSummary}
             </div>
 
             <div style={{ padding: '16px' }}>
+              {/* 错误提示条 */}
+              <Show when={loadError()}>
+                <div style={{
+                  padding: '8px 16px',
+                  background: themeColors.errorBg,
+                  color: chartColors.error,
+                  'border-radius': '6px',
+                  'font-size': '13px',
+                  'margin-bottom': '12px',
+                  display: 'flex',
+                  'align-items': 'center',
+                  gap: '8px',
+                }}>
+                  <span>{loadError()}</span>
+                  <button onClick={() => void loadAllData()}
+                    style={{ cursor: 'pointer', 'text-decoration': 'underline', background: 'none', border: 'none', color: 'inherit', 'font-size': '13px', padding: 0 }}>
+                    重试
+                  </button>
+                </div>
+              </Show>
               {/* Hypotheses Kanban */}
               <Show when={activeTab() === 'hypotheses'}>
                 <div style={{ padding: '10px 12px', background: themeColors.primaryBg, border: `1px solid ${themeColors.primaryBorder}`, 'border-radius': '8px', 'margin-bottom': '14px', 'font-size': '12px', color: chartColors.primary }}>
@@ -899,7 +931,7 @@ ${reqSummary}
                       setDetailReq(updated);
                       setReqEditMode('preview');
                       const workDir = productStore.activeProduct()?.workDir;
-                      if (workDir) void saveRequirementOutput(workDir, updated as unknown as Parameters<typeof saveRequirementOutput>[1]);
+                      if (workDir) void saveRequirementOutput(workDir, updated as Parameters<typeof saveRequirementOutput>[1]);
                     }}
                   >保存</button>
                 </Show>
@@ -959,7 +991,7 @@ ${reqSummary}
                 style={{ background: chartColors.primary, color: 'white', border: 'none', 'border-radius': '6px', padding: '6px 16px', cursor: 'pointer', 'font-size': '14px' }}
                 onClick={() => {
                   if (!newHypothesisText().trim()) return;
-                  const newH: Hypothesis = {
+                  const newH: SoloHypothesis = {
                     id: `h-${Date.now()}`,
                     status: 'testing',
                     belief: newHypothesisText().trim(),
@@ -971,7 +1003,7 @@ ${reqSummary}
                   setHypotheses(prev => [newH, ...prev]);
                   const workDir = productStore.activeProduct()?.workDir;
                   if (workDir) {
-                    void saveHypothesis(workDir, newH as unknown as Parameters<typeof saveHypothesis>[1]);
+                    void saveHypothesis(workDir, newH as Parameters<typeof saveHypothesis>[1]);
                     invalidateKnowledgeCache();
                   }
                   setNewHypothesisModal(false);

@@ -10,8 +10,9 @@ import {
   loadBacklog, saveBacklog,
   loadProjectSettings,
   loadGlobalSettings, saveGlobalSettings,
+  ensureProductFiles,
 } from '../services/file-store';
-import { callAgent as _callAgent, setProviderAuth, setOpenworkFileOps, setSharedClient, registerEnsureAuth, type CallAgentOptions } from '../services/opencode-client';
+import { callAgent as _callAgent, setProviderAuth, setOpenworkFileOps, setSharedClient, type CallAgentOptions } from '../services/opencode-client';
 import { ensureAgentsRegistered } from '../services/agent-registry';
 import { appendAgentLog } from '../services/agent-logger';
 import { currentUser } from '../services/auth-service';
@@ -281,22 +282,25 @@ export const AppStoreProvider: ParentComponent<{
   // ── 从文件系统加载项目数据（不包含 LLM 配置，已改为全局加载）──
   async function loadFromFiles(workDir: string) {
     try {
-      // 加载项目级设置（不包含 LLM， LLM 已统一从全局配置加载）
-      await loadProjectSettings(workDir); // 保留调用以兼容其他设置字段
+      // ① 自动初始化缺失的必要文件（首次打开或者旧项目迁移时）
+      await ensureProductFiles(workDir);
 
-      // 加载 PRDs（如果文件存在，覆盖 mock 数据；否则保留 mock 数据作为初始种子）
+      // ② 加载项目级设置（不包含 LLM， LLM 已统一从全局配置加载）
+      await loadProjectSettings(workDir);
+
+      // ③ 加载 PRDs（从 product/features/*/PRD.md）
       const prds = await loadPrds(workDir);
       if (prds.length > 0) {
         setState('prds', prds as unknown as PRD[]);
       }
 
-      // 加载 Tasks
+      // ④ 加载 Tasks（从 iterations/tasks/）
       const tasks = await loadTasks(workDir);
       if (tasks.length > 0) {
         setState('tasks', tasks as unknown as Task[]);
       }
 
-      // 加载 Backlog
+      // ⑤ 加载 Backlog（从 product/backlog.yaml）
       const backlog = await loadBacklog(workDir);
       if (backlog.length > 0) {
         setState('backlog', backlog as unknown as BacklogItem[]);
@@ -320,11 +324,6 @@ export const AppStoreProvider: ParentComponent<{
     if (product?.workDir) {
       setState('currentProject', product.name);
       loadFromFiles(product.workDir).catch(() => {/* silent */});
-      // 将全局 LLM 配置自动注入 OpenCode（切换 workspace 时确保模型配置有效）
-      const cfg = state.llmConfig;
-      if (cfg.providerID && cfg.providerID !== 'custom' && cfg.apiKey && cfg.apiKey.length > 4) {
-        setProviderAuth(cfg.providerID, cfg.apiKey).catch(() => {/* silent */});
-      }
     }
   });
 
@@ -334,19 +333,6 @@ export const AppStoreProvider: ParentComponent<{
 
   // Attempt to load products from file on mount
   onMount(() => {
-    // 注册全局 ensureAuth 钩子：每次 session.create 前自动同步 API Key 到 OpenCode
-    registerEnsureAuth(async () => {
-      const cfg = state.llmConfig;
-      console.log('[app-store] ensureAuth 钩子执行', {
-        providerID: cfg.providerID,
-        hasApiKey: !!(cfg.apiKey && cfg.apiKey.length > 4),
-        modelName: cfg.modelName,
-      });
-      if (cfg.providerID && cfg.providerID !== 'custom' && cfg.apiKey && cfg.apiKey.length > 4) {
-        await setProviderAuth(cfg.providerID, cfg.apiKey);
-      }
-    });
-
     productStore.loadFromFile().catch(() => {/* silent */});
     // 加载全局 LLM 配置（~/.xingjing/global-settings.yaml）
     loadGlobalSettings().then((g) => {
@@ -360,6 +346,11 @@ export const AppStoreProvider: ParentComponent<{
         // 首次启动：使用默认工具列表并持久化
         setState('allowedTools', DEFAULT_ALLOWED_TOOLS);
         saveGlobalSettings({ ...g, allowedTools: DEFAULT_ALLOWED_TOOLS }).catch(() => {});
+      }
+      // ★ 启动时一次性后台同步 API Key 到 OpenCode（对齐 OpenWork 设置页模式）
+      const llm = g.llm;
+      if (llm?.providerID && llm.providerID !== 'custom' && llm?.apiKey && llm.apiKey.length > 4) {
+        setProviderAuth(llm.providerID, llm.apiKey).catch(() => {/* silent */});
       }
     }).catch(() => {/* silent */});
   });
@@ -513,15 +504,6 @@ export const AppStoreProvider: ParentComponent<{
         promptLen,
       };
 
-      // 调用前确保 API Key 已同步到 OpenCode
-      const ensureApiKey = async () => {
-        const pid = model?.providerID ?? llmCfg.providerID;
-        const key = llmCfg.apiKey;
-        if (pid && pid !== 'custom' && key && key.length > 4) {
-          await setProviderAuth(pid, key).catch(() => {/* silent */});
-        }
-      };
-
       const wrappedOpts: CallAgentOptions = {
         ...opts,
         directory: dir,
@@ -557,7 +539,7 @@ export const AppStoreProvider: ParentComponent<{
       };
 
       // 完全通过 OpenWork 注入的 Client 调用，无降级路径
-      return ensureApiKey().then(() => _callAgent(wrappedOpts)).catch((err) => {
+      return _callAgent(wrappedOpts).catch((err) => {
         const errMsg = err instanceof Error ? err.message : String(err);
         void appendAgentLog({
           ...logBase,
@@ -595,10 +577,20 @@ export const AppStoreProvider: ParentComponent<{
       if (!wsId || !props.openworkCtx) return Promise.resolve(false);
       return props.openworkCtx.upsertSkill(wsId, name, content, description);
     },
-    readOpencodeConfig: (): Promise<unknown> => {
+    readOpencodeConfig: async (): Promise<unknown> => {
       const wsId = resolvedWorkspaceId();
-      if (!wsId || !props.openworkCtx) return Promise.resolve(null);
-      return props.openworkCtx.readOpencodeConfig(wsId);
+      if (!wsId || !props.openworkCtx) return null;
+      const raw = await props.openworkCtx.readOpencodeConfig(wsId);
+      // readOpencodeConfig 返回 { path, exists, content } 包装对象，
+      // 需提取 content 字段并解析为 JSON，避免 path/exists/content 污染配置文件
+      if (raw && typeof raw === 'object' && 'content' in raw) {
+        const content = (raw as { content: string | null }).content;
+        if (content && typeof content === 'string') {
+          try { return JSON.parse(content); } catch { return null; }
+        }
+        return null;
+      }
+      return raw;
     },
     writeOpencodeConfig: (content: string): Promise<boolean> => {
       const wsId = resolvedWorkspaceId();

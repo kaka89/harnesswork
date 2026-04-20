@@ -9,7 +9,7 @@
  *   {id}.md               — 单条洞察全文（含搜索来源、摘要、建议）
  *   suggestions.yaml      — ProductSuggestion 汇总列表
  */
-import { readYaml, writeYaml, writeFile, readFile, deleteFile } from './file-store';
+import { readYaml, writeYaml, writeFile, readFile, deleteFile, parseFrontmatter } from './file-store';
 
 // ─── 类型定义 ─────────────────────────────────────────────────────────────────
 
@@ -224,19 +224,16 @@ function serializeInsightMarkdown(record: InsightRecord): string {
 }
 
 function parseInsightMarkdown(id: string, content: string): InsightRecord {
-  const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
-  const body = fmMatch ? fmMatch[2] : content;
+  const doc = parseFrontmatter<Record<string, unknown>>(content);
+  const fm = doc.frontmatter;
+  const body = doc.body;
 
-  // 简单解析 frontmatter
-  let query = '', category: InsightCategory = 'general', createdAt = '', linkedHypotheses: string[] = [];
-  if (fmMatch) {
-    const fm = fmMatch[1];
-    query = (fm.match(/query:\s*"?([^"\n]+)"?/) ?? [])[1]?.trim() ?? '';
-    category = ((fm.match(/category:\s*(\S+)/) ?? [])[1]?.trim() ?? 'general') as InsightCategory;
-    createdAt = (fm.match(/createdAt:\s*"?([^"\n]+)"?/) ?? [])[1]?.trim() ?? '';
-    const lhMatch = fm.match(/linkedHypotheses:\s*\n((?:\s+-\s+\S+\n?)*)/);
-    if (lhMatch) linkedHypotheses = lhMatch[1].split('\n').map(l => l.replace(/^\s*-\s*/, '').trim()).filter(Boolean);
-  }
+  const query = String(fm.query ?? '');
+  const category = (String(fm.category ?? 'general')) as InsightCategory;
+  const createdAt = String(fm.createdAt ?? '');
+  const linkedHypotheses = Array.isArray(fm.linkedHypotheses)
+    ? fm.linkedHypotheses.map(String)
+    : [];
 
   // 提取摘要段落
   const summaryRe = new RegExp('## 摘要\\r?\\n\\r?\\n([\\s\\S]*?)(?=\\n## |\\n---\\n|$)');

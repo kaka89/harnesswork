@@ -1597,6 +1597,7 @@ export function buildProductFileList(
     { path: 'product/overview.md', content: overviewMd(productName, '产品概述：定位、核心价值、技术栈。') },
     { path: 'product/roadmap.md', content: roadmapMd(productName) },
     { path: 'product/features/_index.yml', content: 'features: []\n' },
+    { path: 'product/backlog.yaml', content: 'items: []\n' },
 
     // ── iterations/ 增量文档区（执行过程，只增不改） ──
     { path: 'iterations/hypotheses/_index.yml', content: INDEX_YAML },

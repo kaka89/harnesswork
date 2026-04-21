@@ -884,6 +884,69 @@ export async function saveHypothesis(workDir: string, item: SoloHypothesis): Pro
   return mdOk;
 }
 
+// ─── Solo: Hypothesis → PRD 回写 (SDD-014) ────────────────────────────────────
+
+/**
+ * 将假设验证结论追加到关联 Feature 的 PRD.md 末尾。
+ * - 触发条件：hypothesis.status 为 'validated' 或 'invalidated'
+ * - 前置条件：hypothesis.feature 字段非空
+ * - 幂等：同一假设不会重复追加
+ */
+export async function appendHypothesisResultToPrd(
+  workDir: string,
+  hypothesis: SoloHypothesis,
+): Promise<{ success: boolean; prdPath?: string; error?: string }> {
+  if (!hypothesis.feature) return { success: false, error: 'no-feature-linked' };
+  if (!['validated', 'invalidated'].includes(hypothesis.status)) {
+    return { success: false, error: 'status-not-terminal' };
+  }
+
+  const prdPath = `${workDir}/product/features/${hypothesis.feature}/PRD.md`;
+  const existing = (await readFile(prdPath)) ?? '';
+
+  // 幂等：通过隐式标记检查是否已追加过该假设
+  const marker = `hypothesis-${hypothesis.id}`;
+  if (existing.includes(marker)) return { success: true, prdPath };
+
+  const statusLabel = hypothesis.status === 'validated' ? '已证实' : '已推翻';
+  const date = new Date().toISOString().slice(0, 10);
+  const hasSection = existing.includes('## 假设验证记录');
+
+  const entryBlock = `### [${date}] <!-- ${marker} --> ${statusLabel}\n\n- **假设**: ${hypothesis.belief}\n- **验证方式**: ${hypothesis.method}\n- **结论**: ${hypothesis.result || '（未填写验证结论）'}\n- **影响程度**: ${hypothesis.impact}`;
+
+  const appendBlock = hasSection
+    ? `\n\n${entryBlock}`
+    : `\n\n---\n\n## 假设验证记录\n\n${entryBlock}`;
+
+  const ok = await writeFile(prdPath, existing + appendBlock);
+  return ok ? { success: true, prdPath } : { success: false, error: 'write-failed' };
+}
+
+/**
+ * 将假设转化为产品需求草稿（纯函数，不写文件）。
+ * impact → priority 映射：high→P0, medium→P1, low→P2
+ */
+export function convertHypothesisToRequirement(
+  hypothesis: SoloHypothesis,
+): SoloRequirementOutput {
+  const priorityMap: Record<string, SoloRequirementOutput['priority']> = {
+    high: 'P0', medium: 'P1', low: 'P2',
+  };
+  const content = `## 需求背景\n\n本需求来源于已验证的产品假设：\n\n- **假设**: ${hypothesis.belief}\n- **验证方式**: ${hypothesis.method}\n- **验证结论**: ${hypothesis.result || '（待补充）'}\n- **影响程度**: ${hypothesis.impact}\n\n## 用户故事\n\n**作为** 产品用户，\n**我希望** ${hypothesis.belief}，\n**以便** （待细化）。\n\n## 验收标准\n\n- [ ] （待补充具体验收条件）\n`;
+
+  return {
+    id: `req-hypo-${Date.now()}`,
+    title: hypothesis.belief,
+    type: 'user-story',
+    content,
+    priority: priorityMap[hypothesis.impact] ?? 'P1',
+    linkedHypothesis: hypothesis.id,
+    linkedFeatureId: hypothesis.feature,
+    status: 'draft',
+    createdAt: new Date().toISOString().slice(0, 10),
+  };
+}
+
 // ─── Solo: Feature Ideas (legacy) ───────────────────────────────────────────
 
 export interface SoloFeatureIdea {

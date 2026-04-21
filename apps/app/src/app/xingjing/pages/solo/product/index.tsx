@@ -13,6 +13,8 @@ import {
   loadProductOverview,
   loadProductRoadmap,
   loadSoloMetrics,
+  appendHypothesisResultToPrd,
+  convertHypothesisToRequirement,
   type SoloHypothesis,
   type SoloHypothesisStatus,
   type SoloRequirementOutput,
@@ -104,6 +106,7 @@ const HypothesisColumn: Component<{
   items: SoloHypothesis[];
   onDetail: (h: SoloHypothesis) => void;
   onAddNew?: () => void;
+  onConvertToRequirement?: (h: SoloHypothesis) => void;
   drag: DragHandlers;
 }> = (props) => {
   const cfg = () => statusConfig[props.status];
@@ -211,6 +214,12 @@ const HypothesisColumn: Component<{
                   <span style={{ 'font-size': '11px', padding: '1px 6px', 'border-radius': '4px', background: impact.bg, color: impact.color }}>
                     {impact.label}
                   </span>
+                  <Show when={props.status === 'validated' && props.onConvertToRequirement}>
+                    <button
+                      style={{ 'font-size': '11px', padding: '1px 8px', 'border-radius': '4px', border: `1px solid ${themeColors.primaryBorder}`, background: themeColors.primaryBg, color: chartColors.primary, cursor: 'pointer' }}
+                      onClick={(e) => { e.stopPropagation(); props.onConvertToRequirement!(h); }}
+                    >+需求</button>
+                  </Show>
                   <span style={{ 'font-size': '11px', color: themeColors.textMuted, 'margin-left': 'auto' }}>{h.createdAt}</span>
                 </div>
               </div>
@@ -468,6 +477,10 @@ const SoloProduct: Component = () => {
       const workDir = productStore.activeProduct()?.workDir;
       if (workDir) {
         void saveHypothesis(workDir, updated as Parameters<typeof saveHypothesis>[1]);
+        // SDD-014 Phase 2：验证状态变更时 fire-and-forget 回写 PRD
+        if (['validated', 'invalidated'].includes(targetStatus) && updated.feature) {
+          void appendHypothesisResultToPrd(workDir, updated);
+        }
         invalidateKnowledgeCache();
       }
     },
@@ -525,13 +538,10 @@ const SoloProduct: Component = () => {
     const reqSummary = requirements()
       .map(r => `- [${r.priority}] ${r.title}`)
       .join('\n') || '（暂无）';
+    // SDD-014 Phase 1：移除 enrichedSystemPrompt 中重复拼接的假设/需求摘要，由 productContext 统一提供
     const enrichedSystemPrompt = `${productBrainAgent.systemPrompt}
 
-当前产品假设：
-${hypothesisSummary}
-
-已有需求文档：
-${reqSummary}
+注意：当前产品假设、已有需求文档等完整上下文已通过 productContext 注入，可直接引用。
 
 【需求文档生成规则】当用户要求写某个模块的需求、细化需求或输出需求文档时，必须在输出内容的第一行加上标识行（格式：[REQ_DOC:模块名称]），随后按以下 Markdown 结构输出完整需求文档：
 # 需求文档 · [模块名称]
@@ -591,6 +601,17 @@ ${reqSummary}
   };
 
   // ─── Insight handlers ──────────────────────────────────────────────────────
+
+  // SDD-014 Phase 3：将已证实假设转化为需求草稿
+  const handleConvertHypothesisToRequirement = async (h: SoloHypothesis) => {
+    const workDir = productStore.activeProduct()?.workDir;
+    if (!workDir) return;
+    const req = convertHypothesisToRequirement(h);
+    await saveRequirementOutput(workDir, req as Parameters<typeof saveRequirementOutput>[1]);
+    setRequirements(prev => [req, ...prev]);
+    invalidateKnowledgeCache();
+    showToast();
+  };
 
   const handleInsightRecord = (record: InsightRecord) => {
     setInsightRecords(prev => {
@@ -765,7 +786,7 @@ ${reqSummary}
                   onDragEnd={() => { setDraggingId(null); setDragOverStatus(null); }}
                 >
                   <HypothesisColumn title="验证中" status="testing" items={testingItems()} onDetail={openHypoDetail} onAddNew={() => setNewHypothesisModal(true)} drag={drag} />
-                  <HypothesisColumn title="已证实" status="validated" items={validatedItems()} onDetail={openHypoDetail} drag={drag} />
+                  <HypothesisColumn title="已证实" status="validated" items={validatedItems()} onDetail={openHypoDetail} onConvertToRequirement={handleConvertHypothesisToRequirement} drag={drag} />
                   <HypothesisColumn title="已推翻" status="invalidated" items={invalidatedItems()} onDetail={openHypoDetail} drag={drag} />
                 </div>
               </Show>
@@ -912,10 +933,11 @@ ${reqSummary}
               productOverview() ? `## 产品概述\n${productOverview()}` : '',
               productRoadmap() ? `## 路线图\n${productRoadmap()}` : '',
               metrics().length > 0 ? `## 业务指标\n${metrics().map(m => `- ${m.label}: ${m.value}${m.unit ?? ''} (${m.trendValue})`).join('\n')}` : '',
-              `## 当前产品假设\n${hypotheses().map(h => `- [${h.status}] ${h.belief}${h.feature ? ` (功能: ${h.feature})` : ''}`).join('\n') || '（暂无）'}`,
-              features().length > 0 ? `## 功能注册表\n${features().map(f => `- [${f.status}] ${f.title ?? f.name}${f.hypothesis ? ` (假设: ${f.hypothesis})` : ''}`).join('\n')}` : '',
+              // SDD-014 Phase 1: 假设/功能模块/需求各加 slice(0, 20) 上限
+              `## 当前产品假设\n${hypotheses().slice(0, 20).map(h => `- [${h.status}] ${h.belief}${h.feature ? ` (功能: ${h.feature})` : ''}`).join('\n') || '（暂无）'}`,
+              features().slice(0, 20).length > 0 ? `## 功能注册表\n${features().slice(0, 20).map(f => `- [${f.status}] ${f.title ?? f.name}${f.hypothesis ? ` (假设: ${f.hypothesis})` : ''}`).join('\n')}` : '',
               feedbacks().length > 0 ? `## 用户反馈摘要\n${feedbacks().slice(0, 5).map(f => `- [${f.sentiment}] ${f.user}: ${(f.content ?? '').slice(0, 60)}`).join('\n')}` : '',
-              requirements().length > 0 ? `## 已有需求文档\n${requirements().map(r => `- [${r.priority}] ${r.title}`).join('\n')}` : '',
+              requirements().slice(0, 20).length > 0 ? `## 已有需求文档\n${requirements().slice(0, 20).map(r => `- [${r.priority}] ${r.title}`).join('\n')}` : '',
             ].filter(Boolean).join('\n\n')}
             onHypothesisSave={handleHypothesisSaveFromAgent}
             onRequirementSave={handleRequirementSaveFromAgent}

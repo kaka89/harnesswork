@@ -226,21 +226,20 @@ function extractFirstHeading(body: string): string | undefined {
  * 遍历 product/features/ 下每个功能子目录，读取其中的 PRD.md
  */
 export async function loadPrds(workDir: string): Promise<PrdFrontmatter[]> {
-  const featuresDir = `${workDir}/product/features`;
+  const featuresDir = 'product/features';
   try {
-    const nodes = await fileList(featuresDir);
+    const nodes = await fileList(featuresDir, workDir);
     // 筛选子目录（功能目录）
     const featureDirs = nodes.filter((n) => n.type === 'directory');
     const results: PrdFrontmatter[] = [];
     await Promise.all(
       featureDirs.map(async (dir) => {
-        // 使用绝对路径构造，避免 fileList Level 1/2 返回相对路径导致读取失败
-        // 注意：不传 directory，因为 prdPath 已是绝对路径，传 workDir 会导致 Level 3 双重拼接
         const prdPath = `${featuresDir}/${dir.name}/PRD.md`;
         try {
           const doc = await readMarkdownWithFrontmatter<Record<string, unknown>>(
             prdPath,
             { frontmatter: {} as Record<string, unknown>, body: '' },
+            workDir,
           );
           const fm = (doc.frontmatter ?? {}) as Record<string, unknown>;
           // id: 优先 id → feat → 目录名 fallback
@@ -283,20 +282,19 @@ export interface SddFrontmatter {
  * 遍历 product/features/ 下每个功能子目录，读取其中的 SDD.md
  */
 export async function loadSdds(workDir: string): Promise<SddFrontmatter[]> {
-  const featuresDir = `${workDir}/product/features`;
+  const featuresDir = 'product/features';
   try {
-    const nodes = await fileList(featuresDir);
+    const nodes = await fileList(featuresDir, workDir);
     const featureDirs = nodes.filter((n) => n.type === 'directory');
     const results: SddFrontmatter[] = [];
     await Promise.all(
       featureDirs.map(async (dir) => {
-        // 使用绝对路径构造，避免 fileList Level 1/2 返回相对路径导致读取失败
-        // 注意：不传 directory，因为 sddPath 已是绝对路径，传 workDir 会导致 Level 3 双重拼接
         const sddPath = `${featuresDir}/${dir.name}/SDD.md`;
         try {
           const doc = await readMarkdownWithFrontmatter<Record<string, unknown>>(
             sddPath,
             { frontmatter: {} as Record<string, unknown>, body: '' },
+            workDir,
           );
           const fm = (doc.frontmatter ?? {}) as Record<string, unknown>;
           // id: 优先 id → feat → 目录名 fallback
@@ -837,10 +835,9 @@ export interface SoloMetricsData {
 }
 
 export async function loadSoloMetrics(workDir: string): Promise<SoloMetricsData> {
-  const path = `${workDir}/metrics.yml`;
   const fallback: SoloMetricsData = { businessMetrics: [], metricsHistory: [], featureUsage: [] };
   try {
-    return await readYaml<SoloMetricsData>(path, fallback);
+    return await readYaml<SoloMetricsData>('metrics.yml', fallback, workDir);
   } catch {
     return fallback;
   }
@@ -883,12 +880,13 @@ interface HypothesisIndexItem {
 }
 
 export async function loadHypotheses(workDir: string): Promise<SoloHypothesis[]> {
-  const dir = `${workDir}/iterations/hypotheses`;
+  const dir = 'iterations/hypotheses';
   try {
     // 1. Read _index.yml for metadata (feature, title, etc.)
     const indexData = await readYaml<{ items: HypothesisIndexItem[] }>(
       `${dir}/_index.yml`,
       { items: [] },
+      workDir,
     );
     const indexMap = new Map<string, HypothesisIndexItem>();
     for (const item of indexData.items ?? []) {
@@ -896,7 +894,7 @@ export async function loadHypotheses(workDir: string): Promise<SoloHypothesis[]>
     }
 
     // 2. Read all .md files for frontmatter + body
-    const docs = await readMarkdownDir<Record<string, unknown>>(dir);
+    const docs = await readMarkdownDir<Record<string, unknown>>(dir, workDir);
     const mdMap = new Map<string, SoloHypothesis>();
     for (const d of docs) {
       const fm = d.frontmatter as unknown as SoloHypothesis;
@@ -1082,9 +1080,10 @@ export interface SoloProductFeature {
 }
 
 export async function loadProductFeatures(workDir: string): Promise<SoloProductFeature[]> {
-  const indexPath = `${workDir}/product/features/_index.yml`;
   try {
-    const data = await readYaml<{ features: Array<Record<string, unknown>> }>(indexPath, { features: [] });
+    const data = await readYaml<{ features: Array<Record<string, unknown>> }>(
+      'product/features/_index.yml', { features: [] }, workDir,
+    );
     return (data.features ?? []).map((f) => ({
       id: (f.id as string) ?? (f.name as string) ?? '',
       name: (f.name as string) ?? (f.title as string) ?? (f.id as string) ?? '',
@@ -1106,7 +1105,7 @@ export async function loadProductFeatures(workDir: string): Promise<SoloProductF
 
 export async function loadProductOverview(workDir: string): Promise<string> {
   try {
-    const content = await readFile(`${workDir}/product/overview.md`);
+    const content = await readFile('product/overview.md', workDir);
     return content ?? '';
   } catch {
     return '';
@@ -1115,7 +1114,7 @@ export async function loadProductOverview(workDir: string): Promise<string> {
 
 export async function loadProductRoadmap(workDir: string): Promise<string> {
   try {
-    const content = await readFile(`${workDir}/product/roadmap.md`);
+    const content = await readFile('product/roadmap.md', workDir);
     return content ?? '';
   } catch {
     return '';
@@ -1175,9 +1174,8 @@ export interface SoloRequirementOutput {
 }
 
 export async function loadRequirementOutputs(workDir: string): Promise<SoloRequirementOutput[]> {
-  const dir = `${workDir}/iterations/requirements`;
   try {
-    const items = await readYamlDir<SoloRequirementOutput>(dir);
+    const items = await readYamlDir<SoloRequirementOutput>('iterations/requirements', workDir);
     return items.filter((t) => !!t.id);
   } catch {
     return [];
@@ -1413,9 +1411,8 @@ export interface SoloUserFeedback {
 }
 
 export async function loadUserFeedbacks(workDir: string): Promise<SoloUserFeedback[]> {
-  const dir = `${workDir}/iterations/feedbacks`;
   try {
-    const docs = await readMarkdownDir<Record<string, unknown>>(dir);
+    const docs = await readMarkdownDir<Record<string, unknown>>('iterations/feedbacks', workDir);
     return docs
       .map((d) => {
         const fm = d.frontmatter as unknown as SoloUserFeedback;

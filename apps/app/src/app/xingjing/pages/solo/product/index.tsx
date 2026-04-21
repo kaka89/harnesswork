@@ -29,6 +29,8 @@ import {
   type PrdFrontmatter,
   type SddFrontmatter,
 } from '../../../services/file-store';
+// resetChannelPreferences 已移除：重置会导致 10 路并发全部从 Level 0 探测，
+// 若 Level 0 不可用则所有 load 函数内部 catch 静默返回空数据。
 import { SOLO_AGENTS } from '../../../services/autopilot-executor';
 import { invalidateKnowledgeCache } from '../../../services/knowledge-retrieval';
 import { useAppStore } from '../../../stores/app-store';
@@ -120,12 +122,17 @@ const HypothesisColumn: Component<{
   items: SoloHypothesis[];
   onDetail: (h: SoloHypothesis) => void;
   onAddNew?: () => void;
-  onConvertToRequirement?: (h: SoloHypothesis) => void;
+  onStatusChange?: (h: SoloHypothesis, newStatus: SoloHypothesisStatus) => void;
+  onPushToRequirement?: (h: SoloHypothesis) => void;
   drag: DragHandlers;
 }> = (props) => {
   const cfg = () => statusConfig[props.status];
   const theme = () => columnTheme[props.status];
   const isOver = () => props.drag.dragOverStatus() === props.status;
+
+  // enterCount 方案：跨 WebKit/Tauri 可靠的 dragLeave 处理
+  // relatedTarget 在 Tauri/WebKit 移入子元素时为 null，导致高亮被错误清除
+  let enterCount = 0;
 
   return (
     <div
@@ -138,18 +145,13 @@ const HypothesisColumn: Component<{
         overflow: 'hidden',
       }}
       onDragOver={(e) => { e.preventDefault(); e.dataTransfer!.dropEffect = 'move'; }}
-      onDragEnter={(e) => { e.preventDefault(); props.drag.onDragEnter(props.status); }}
-      onDragLeave={(e) => {
-        // 只有真正离开整个列容器时才清除高亮（忽略移入子元素的假 leave）
-        if ((e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)) return;
-        props.drag.onDragLeave();
-      }}
+      onDragEnter={(e) => { e.preventDefault(); enterCount++; props.drag.onDragEnter(props.status); }}
+      onDragLeave={() => { if (--enterCount <= 0) { enterCount = 0; props.drag.onDragLeave(); } }}
       onDrop={(e) => {
         e.preventDefault();
         e.stopPropagation();
-        // 双保险：优先用信号，WebKit fallback 从 dataTransfer 读取
+        enterCount = 0;
         const transferId = e.dataTransfer?.getData('text/plain') || undefined;
-        console.error('[DnD] drop targetStatus=', props.status, 'transferId=', transferId);
         props.drag.onDrop(props.status, transferId);
       }}
     >
@@ -228,13 +230,34 @@ const HypothesisColumn: Component<{
                   <span style={{ 'font-size': '11px', padding: '1px 6px', 'border-radius': '4px', background: impact.bg, color: impact.color }}>
                     {impact.label}
                   </span>
-                  <Show when={props.status === 'validated' && props.onConvertToRequirement}>
-                    <button
-                      style={{ 'font-size': '11px', padding: '1px 8px', 'border-radius': '4px', border: `1px solid ${themeColors.primaryBorder}`, background: themeColors.primaryBg, color: chartColors.primary, cursor: 'pointer' }}
-                      onClick={(e) => { e.stopPropagation(); props.onConvertToRequirement!(h); }}
-                    >+需求</button>
-                  </Show>
                   <span style={{ 'font-size': '11px', color: themeColors.textMuted, 'margin-left': 'auto' }}>{h.createdAt}</span>
+                </div>
+                {/* 快捷操作按钮行 */}
+                <div style={{ display: 'flex', gap: '4px', 'margin-top': '8px', 'flex-wrap': 'wrap' }}>
+                  <Show when={props.status !== 'validated' && props.onStatusChange}>
+                    <button
+                      style={{ 'font-size': '11px', padding: '2px 8px', 'border-radius': '4px', border: `1px solid ${themeColors.successBorder}`, background: themeColors.successBg, color: chartColors.success, cursor: 'pointer' }}
+                      onClick={(e) => { e.stopPropagation(); props.onStatusChange!(h, 'validated'); }}
+                    >✅ 已证实</button>
+                  </Show>
+                  <Show when={props.status !== 'invalidated' && props.onStatusChange}>
+                    <button
+                      style={{ 'font-size': '11px', padding: '2px 8px', 'border-radius': '4px', border: `1px solid ${'#ffccc7'}`, background: '#fff2f0', color: chartColors.error, cursor: 'pointer' }}
+                      onClick={(e) => { e.stopPropagation(); props.onStatusChange!(h, 'invalidated'); }}
+                    >❌ 已推翻</button>
+                  </Show>
+                  <Show when={props.status !== 'testing' && props.onStatusChange}>
+                    <button
+                      style={{ 'font-size': '11px', padding: '2px 8px', 'border-radius': '4px', border: `1px solid ${themeColors.border}`, background: themeColors.hover, color: themeColors.textSecondary, cursor: 'pointer' }}
+                      onClick={(e) => { e.stopPropagation(); props.onStatusChange!(h, 'testing'); }}
+                    >↩ 重设</button>
+                  </Show>
+                  <Show when={props.status === 'validated' && props.onPushToRequirement}>
+                    <button
+                      style={{ 'font-size': '11px', padding: '2px 8px', 'border-radius': '4px', border: `1px solid ${themeColors.primaryBorder}`, background: themeColors.primaryBg, color: chartColors.primary, cursor: 'pointer' }}
+                      onClick={(e) => { e.stopPropagation(); props.onPushToRequirement!(h); }}
+                    >📋 转需求</button>
+                  </Show>
                 </div>
               </div>
             );
@@ -359,7 +382,10 @@ const SoloProduct: Component = () => {
   // 文档弹窗编辑器
   const [modalEditorView, setModalEditorView] = createSignal<EditorView | null>(null);
 
-  // Markdown 工具栏 helper 函数
+  // 假设详情弹窗编辑器
+  const [hypoEditorView, setHypoEditorView] = createSignal<EditorView | null>(null);
+
+  // Markdown 工具栏 helper 函数（文档弹窗）
   const mdWrapSel = (before: string, after = before) => {
     const v = modalEditorView();
     if (!v) return;
@@ -380,6 +406,33 @@ const SoloProduct: Component = () => {
   };
   const mdInsertAt = (text: string) => {
     const v = modalEditorView();
+    if (!v) return;
+    const from = v.state.selection.main.from;
+    v.dispatch({ changes: { from, insert: text } });
+    v.focus();
+  };
+
+  // Markdown 工具栏 helper 函数（假设详情弹窗）
+  const hypoMdWrapSel = (before: string, after = before) => {
+    const v = hypoEditorView();
+    if (!v) return;
+    const { from, to } = v.state.selection.main;
+    const sel = v.state.sliceDoc(from, to);
+    v.dispatch({
+      changes: { from, to, insert: `${before}${sel}${after}` },
+      selection: { anchor: from + before.length, head: from + before.length + sel.length },
+    });
+    v.focus();
+  };
+  const hypoMdLinePrefix = (prefix: string) => {
+    const v = hypoEditorView();
+    if (!v) return;
+    const line = v.state.doc.lineAt(v.state.selection.main.from);
+    v.dispatch({ changes: { from: line.from, insert: prefix } });
+    v.focus();
+  };
+  const hypoMdInsertAt = (text: string) => {
+    const v = hypoEditorView();
     if (!v) return;
     const from = v.state.selection.main.from;
     v.dispatch({ changes: { from, insert: text } });
@@ -434,6 +487,10 @@ const SoloProduct: Component = () => {
   const loadAllData = async () => {
     const workDir = productStore.activeProduct()?.workDir;
     if (!workDir) return;
+    // NOTE: 不再调用 resetChannelPreferences()。
+    // 重置会让 10 路并发全部从 Level 0 探测，若 Level 0 不可用，
+    // 各 load 函数内部 catch 会静默返回空数据，导致刷新后页面无数据且无错误提示。
+    // 保留上一轮探测到的最优通道级别更为安全。
     const currentVersion = ++loadVersion;
     setPageLoading(true);
     setLoadError(null);
@@ -540,7 +597,6 @@ const SoloProduct: Component = () => {
     onDragEnd: () => { setDraggingId(null); setDragOverStatus(null); },
     onDrop: (targetStatus, transferId?) => {
       const id = draggingId() ?? (transferId && transferId.trim() !== '' ? transferId : null);
-      console.error('[DnD] handler id=', id, 'targetStatus=', targetStatus, 'hypotheses=', hypotheses().length);
       if (!id) return;
       const original = hypotheses().find(h => h.id === id);
       if (!original) { setDraggingId(null); setDragOverStatus(null); return; }
@@ -561,6 +617,40 @@ const SoloProduct: Component = () => {
     },
     onDragEnter: (status) => setDragOverStatus(status),
     onDragLeave: () => setDragOverStatus(null),
+  };
+
+  // 假设状态切换（卡片按钮 / 详情弹窗）
+  const handleHypothesisStatusChange = (h: SoloHypothesis, newStatus: SoloHypothesisStatus) => {
+    const updated: SoloHypothesis = { ...h, status: newStatus, ...(newStatus !== 'testing' ? { validatedAt: new Date().toISOString().slice(0, 10) } : { validatedAt: undefined }) };
+    setHypotheses(prev => prev.map(item => item.id === h.id ? updated : item));
+    // 如果详情弹窗当前打开，同步更新
+    if (detailHypo()?.id === h.id) setDetailHypo(updated);
+    const workDir = productStore.activeProduct()?.workDir;
+    if (workDir) {
+      void saveHypothesis(workDir, updated as Parameters<typeof saveHypothesis>[1]);
+      if (['validated', 'invalidated'].includes(newStatus) && updated.feature) {
+        void appendHypothesisResultToPrd(workDir, updated);
+      }
+      invalidateKnowledgeCache();
+    }
+  };
+
+  // 假设转需求（已证实假设 → 需求列表）
+  const handleHypothesisPushToRequirement = (h: SoloHypothesis) => {
+    const newReq: SoloRequirementOutput = {
+      id: `req-hypo-${Date.now()}`,
+      title: h.belief,
+      type: 'user-story',
+      content: `## 需求：${h.belief}\n\n### 背景\n${h.why}\n\n### 验证方式\n${h.method}${h.result ? `\n\n### 验证结果\n${h.result}` : ''}`,
+      priority: h.impact === 'high' ? 'P0' : h.impact === 'medium' ? 'P1' : 'P2',
+      linkedHypothesis: h.id,
+      createdAt: new Date().toISOString().slice(0, 10),
+    };
+    setRequirements(prev => [newReq, ...prev]);
+    const workDir = productStore.activeProduct()?.workDir;
+    if (workDir) void saveRequirementOutput(workDir, newReq as Parameters<typeof saveRequirementOutput>[1]);
+    // 切换到需求 Tab 提示用户
+    setActiveTab('requirements');
   };
 
   // ─── AI 搭档 send ─────────────────────────────────────────────────────────
@@ -860,9 +950,9 @@ const SoloProduct: Component = () => {
                 <div style={{ display: 'flex', gap: '14px' }}
                   onDragEnd={() => { setDraggingId(null); setDragOverStatus(null); }}
                 >
-                  <HypothesisColumn title="验证中" status="testing" items={testingItems()} onDetail={openHypoDetail} onAddNew={() => setNewHypothesisModal(true)} drag={drag} />
-                  <HypothesisColumn title="已证实" status="validated" items={validatedItems()} onDetail={openHypoDetail} onConvertToRequirement={handleConvertHypothesisToRequirement} drag={drag} />
-                  <HypothesisColumn title="已推翻" status="invalidated" items={invalidatedItems()} onDetail={openHypoDetail} drag={drag} />
+                  <HypothesisColumn title="验证中" status="testing" items={testingItems()} onDetail={openHypoDetail} onAddNew={() => setNewHypothesisModal(true)} onStatusChange={handleHypothesisStatusChange} onPushToRequirement={handleHypothesisPushToRequirement} drag={drag} />
+                  <HypothesisColumn title="已证实" status="validated" items={validatedItems()} onDetail={openHypoDetail} onStatusChange={handleHypothesisStatusChange} onPushToRequirement={handleHypothesisPushToRequirement} drag={drag} />
+                  <HypothesisColumn title="已推翻" status="invalidated" items={invalidatedItems()} onDetail={openHypoDetail} onStatusChange={handleHypothesisStatusChange} drag={drag} />
                 </div>
               </Show>
 
@@ -1112,7 +1202,7 @@ const SoloProduct: Component = () => {
               <Show when={activeTab() === 'insights'}>
                 <InsightBoard
                   records={insightRecords()}
-                  loading={insightLoading()}
+                  loading={pageLoading()}
                   onDeleteRecord={handleDeleteInsightRecord}
                   onConvertToRequirement={handleConvertSuggestionToRequirement}
                   onConvertToHypothesis={handleConvertSuggestionToHypothesis}
@@ -1122,7 +1212,7 @@ const SoloProduct: Component = () => {
           </div>
         </div>
 
-        {/* Right: Insight Agent Panel */}
+        {/* Right: Insight Agent Panel - 所有 Tab 均可见 */}
         <div style={{ width: '400px', 'flex-shrink': 0, height: 'calc(100vh - 160px)', position: 'sticky', top: '0' }}>
           <InsightAgentPanel
             callAgentFn={actions.callAgent}
@@ -1150,10 +1240,11 @@ const SoloProduct: Component = () => {
       <Show when={detailHypo()}>
         <div style={{ position: 'fixed', inset: 0, 'z-index': 50, display: 'flex', 'align-items': 'center', 'justify-content': 'center' }}>
           <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.3)' }} onClick={() => setDetailHypo(null)} />
-          <div style={{ position: 'relative', background: themeColors.surface, 'border-radius': '16px', 'box-shadow': '0 4px 24px rgba(0,0,0,0.15)', padding: '24px', width: '640px', 'max-height': '90vh', 'overflow-y': 'auto' }}>
-            <div style={{ display: 'flex', 'align-items': 'center', 'justify-content': 'space-between', 'margin-bottom': '16px' }}>
+          <div style={{ position: 'relative', background: themeColors.surface, 'border-radius': '16px', 'box-shadow': '0 4px 24px rgba(0,0,0,0.15)', width: '720px', 'max-height': '90vh', display: 'flex', 'flex-direction': 'column', overflow: 'hidden' }}>
+            <div style={{ display: 'flex', 'align-items': 'center', 'justify-content': 'space-between', padding: '16px 24px', 'border-bottom': `1px solid ${themeColors.borderLight}` }}>
               <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
-                <span style={{ 'font-weight': 600, 'font-size': '16px', color: themeColors.text }}>
+                <span style={{ 'font-size': '14px' }}>{statusConfig[detailHypo()!.status].icon}</span>
+                <span style={{ 'font-weight': 600, 'font-size': '15px', color: themeColors.text }}>
                   假设详情 · {statusConfig[detailHypo()!.status].label}
                 </span>
                 <span style={{ 'font-size': '12px', padding: '1px 8px', 'border-radius': '4px', background: (impactConfig[detailHypo()!.impact] || impactConfig.low).bg, color: (impactConfig[detailHypo()!.impact] || impactConfig.low).color }}>
@@ -1167,17 +1258,22 @@ const SoloProduct: Component = () => {
                 >预览</button>
                 <button
                   style={{ 'font-size': '12px', padding: '4px 12px', 'border-radius': '6px', border: `1px solid ${themeColors.border}`, background: editMode() === 'edit' ? themeColors.primaryBg : themeColors.surface, color: editMode() === 'edit' ? chartColors.primary : themeColors.textSecondary, cursor: 'pointer' }}
-                  onClick={() => setEditMode('edit')}
+                  onClick={() => { setHypoEditorView(null); setEditMode('edit'); }}
                 >编辑</button>
                 <Show when={editMode() === 'edit'}>
                   <button
                     style={{ 'font-size': '12px', padding: '4px 12px', 'border-radius': '6px', border: 'none', background: chartColors.primary, color: 'white', cursor: 'pointer' }}
                     onClick={() => {
                       const h = detailHypo()!;
-                      setHypotheses(prev => prev.map(item =>
-                        item.id === h.id ? { ...item, markdownDetail: editContent() } : item
-                      ));
+                      const updated = { ...h, markdownDetail: editContent() };
+                      setHypotheses(prev => prev.map(item => item.id === h.id ? updated : item));
+                      setDetailHypo(updated);
                       setEditMode('preview');
+                      const workDir = productStore.activeProduct()?.workDir;
+                      if (workDir) {
+                        void saveHypothesis(workDir, updated as Parameters<typeof saveHypothesis>[1]);
+                        invalidateKnowledgeCache();
+                      }
                     }}
                   >保存</button>
                 </Show>
@@ -1185,22 +1281,81 @@ const SoloProduct: Component = () => {
               </div>
             </div>
 
-            <Show when={editMode() === 'preview'}>
-              <div style={{ 'font-size': '14px', 'line-height': '1.8', color: themeColors.text }} innerHTML={markdownToSafeHtml(editContent())} />
-            </Show>
+            {/* Markdown 工具栏（编辑模式下显示） */}
             <Show when={editMode() === 'edit'}>
-              <textarea
-                value={editContent()}
-                onInput={(e) => setEditContent(e.currentTarget.value)}
-                style={{ width: '100%', 'min-height': '300px', border: `1px solid ${themeColors.border}`, 'border-radius': '8px', padding: '12px', 'font-size': '13px', 'font-family': '"SF Mono", "Fira Code", monospace', 'line-height': '1.6', resize: 'vertical', 'box-sizing': 'border-box', background: themeColors.surface, color: themeColors.text, outline: 'none' }}
-              />
+              <div style={{
+                display: 'flex', gap: '2px', 'align-items': 'center', 'flex-wrap': 'wrap',
+                padding: '4px 10px', 'border-bottom': `1px solid ${themeColors.border}`,
+                background: themeColors.hover,
+              }}>
+                {([['H1', '# '], ['H2', '## '], ['H3', '### ']] as [string, string][]).map(([label, p]) => (
+                  <button title={`标题 ${label}`} style={{ padding: '3px 7px', 'font-size': '11px', 'font-weight': 700, 'border-radius': '4px', border: 'none', background: 'transparent', color: themeColors.textSecondary, cursor: 'pointer', 'font-family': 'inherit' }} onClick={(e) => { e.preventDefault(); hypoMdLinePrefix(p); }}>{label}</button>
+                ))}
+                <span style={{ width: '1px', height: '16px', background: themeColors.border, margin: '0 4px' }} />
+                <button title="加粗" style={{ padding: '3px 7px', 'font-size': '12px', 'font-weight': 700, 'border-radius': '4px', border: 'none', background: 'transparent', color: themeColors.textSecondary, cursor: 'pointer' }} onClick={(e) => { e.preventDefault(); hypoMdWrapSel('**'); }}>B</button>
+                <button title="斜体" style={{ padding: '3px 7px', 'font-size': '12px', 'font-style': 'italic', 'border-radius': '4px', border: 'none', background: 'transparent', color: themeColors.textSecondary, cursor: 'pointer' }} onClick={(e) => { e.preventDefault(); hypoMdWrapSel('*'); }}>I</button>
+                <button title="删除线" style={{ padding: '3px 7px', 'font-size': '12px', 'text-decoration': 'line-through', 'border-radius': '4px', border: 'none', background: 'transparent', color: themeColors.textSecondary, cursor: 'pointer' }} onClick={(e) => { e.preventDefault(); hypoMdWrapSel('~~'); }}>S</button>
+                <span style={{ width: '1px', height: '16px', background: themeColors.border, margin: '0 4px' }} />
+                <button title="内联代码" style={{ padding: '3px 7px', 'font-size': '11px', 'font-family': 'monospace', 'border-radius': '4px', border: 'none', background: 'transparent', color: themeColors.textSecondary, cursor: 'pointer' }} onClick={(e) => { e.preventDefault(); hypoMdWrapSel('`'); }}>`code`</button>
+                <span style={{ width: '1px', height: '16px', background: themeColors.border, margin: '0 4px' }} />
+                <button title="无序列表" style={{ padding: '3px 7px', 'font-size': '13px', 'border-radius': '4px', border: 'none', background: 'transparent', color: themeColors.textSecondary, cursor: 'pointer' }} onClick={(e) => { e.preventDefault(); hypoMdLinePrefix('- '); }}>• 列表</button>
+                <button title="引用" style={{ padding: '3px 7px', 'font-size': '12px', 'border-radius': '4px', border: 'none', background: 'transparent', color: themeColors.textSecondary, cursor: 'pointer' }} onClick={(e) => { e.preventDefault(); hypoMdLinePrefix('> '); }}>「引用</button>
+                <span style={{ width: '1px', height: '16px', background: themeColors.border, margin: '0 4px' }} />
+                <button title="分割线" style={{ padding: '3px 7px', 'font-size': '11px', 'border-radius': '4px', border: 'none', background: 'transparent', color: themeColors.textSecondary, cursor: 'pointer' }} onClick={(e) => { e.preventDefault(); hypoMdInsertAt('\n---\n'); }}>— 分割线</button>
+              </div>
             </Show>
 
-            <div style={{ 'margin-top': '16px', 'padding-top': '12px', 'border-top': `1px solid ${themeColors.borderLight}`, display: 'flex', 'align-items': 'center', gap: '8px', 'font-size': '12px', color: themeColors.textMuted }}>
-              <span>创建于 {detailHypo()!.createdAt}</span>
-              <Show when={detailHypo()!.validatedAt}>
-                <span>· 验证于 {detailHypo()!.validatedAt}</span>
+            {/* 内容区 */}
+            <div style={{ flex: 1, overflow: 'auto', padding: '16px 24px' }}>
+              <Show when={editMode() === 'preview'}>
+                <div style={{ 'font-size': '14px', 'line-height': '1.8', color: themeColors.text }} innerHTML={markdownToSafeHtml(editContent())} />
               </Show>
+              <Show when={editMode() === 'edit'}>
+                <div style={{ 'min-height': '260px', border: `1px solid ${themeColors.border}`, 'border-radius': '8px', overflow: 'hidden' }}>
+                  <LiveMarkdownEditor
+                    value={editContent()}
+                    onChange={setEditContent}
+                    onEditorReady={setHypoEditorView}
+                    placeholder="记录假设背景、验证设计、结果分析..."
+                  />
+                </div>
+              </Show>
+            </div>
+
+            {/* Footer: 日期 + 状态操作按钮 */}
+            <div style={{ padding: '12px 24px', 'border-top': `1px solid ${themeColors.borderLight}`, background: themeColors.hover }}>
+              <div style={{ display: 'flex', 'align-items': 'center', gap: '8px', 'flex-wrap': 'wrap' }}>
+                <span style={{ 'font-size': '11px', color: themeColors.textMuted }}>创建于 {detailHypo()!.createdAt}</span>
+                <Show when={detailHypo()!.validatedAt}>
+                  <span style={{ 'font-size': '11px', color: themeColors.textMuted }}>· 验证于 {detailHypo()!.validatedAt}</span>
+                </Show>
+                <div style={{ 'margin-left': 'auto', display: 'flex', gap: '6px', 'flex-wrap': 'wrap' }}>
+                  <Show when={detailHypo()!.status !== 'testing'}>
+                    <button
+                      style={{ 'font-size': '12px', padding: '4px 12px', 'border-radius': '6px', border: `1px solid ${themeColors.border}`, background: themeColors.surface, color: themeColors.textSecondary, cursor: 'pointer' }}
+                      onClick={() => handleHypothesisStatusChange(detailHypo()!, 'testing')}
+                    >↩ 重设验证中</button>
+                  </Show>
+                  <Show when={detailHypo()!.status !== 'validated'}>
+                    <button
+                      style={{ 'font-size': '12px', padding: '4px 12px', 'border-radius': '6px', border: `1px solid ${themeColors.successBorder}`, background: themeColors.successBg, color: chartColors.success, cursor: 'pointer' }}
+                      onClick={() => handleHypothesisStatusChange(detailHypo()!, 'validated')}
+                    >✅ 已证实</button>
+                  </Show>
+                  <Show when={detailHypo()!.status !== 'invalidated'}>
+                    <button
+                      style={{ 'font-size': '12px', padding: '4px 12px', 'border-radius': '6px', border: '1px solid #ffccc7', background: '#fff2f0', color: chartColors.error, cursor: 'pointer' }}
+                      onClick={() => handleHypothesisStatusChange(detailHypo()!, 'invalidated')}
+                    >❌ 已推翻</button>
+                  </Show>
+                  <Show when={detailHypo()!.status === 'validated'}>
+                    <button
+                      style={{ 'font-size': '12px', padding: '4px 12px', 'border-radius': '6px', border: `1px solid ${themeColors.primaryBorder}`, background: themeColors.primaryBg, color: chartColors.primary, cursor: 'pointer' }}
+                      onClick={() => { handleHypothesisPushToRequirement(detailHypo()!); setDetailHypo(null); }}
+                    >📋 下推需求</button>
+                  </Show>
+                </div>
+              </div>
             </div>
           </div>
         </div>

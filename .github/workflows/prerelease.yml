@@ -106,6 +106,10 @@ jobs:
             os_type: linux
             target: aarch64-unknown-linux-gnu
             args: "--target aarch64-unknown-linux-gnu --bundles deb,rpm"
+          - platform: windows-latest
+            os_type: windows
+            target: x86_64-pc-windows-msvc
+            args: "--target x86_64-pc-windows-msvc --bundles nsis,msi"
 
     steps:
       - name: Log runner selection
@@ -179,12 +183,13 @@ jobs:
           NODE
 
       - name: Download OpenCode sidecar
+        if: matrix.os_type != 'windows'
         shell: bash
         env:
           PINNED_OPENCODE_VERSION: ${{ steps.opencode-version.outputs.version }}
         run: |
           set -euo pipefail
-
+      
           case "${{ matrix.target }}" in
             aarch64-apple-darwin)
               opencode_asset="opencode-darwin-arm64.zip"
@@ -203,7 +208,7 @@ jobs:
               exit 1
               ;;
           esac
-
+      
           repo="${OPENCODE_GITHUB_REPO:-anomalyco/opencode}"
           url="https://github.com/${repo}/releases/download/v${PINNED_OPENCODE_VERSION}/${opencode_asset}"
           tmp_dir="$RUNNER_TEMP/opencode"
@@ -211,7 +216,7 @@ jobs:
           rm -rf "$tmp_dir"
           mkdir -p "$extract_dir"
           curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o "$tmp_dir/$opencode_asset" "$url"
-
+      
           if [[ "$opencode_asset" == *.tar.gz ]]; then
             tar -xzf "$tmp_dir/$opencode_asset" -C "$extract_dir"
           else
@@ -224,7 +229,7 @@ jobs:
               exit 1
             fi
           fi
-
+      
           if [ -f "$extract_dir/opencode" ]; then
             bin_path="$extract_dir/opencode"
           elif [ -f "$extract_dir/opencode.exe" ]; then
@@ -234,13 +239,42 @@ jobs:
             ls -la "$extract_dir"
             exit 1
           fi
-
+      
           target_name="opencode-${{ matrix.target }}"
-
+      
           mkdir -p apps/desktop/src-tauri/sidecars
           cp "$bin_path" "apps/desktop/src-tauri/sidecars/${target_name}"
           chmod 755 "apps/desktop/src-tauri/sidecars/${target_name}"
-
+      
+      - name: Download OpenCode sidecar (Windows)
+        if: matrix.os_type == 'windows'
+        shell: pwsh
+        env:
+          PINNED_OPENCODE_VERSION: ${{ steps.opencode-version.outputs.version }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = $env:PINNED_OPENCODE_VERSION
+          $repo = if ($env:OPENCODE_GITHUB_REPO) { $env:OPENCODE_GITHUB_REPO } else { 'anomalyco/opencode' }
+          $asset = 'opencode-windows-x64-baseline.zip'
+          $url = "https://github.com/$repo/releases/download/v$version/$asset"
+          $tmpDir = Join-Path $env:RUNNER_TEMP 'opencode'
+          $extractDir = Join-Path $tmpDir 'extracted'
+          New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
+          $headers = @{}
+          if ($env:GITHUB_TOKEN) { $headers['Authorization'] = "Bearer $($env:GITHUB_TOKEN)" }
+          Invoke-WebRequest -Uri $url -OutFile (Join-Path $tmpDir $asset) -Headers $headers
+          Expand-Archive -Path (Join-Path $tmpDir $asset) -DestinationPath $extractDir -Force
+          $binPath = Join-Path $extractDir 'opencode.exe'
+          if (-not (Test-Path $binPath)) {
+            Write-Error 'OpenCode binary not found in archive'
+            Get-ChildItem $extractDir
+            exit 1
+          }
+          $sidecarDir = 'apps/desktop/src-tauri/sidecars'
+          New-Item -ItemType Directory -Force -Path $sidecarDir | Out-Null
+          Copy-Item $binPath (Join-Path $sidecarDir 'opencode-x86_64-pc-windows-msvc.exe')
+      
       - name: Write notary API key
         if: matrix.os_type == 'macos' && env.MACOS_NOTARIZE == 'true'
         env:

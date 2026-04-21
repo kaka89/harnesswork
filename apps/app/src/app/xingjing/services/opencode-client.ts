@@ -126,6 +126,16 @@ export function setWorkingDirectory(directory: string, baseUrl?: string, auth?: 
 }
 
 /**
+ * 重置文件操作通道偏好到 Level 0，使下一轮文件操作重新从最优通道开始探测。
+ * 用于页面刷新等场景：初始加载期间各并发调用可能将 Level 提升到 1/2/3，
+ * 刷新时需要重置以确保 Level 0（OpenWork readdir）被优先尝试。
+ */
+export function resetChannelPreferences(): void {
+  _preferredReadLevel = 0;
+  _preferredListLevel = 0;
+}
+
+/**
  * 获取 OpenCode Client。
  * 优先返回 OpenWork 注入的 shared client；
  * 若未注入，自动降级到本地 OpenCode 服务（localhost:4096）。
@@ -250,7 +260,8 @@ export async function fileList(
       const relPath = dir ? toWorkspaceRelativePath(path) : path;
       const absPath = dir ? `${dir.replace(/\/$/, '')}/${relPath.replace(/^\//, '')}` : path;
       const entries = await withFileTimeout(_owFileOps.list(absPath));
-      if (entries && entries.length >= 0) {
+      if (entries !== null && entries !== undefined) {
+        // entries 为合法数组（包括空数组 = 目录为空），直接返回
         console.debug('[xingjing] fileList 通过 OpenWork readdir 成功, path:', path, 'count:', entries.length);
         return entries.map(entry => ({
           name: entry.name,
@@ -260,6 +271,9 @@ export async function fileList(
           ignored: entry.name.startsWith('.'),
         }));
       }
+      // entries 为 null: readdir 内部异常被 .catch(() => null) 吞掉，降级到下一通道
+      console.warn('[xingjing] fileList OpenWork readdir 返回 null, 降级到 Level 1, path:', path);
+      if (_preferredListLevel === 0) _preferredListLevel = 1;
     } catch (e) {
       console.warn('[xingjing] fileList OpenWork readdir 失败:', (e as Error)?.message ?? e);
       if (_preferredListLevel === 0) _preferredListLevel = 1;
@@ -271,16 +285,20 @@ export async function fileList(
     try {
       const client = getXingjingClient();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // Fix: 当 path 已是绝对路径时，不附加 _directory，避免后端收到双重路径
+      const listDir = directory ?? (path.startsWith('/') ? undefined : (_directory || undefined));
       const result = await withFileTimeout((client.file.list as any)({
         path,
-        directory: directory ?? (_directory || undefined),
+        directory: listDir,
       })) as any;
       if (result.data) {
         _preferredListLevel = 1;
         return result.data as FileNode[];
       }
-      console.warn('[xingjing] fileList SDK returned no data, error:', (result as any)?.error?.name ?? result.error);
-      if (_preferredListLevel <= 1) _preferredListLevel = 2;
+      // SDK 正常响应但无数据（如目录不存在）→ 通道正常，不提升级别
+      // 仅 catch 中的超时/网络错误才代表通道故障
+      _preferredListLevel = 1;
+      console.debug('[xingjing] fileList SDK: no data for path:', path, 'error:', (result as any)?.error?.name);
     } catch (e) {
       console.warn('[xingjing] fileList SDK failed:', (e as Error)?.message ?? e);
       if (_preferredListLevel <= 1) _preferredListLevel = 2;
@@ -292,7 +310,8 @@ export async function fileList(
     try {
       const url = new URL('/file', _baseUrl);
       url.searchParams.set('path', path);
-      const dir = directory ?? (_directory || '');
+      // Fix: 当 path 已是绝对路径时，不附加 _directory，避免后端收到双重路径
+      const dir = directory ?? (path.startsWith('/') ? '' : (_directory || ''));
       if (dir) url.searchParams.set('directory', dir);
       const listHeaders: Record<string, string> = {};
       const listAuth = getAuthHeader();
@@ -302,8 +321,9 @@ export async function fileList(
         _preferredListLevel = 2;
         return (await resp.json()) as FileNode[];
       }
-      console.warn('[xingjing] fileList tauriFetch 失败, status:', resp.status);
-      if (_preferredListLevel <= 2) _preferredListLevel = 3;
+      // HTTP 错误响应（如 404）→ 通道正常，不提升级别
+      _preferredListLevel = 2;
+      console.debug('[xingjing] fileList tauriFetch: HTTP', resp.status, 'for path:', path);
     } catch (e) {
       console.warn('[xingjing] fileList tauriFetch 异常:', (e as Error)?.message ?? e);
       if (_preferredListLevel <= 2) _preferredListLevel = 3;
@@ -446,6 +466,14 @@ export async function fileRead(
   path: string,
   directory?: string,
 ): Promise<string | null> {
+  // ~ 路径直达 Tauri native fs（Levels 0-2 不支持 ~ 展开）
+  // 与 fileList 保持一致：提前返回，不修改 _preferredReadLevel，
+  // 避免并发 ~ 路径读取将全局通道偏好提升到 Level 3，
+  // 导致 workspace 相对路径的 fileRead 跳过 Levels 0-2 而全部失败。
+  if (path.startsWith('~')) {
+    return tauriNativeFileRead(path, directory);
+  }
+
   // 1. 优先：OpenWork 文件 API（仅当 workspace 与目标目录匹配时使用）
   // 当调用方显式指定了 directory 且与当前 workspace 不一致时，
   // OpenWork API 会从错误的 workspace 读取，必须跳过
@@ -472,22 +500,24 @@ export async function fileRead(
   }
 
   // 2. OpenCode SDK 客户端
-  // SDD-011 补充：~ 开头的用户主目录路径不应经由 OpenCode 服务端（Go 不展开 ~），直接降级到 Tauri native fs
-  const isTildePath = path.startsWith('~');
-  if (_preferredReadLevel <= 1 && !isTildePath) {
+  if (_preferredReadLevel <= 1) {
     try {
       const client = getXingjingClient();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // Fix: 当 path 已是绝对路径时，不附加 _directory，避免后端收到双重路径
+      const readDir = directory ?? (path.startsWith('/') ? undefined : (_directory || undefined));
       const result = await withFileTimeout((client.file.read as any)({
         path,
-        directory: directory ?? (_directory || undefined),
+        directory: readDir,
       })) as any;
       if (result.data) {
         _preferredReadLevel = 1;
         return (result.data as FileContent).content;
       }
-      console.warn('[xingjing] fileRead SDK returned no data, error:', (result as any)?.error?.name ?? result.error);
-      if (_preferredReadLevel <= 1) _preferredReadLevel = 2;
+      // SDK 正常响应但无数据（如文件不存在）→ 通道正常，不提升级别
+      // 仅 catch 中的超时/网络错误才代表通道故障
+      _preferredReadLevel = 1;
+      console.debug('[xingjing] fileRead SDK: no content for path:', path, 'error:', (result as any)?.error?.name);
     } catch (e) {
       console.warn('[xingjing] fileRead SDK failed:', (e as Error)?.message ?? e);
       if (_preferredReadLevel <= 1) _preferredReadLevel = 2;
@@ -495,11 +525,12 @@ export async function fileRead(
   }
 
   // 3. 兜底：通过 tauriFetch 直连 OpenCode（绕过 CORS）
-  if (_preferredReadLevel <= 2 && !isTildePath) {
+  if (_preferredReadLevel <= 2) {
     try {
       const url = new URL('/file/content', _baseUrl);
       url.searchParams.set('path', path);
-      const dir = directory ?? (_directory || '');
+      // Fix: 当 path 已是绝对路径时，不附加 _directory，避免后端收到双重路径
+      const dir = directory ?? (path.startsWith('/') ? '' : (_directory || ''));
       if (dir) url.searchParams.set('directory', dir);
       const readHeaders: Record<string, string> = {};
       const readAuth = getAuthHeader();
@@ -510,8 +541,9 @@ export async function fileRead(
         _preferredReadLevel = 2;
         return (data as FileContent).content ?? null;
       }
-      console.warn('[xingjing] fileRead tauriFetch 失败, status:', resp.status, 'path:', path);
-      if (_preferredReadLevel <= 2) _preferredReadLevel = 3;
+      // HTTP 错误响应（如 404）→ 通道正常，不提升级别
+      _preferredReadLevel = 2;
+      console.debug('[xingjing] fileRead tauriFetch: HTTP', resp.status, 'for path:', path);
     } catch (e) {
       console.warn('[xingjing] fileRead tauriFetch 异常:', (e as Error)?.message ?? e);
       if (_preferredReadLevel <= 2) _preferredReadLevel = 3;

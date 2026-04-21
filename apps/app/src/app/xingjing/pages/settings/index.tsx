@@ -2942,13 +2942,13 @@ const SkillsTab: Component = () => {
           }}
         >
           {installingSkill() === props.name
-            ? <><Loader size={11} class="animate-spin" /> \u5b89\u88c5\u4e2d</>
-            : <><Download size={11} /> \u5b89\u88c5</>}
+            ? <><Loader size={11} class="animate-spin" /> 安装中</>
+            : <><Download size={11} /> 安装</>}
         </button>
       </Show>
       <Show when={props.installed}>
         <span style={{ display: 'flex', 'align-items': 'center', gap: '3px', 'font-size': '11px', color: chartColors.success }}>
-          <CheckCircle size={12} /> \u5df2\u5b89\u88c5
+          <CheckCircle size={12} /> 已安装
         </span>
       </Show>
     </div>
@@ -2980,27 +2980,27 @@ const SkillsTab: Component = () => {
             }}
           >
             <RefreshCw size={12} class={loading() ? 'animate-spin' : ''} />
-            \u5237\u65b0
+            刷新
           </button>
         </div>
 
         <Show when={openworkStatus() === 'disconnected'}>
           <p style={{ margin: '0', 'font-size': '12px', color: themeColors.textMuted, 'text-align': 'center', padding: '20px 0' }}>
-            OpenWork \u672a\u8fde\u63a5\uff0c\u65e0\u6cd5\u52a0\u8f7d Skills
+            OpenWork 未连接，无法加载 Skills
           </p>
         </Show>
 
         <Show when={openworkStatus() !== 'disconnected' && loading()}>
           <div style={{ display: 'flex', 'align-items': 'center', 'justify-content': 'center', gap: '8px', padding: '20px 0' }}>
             <Loader size={16} class="animate-spin" style={{ color: themeColors.textMuted }} />
-            <span style={{ 'font-size': '12px', color: themeColors.textMuted }}>\u52a0\u8f7d\u4e2d...</span>
+            <span style={{ 'font-size': '12px', color: themeColors.textMuted }}>加载中...</span>
           </div>
         </Show>
 
         <Show when={openworkStatus() !== 'disconnected' && !loading()}>
           <Show when={wsSkills().length > 0} fallback={
             <p style={{ margin: '0', 'font-size': '12px', color: themeColors.textMuted, 'text-align': 'center', padding: '12px 0' }}>
-              \u5f53\u524d\u5de5\u4f5c\u533a\u65e0\u5df2\u5b89\u88c5\u7684 Skill
+              当前工作区无已安装的 Skill
             </p>
           }>
             <div style={{ display: 'flex', 'flex-direction': 'column', gap: '2px' }}>
@@ -3020,16 +3020,16 @@ const SkillsTab: Component = () => {
       }}>
         <h3 style={{ margin: '0 0 8px', 'font-size': '14px', 'font-weight': '600', color: themeColors.text }}>
           <Package size={14} class="inline mr-1" style={{ 'vertical-align': '-2px' }} />
-          Hub Skills\uff08\u793e\u533a\uff09
+          Hub Skills（社区）
         </h3>
         <p style={{ margin: '0 0 12px', 'font-size': '12px', color: themeColors.textMuted }}>
-          \u6d4f\u89c8\u793e\u533a\u5171\u4eab\u7684 Skills\uff0c\u70b9\u51fb\u5b89\u88c5\u5373\u53ef\u6dfb\u52a0\u5230\u5f53\u524d\u5de5\u4f5c\u533a
+          浏览社区共享的 Skills，点击安装即可添加到当前工作区
         </p>
 
         <Show when={openworkStatus() !== 'disconnected' && !loading()}>
           <Show when={hubSkills().length > 0} fallback={
             <p style={{ margin: '0', 'font-size': '12px', color: themeColors.textMuted, 'text-align': 'center', padding: '12px 0' }}>
-              Hub \u4e2d\u6682\u65e0\u53ef\u7528 Skill
+              Hub 中暂无可用 Skill
             </p>
           }>
             <div style={{ display: 'flex', 'flex-direction': 'column', gap: '2px' }}>
@@ -3048,7 +3048,7 @@ const SkillsTab: Component = () => {
 
         <Show when={openworkStatus() === 'disconnected'}>
           <p style={{ margin: '0', 'font-size': '12px', color: themeColors.textMuted, 'text-align': 'center', padding: '12px 0' }}>
-            OpenWork \u672a\u8fde\u63a5
+            OpenWork 未连接
           </p>
         </Show>
       </div>

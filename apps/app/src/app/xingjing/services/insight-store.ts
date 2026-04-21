@@ -2,14 +2,16 @@
  * 产品洞察持久化服务
  *
  * 负责 InsightRecord（外部调研记录）和 ProductSuggestion（产品建议）的读写。
- * 存储路径：.xingjing/product/insights/
+ * 存储路径：knowledge/insights/（遵循 dir-graph.yaml Knowledge 规范）
  *
- * 文件结构：
- *   index.yaml            — InsightRecord 索引（轻量，不含全文）
- *   {id}.md               — 单条洞察全文（含搜索来源、摘要、建议）
- *   suggestions.yaml      — ProductSuggestion 汇总列表
+ * 文件格式：
+ *   knowledge/insights/{id}.md — 单条洞察/知识条目（frontmatter + Markdown body）
+ *
+ * 兼容两种 frontmatter 格式：
+ *   1. Knowledge 标准格式：id, category(user-insight), title, tags, feature, createdAt
+ *   2. InsightRecord 格式：id, insightCategory, title, createdAt, linkedHypotheses
  */
-import { readYaml, writeYaml, writeFile, readFile, deleteFile, parseFrontmatter } from './file-store';
+import { readMarkdownDir, writeMarkdownWithFrontmatter, deleteFile } from './file-store';
 
 // ─── 类型定义 ─────────────────────────────────────────────────────────────────
 
@@ -53,11 +55,9 @@ export interface ProductSuggestion {
   adopted?: boolean;
 }
 
-// ─── 路径常量 ─────────────────────────────────────────────────────────────────
+// ─── 路径常量（遵循 dir-graph.yaml: knowledge/insights/）─────────────────────
 
-const INSIGHTS_DIR = '.xingjing/product/insights';
-const INDEX_PATH = `${INSIGHTS_DIR}/index.yaml`;
-const SUGGESTIONS_PATH = `${INSIGHTS_DIR}/suggestions.yaml`;
+const INSIGHTS_DIR = 'knowledge/insights';
 
 function insightFilePath(id: string): string {
   return `${INSIGHTS_DIR}/${id}.md`;
@@ -65,184 +65,123 @@ function insightFilePath(id: string): string {
 
 // ─── InsightRecord CRUD ───────────────────────────────────────────────────────
 
-interface InsightIndex {
-  records: Array<{
-    id: string;
-    query: string;
-    category: InsightCategory;
-    createdAt: string;
-    summarySnippet: string;
-    sourceCount: number;
-  }>;
-}
-
 /**
- * 加载所有洞察记录（仅索引字段 + summary，不含完整 sources 详情）
+ * 加载所有洞察记录，从 knowledge/insights/ 目录扫描 Markdown 文件
+ * 兼容 Knowledge 标准格式与 InsightRecord 格式
  */
 export async function loadInsightRecords(workDir: string): Promise<InsightRecord[]> {
-  const index = await readYaml<InsightIndex>(INDEX_PATH, { records: [] }, workDir);
-  if (!index.records?.length) return [];
-
-  // 并发加载各条记录全文
-  const records = await Promise.all(
-    index.records.map(async (meta) => {
-      const content = await readFile(insightFilePath(meta.id), workDir);
-      if (!content) {
-        // 索引存在但文件丢失，返回仅有 meta 的骨架
-        return {
-          id: meta.id, query: meta.query, category: meta.category,
-          createdAt: meta.createdAt, summary: meta.summarySnippet,
-          sources: [], suggestions: [],
-        } as InsightRecord;
-      }
-      return parseInsightMarkdown(meta.id, content);
-    }),
-  );
-  return records;
+  try {
+    const docs = await readMarkdownDir<Record<string, unknown>>(INSIGHTS_DIR, workDir);
+    return docs
+      .map(doc => parseKnowledgeToInsight(doc.frontmatter, doc.body))
+      .filter(r => !!r.id);
+  } catch {
+    return [];
+  }
 }
 
 /**
- * 保存一条洞察记录（更新索引 + 写入全文文件）
+ * 保存一条洞察记录到 knowledge/insights/{id}.md
+ * 使用 Knowledge 兼容的 frontmatter 格式
  */
 export async function saveInsightRecord(workDir: string, record: InsightRecord): Promise<boolean> {
-  // 写入全文文件
-  const markdown = serializeInsightMarkdown(record);
-  const fileOk = await writeFile(insightFilePath(record.id), markdown, workDir);
-  if (!fileOk) return false;
-
-  // 更新索引
-  const index = await readYaml<InsightIndex>(INDEX_PATH, { records: [] }, workDir);
-  const existing = index.records?.findIndex((r) => r.id === record.id) ?? -1;
-  const meta = {
+  const frontmatter: Record<string, unknown> = {
     id: record.id,
-    query: record.query,
-    category: record.category,
+    category: 'user-insight',         // Knowledge 标准 category
+    title: record.query,
+    tags: record.sources.slice(0, 5).map(s => s.title).filter(Boolean),
     createdAt: record.createdAt,
-    summarySnippet: record.summary.slice(0, 120).replace(/\n/g, ' '),
-    sourceCount: record.sources.length,
+    insightCategory: record.category,  // 保留 InsightRecord 原始分类
+    linkedHypotheses: record.linkedHypotheses ?? [],
   };
-  if (existing >= 0) {
-    index.records[existing] = meta;
-  } else {
-    index.records = [meta, ...(index.records ?? [])];
-  }
-  return writeYaml(INDEX_PATH, index as unknown as Record<string, unknown>, workDir);
+  const body = serializeInsightBody(record);
+  return writeMarkdownWithFrontmatter(
+    insightFilePath(record.id),
+    { frontmatter, body },
+    workDir,
+  );
 }
 
 /**
  * 删除一条洞察记录
  */
 export async function deleteInsightRecord(workDir: string, id: string): Promise<boolean> {
-  await deleteFile(insightFilePath(id), workDir);
-  const index = await readYaml<InsightIndex>(INDEX_PATH, { records: [] }, workDir);
-  index.records = (index.records ?? []).filter((r) => r.id !== id);
-  return writeYaml(INDEX_PATH, index as unknown as Record<string, unknown>, workDir);
-}
-
-// ─── ProductSuggestion CRUD ───────────────────────────────────────────────────
-
-interface SuggestionsFile {
-  suggestions: ProductSuggestion[];
-}
-
-/**
- * 加载所有产品建议
- */
-export async function loadProductSuggestions(workDir: string): Promise<ProductSuggestion[]> {
-  const file = await readYaml<SuggestionsFile>(SUGGESTIONS_PATH, { suggestions: [] }, workDir);
-  return file.suggestions ?? [];
-}
-
-/**
- * 新增或更新一条产品建议
- */
-export async function upsertProductSuggestion(
-  workDir: string,
-  suggestion: ProductSuggestion,
-): Promise<boolean> {
-  const file = await readYaml<SuggestionsFile>(SUGGESTIONS_PATH, { suggestions: [] }, workDir);
-  const list = file.suggestions ?? [];
-  const idx = list.findIndex((s) => s.id === suggestion.id);
-  if (idx >= 0) { list[idx] = suggestion; } else { list.unshift(suggestion); }
-  return writeYaml(
-    SUGGESTIONS_PATH,
-    { suggestions: list } as unknown as Record<string, unknown>,
-    workDir,
-  );
-}
-
-/**
- * 标记建议为已采纳
- */
-export async function adoptSuggestion(workDir: string, id: string): Promise<boolean> {
-  const file = await readYaml<SuggestionsFile>(SUGGESTIONS_PATH, { suggestions: [] }, workDir);
-  const list = file.suggestions ?? [];
-  const idx = list.findIndex((s) => s.id === id);
-  if (idx < 0) return false;
-  list[idx] = { ...list[idx], adopted: true };
-  return writeYaml(
-    SUGGESTIONS_PATH,
-    { suggestions: list } as unknown as Record<string, unknown>,
-    workDir,
-  );
+  try {
+    await deleteFile(insightFilePath(id), workDir);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // ─── 序列化/反序列化 ──────────────────────────────────────────────────────────
 
-function serializeInsightMarkdown(record: InsightRecord): string {
-  const frontmatter = {
-    id: record.id,
-    query: record.query,
-    category: record.category,
-    createdAt: record.createdAt,
-    sourceCount: record.sources.length,
-    linkedHypotheses: record.linkedHypotheses ?? [],
-  };
-  const fmLines = Object.entries(frontmatter)
-    .map(([k, v]) => {
-      if (Array.isArray(v)) {
-        if (v.length === 0) return `${k}: []`;
-        return `${k}:\n${v.map(i => `  - ${i}`).join('\n')}`;
-      }
-      return `${k}: ${JSON.stringify(v)}`;
-    })
-    .join('\n');
+/**
+ * 将 InsightRecord body 序列化为 Markdown（不含 frontmatter，由 writeMarkdownWithFrontmatter 处理）
+ */
+function serializeInsightBody(record: InsightRecord): string {
+  const parts: string[] = [];
+  parts.push(`## 摘要\n\n${record.summary}`);
 
-  const sourcesSection = record.sources.length > 0
-    ? `\n## 来源\n\n${record.sources.map(s =>
+  if (record.sources.length > 0) {
+    parts.push(`## 来源\n\n${record.sources.map(s =>
       `- [${s.title}](${s.url})\n  ${s.snippet.slice(0, 200)}`
-    ).join('\n')}`
-    : '';
+    ).join('\n')}`);
+  }
 
-  const suggestionsSection = record.suggestions.length > 0
-    ? `\n## 产品建议\n\n${record.suggestions.map(s =>
+  if (record.suggestions.length > 0) {
+    parts.push(`## 产品建议\n\n${record.suggestions.map(s =>
       `### [${s.priority}] ${s.title}\n${s.rationale}\n**分类**: ${s.category}`
-    ).join('\n\n')}`
-    : '';
+    ).join('\n\n')}`);
+  }
 
-  return `---\n${fmLines}\n---\n\n## 摘要\n\n${record.summary}${sourcesSection}${suggestionsSection}\n`;
+  return parts.join('\n\n') + '\n';
 }
 
-function parseInsightMarkdown(id: string, content: string): InsightRecord {
-  const doc = parseFrontmatter<Record<string, unknown>>(content);
-  const fm = doc.frontmatter;
-  const body = doc.body;
+/**
+ * 将 Knowledge 标准格式或 InsightRecord 格式的 frontmatter + body 映射为 InsightRecord
+ *
+ * 兼容策略：
+ * - query:    优先 frontmatter.query，回退 frontmatter.title
+ * - category: 优先 frontmatter.insightCategory（InsightRecord），
+ *             否则从 Knowledge category 映射（user-insight → user, tech-note → tech）
+ * - summary:  优先 ## 摘要（InsightRecord），回退 ## 洞察（Knowledge）
+ * - sources:  优先 ## 来源，回退 ## 外部来源
+ * - suggestions: ## 产品建议 / ## 建议方案
+ */
+function parseKnowledgeToInsight(
+  fm: Record<string, unknown>,
+  body: string,
+): InsightRecord {
+  const id = String(fm.id ?? '');
+  const query = String(fm.query ?? fm.title ?? '');
+  const createdAt = String(fm.createdAt ?? fm.date ?? '');
 
-  const query = String(fm.query ?? '');
-  const category = (String(fm.category ?? 'general')) as InsightCategory;
-  const createdAt = String(fm.createdAt ?? '');
+  // Category: insightCategory 优先（InsightRecord 保存的原始分类），否则从 Knowledge category 映射
+  const rawInsightCat = String(fm.insightCategory ?? '');
+  const VALID_CATS: InsightCategory[] = ['competitor', 'market', 'user', 'tech', 'general'];
+  let category: InsightCategory;
+  if (rawInsightCat && (VALID_CATS as string[]).includes(rawInsightCat)) {
+    category = rawInsightCat as InsightCategory;
+  } else {
+    const knowledgeMap: Record<string, InsightCategory> = {
+      'user-insight': 'user', 'tech-note': 'tech', 'pitfall': 'general',
+    };
+    category = knowledgeMap[String(fm.category ?? '')] ?? 'general';
+  }
+
   const linkedHypotheses = Array.isArray(fm.linkedHypotheses)
     ? fm.linkedHypotheses.map(String)
     : [];
 
-  // 提取摘要段落
-  const summaryRe = new RegExp('## 摘要\\r?\\n\\r?\\n([\\s\\S]*?)(?=\\n## |\\n---\\n|$)');
+  // 提取摘要：兼容 ## 摘要（InsightRecord）/ ## 洞察（Knowledge）
+  const summaryRe = new RegExp('## (?:摘要|洞察)\\r?\\n\\r?\\n([\\s\\S]*?)(?=\\n## |\\n---\\n|$)');
   const summaryMatch = body.match(summaryRe);
-  const summary = summaryMatch ? summaryMatch[1].trim() : body.slice(0, 300);
+  const summary = summaryMatch ? summaryMatch[1].trim() : body.slice(0, 300).trim();
 
-  // 提取来源
+  // 提取来源：兼容 ## 来源 / ## 外部来源
   const sources: InsightSource[] = [];
-  const sourceRe = new RegExp('## 来源\\r?\\n\\r?\\n([\\s\\S]*?)(?=\\n## |\\n---\\n|$)');
+  const sourceRe = new RegExp('## (?:来源|外部来源)\\r?\\n\\r?\\n([\\s\\S]*?)(?=\\n## |\\n---\\n|$)');
   const sourceSection = body.match(sourceRe);
   if (sourceSection) {
     const sourceLines = sourceSection[1].split('\n- ');
@@ -255,10 +194,33 @@ function parseInsightMarkdown(id: string, content: string): InsightRecord {
     }
   }
 
-  return {
-    id, query, category, createdAt, summary,
-    sources, suggestions: [], linkedHypotheses,
-  };
+  // 提取产品建议：兼容 ## 产品建议 / ## 建议方案
+  const suggestions: ProductSuggestion[] = [];
+  const sugRe = new RegExp('## (?:产品建议|建议方案)\\r?\\n\\r?\\n([\\s\\S]*?)(?=\\n## |\\n---\\n|$)');
+  const sugSection = body.match(sugRe);
+  if (sugSection) {
+    const sugBlocks = sugSection[1].split(/\n### /);
+    for (const block of sugBlocks) {
+      if (!block.trim()) continue;
+      const headerMatch = block.match(/^\[([^\]]+)\] (.+)/);
+      if (!headerMatch) continue;
+      const priority = headerMatch[1] as ProductSuggestion['priority'];
+      const title = headerMatch[2].trim();
+      const categoryMatch = block.match(/\*\*分类\*\*:\s*(.+)/);
+      const sugCategory = (categoryMatch?.[1]?.trim() ?? 'ux') as ProductSuggestion['category'];
+      const rationaleRaw = block
+        .replace(/^\[[^\]]+\] .+\n/, '')
+        .replace(/\*\*分类\*\*:.+/, '')
+        .trim();
+      suggestions.push({
+        id: `sug-${id}-${title.slice(0, 10).replace(/\s/g, '-')}`,
+        title, priority, category: sugCategory, rationale: rationaleRaw,
+        actionable: true, createdAt, adopted: false,
+      });
+    }
+  }
+
+  return { id, query, summary, sources, suggestions, category, createdAt, linkedHypotheses };
 }
 
 // ─── 工具函数 ─────────────────────────────────────────────────────────────────

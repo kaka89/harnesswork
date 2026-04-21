@@ -968,6 +968,12 @@ const SoloAutopilot = () => {
     const wsId = resolvedWorkspaceId();
     await loadCapabilities(wsId);
     await loadHistory();
+
+    // 自动恢复最近一次会话（若存在）
+    const items = historyItems();
+    if (items.length > 0) {
+      await restoreHistorySession(items[0]);
+    }
   });
 
   // ── TeamSessionOrchestrator ────────────────────────────────────────────────────

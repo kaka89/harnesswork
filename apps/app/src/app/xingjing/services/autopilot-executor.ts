@@ -9,7 +9,7 @@
  * - 通过 agent-registry.ts 统一管理
  */
 import { callAgent, type CallAgentOptions } from './opencode-client';
-import { discoverAgents, type RegisteredAgent } from './agent-registry';
+import { listAllAgents, type RegisteredAgent } from './agent-registry';
 import { retrieveKnowledge } from './knowledge-retrieval';
 import { recallRelevantContext } from './memory-recall';
 import type { SkillApiAdapter } from './knowledge-behavior';
@@ -30,6 +30,10 @@ export interface AutopilotAgent {
   description: string;
   /** 直接传给 callAgent systemPrompt 的角色设定 */
   systemPrompt: string;
+  /** Agent 来源：builtin = 内置种子, custom = 用户自定义 */
+  source?: 'builtin' | 'custom';
+  /** 是否可在 Workshop 中编辑/删除（内置 Agent 不可删除） */
+  editable?: boolean;
 }
 
 const OUTPUT_FORMAT: string = `
@@ -250,10 +254,10 @@ export async function runOrchestratedAutopilot(
     console.warn('[autopilot-executor] knowledge/recall retrieval failed:', e);
   }
 
-  // Agent 动态发现：如果调用方已提供 Agent 列表则直接使用，否则从文件 + 内置兜底动态发现
+  // Agent 动态发现：如果调用方已提供 Agent 列表则直接使用，否则从 .opencode/agents/ 动态发现
   const availableAgents: AutopilotAgent[] = opts.availableAgents.length > 0
     ? opts.availableAgents
-    : await discoverAgents(opts.mode ?? 'solo', workDir);
+    : await listAllAgents(opts.mode ?? 'solo');
 
   const orchestratorSystemPrompt = buildOrchestratorSystemPrompt(availableAgents);
 

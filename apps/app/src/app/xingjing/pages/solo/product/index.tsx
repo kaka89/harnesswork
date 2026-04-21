@@ -15,6 +15,10 @@ import {
   loadSoloMetrics,
   appendHypothesisResultToPrd,
   convertHypothesisToRequirement,
+  loadPrds,
+  loadSdds,
+  savePrd,
+  saveSdd,
   type SoloHypothesis,
   type SoloHypothesisStatus,
   type SoloRequirementOutput,
@@ -22,10 +26,13 @@ import {
   type SoloProductFeature,
   type SoloBusinessMetric,
   type RequirementStatus,
+  type PrdFrontmatter,
+  type SddFrontmatter,
 } from '../../../services/file-store';
 import { SOLO_AGENTS } from '../../../services/autopilot-executor';
 import { invalidateKnowledgeCache } from '../../../services/knowledge-retrieval';
 import { useAppStore } from '../../../stores/app-store';
+import type { SkillApiAdapter } from '../../../services/knowledge-behavior';
 import { themeColors, chartColors } from '../../../utils/colors';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
@@ -38,6 +45,13 @@ import RequirementCard from '../../../components/requirement/requirement-card';
 import PushToDevModal from '../../../components/requirement/push-to-dev-modal';
 import { pushRequirementToDev, type TaskDraft } from '../../../services/requirement-dev-bridge';
 import GitStatusBadge from '../../../components/common/git-status-badge';
+import LiveMarkdownEditor from '../../../../components/live-markdown-editor';
+import type { EditorView } from '@codemirror/view';
+import {
+  modalOverlayClass, modalShellClass, modalHeaderClass,
+  modalBodyClass, modalFooterClass, modalTitleClass,
+  modalHeaderButtonClass, pillPrimaryClass, pillSecondaryClass,
+} from '../../../../workspace/modal-styles';
 
 const statusConfig: Record<SoloHypothesisStatus, { label: string; icon: string; bg: string; border: string; cardBorder: string }> = {
   testing:     { label: '验证中',  icon: '🧪', bg: themeColors.primaryBg, border: themeColors.primaryBorder, cardBorder: themeColors.border },
@@ -291,6 +305,14 @@ const REQ_DOC_REGEX = /^\[REQ_DOC:([^\]]+)\]/;
 
 const SoloProduct: Component = () => {
   const { productStore, actions } = useAppStore();
+
+  // ── SkillApiAdapter ───────────────────────────────────────────────
+  const skillApi: SkillApiAdapter = {
+    listSkills: () => actions.listOpenworkSkills(),
+    getSkill: (name) => actions.getOpenworkSkill(name),
+    upsertSkill: (name, content, desc) => actions.upsertOpenworkSkill(name, content, desc),
+  };
+
   const [activeTab, setActiveTab] = createSignal<'hypotheses' | 'requirements' | 'features' | 'feedbacks' | 'insights'>('hypotheses');
   const [hypotheses, setHypotheses] = createSignal<SoloHypothesis[]>([]);
   const [requirements, setRequirements] = createSignal<SoloRequirementOutput[]>([]);
@@ -327,6 +349,50 @@ const SoloProduct: Component = () => {
   };
   // 推送至研发目标需求
   const [pushToDevTarget, setPushToDevTarget] = createSignal<SoloRequirementOutput | null>(null);
+
+  // 产品模块展开状态 + PRD/SDD 数据
+  const [expandedFeatureId, setExpandedFeatureId] = createSignal<string | null>(null);
+  const [featureDocTab, setFeatureDocTab] = createSignal<'prd' | 'sdd'>('prd');
+  const [featurePrds, setFeaturePrds] = createSignal<Map<string, PrdFrontmatter & { _body?: string }>>(new Map());
+  const [featureSdds, setFeatureSdds] = createSignal<Map<string, SddFrontmatter & { _body?: string }>>(new Map());
+
+  // 文档弹窗编辑器
+  const [modalEditorView, setModalEditorView] = createSignal<EditorView | null>(null);
+
+  // Markdown 工具栏 helper 函数
+  const mdWrapSel = (before: string, after = before) => {
+    const v = modalEditorView();
+    if (!v) return;
+    const { from, to } = v.state.selection.main;
+    const sel = v.state.sliceDoc(from, to);
+    v.dispatch({
+      changes: { from, to, insert: `${before}${sel}${after}` },
+      selection: { anchor: from + before.length, head: from + before.length + sel.length },
+    });
+    v.focus();
+  };
+  const mdLinePrefix = (prefix: string) => {
+    const v = modalEditorView();
+    if (!v) return;
+    const line = v.state.doc.lineAt(v.state.selection.main.from);
+    v.dispatch({ changes: { from: line.from, insert: prefix } });
+    v.focus();
+  };
+  const mdInsertAt = (text: string) => {
+    const v = modalEditorView();
+    if (!v) return;
+    const from = v.state.selection.main.from;
+    v.dispatch({ changes: { from, insert: text } });
+    v.focus();
+  };
+
+  // 全屏弹窗
+  const [fullscreenDoc, setFullscreenDoc] = createSignal<{
+    type: 'prd' | 'sdd'; slug: string; title: string; body: string;
+    meta?: PrdFrontmatter | SddFrontmatter;
+  } | null>(null);
+  const [fullscreenMode, setFullscreenMode] = createSignal<'view' | 'edit'>('view');
+  const [fullscreenEditContent, setFullscreenEditContent] = createSignal('');
 
   // Drag-and-drop
   const [draggingId, setDraggingId] = createSignal<string | null>(null);
@@ -372,7 +438,7 @@ const SoloProduct: Component = () => {
     setPageLoading(true);
     setLoadError(null);
     try {
-      const [fileHypo, fileReqs, fileFeedbacks, fileFeatures, overview, roadmap, metricsData, records] = await Promise.all([
+      const [fileHypo, fileReqs, fileFeedbacks, fileFeatures, overview, roadmap, metricsData, records, prds, sdds] = await Promise.all([
         loadHypotheses(workDir),
         loadRequirementOutputs(workDir),
         loadUserFeedbacks(workDir),
@@ -381,6 +447,8 @@ const SoloProduct: Component = () => {
         loadProductRoadmap(workDir),
         loadSoloMetrics(workDir),
         loadInsightRecords(workDir),
+        loadPrds(workDir),
+        loadSdds(workDir),
       ]);
       // 竞态守卫：如果版本已过期，丢弃结果
       if (currentVersion !== loadVersion) return;
@@ -392,6 +460,13 @@ const SoloProduct: Component = () => {
       setProductRoadmap(roadmap);
       setMetrics(metricsData.businessMetrics ?? []);
       setInsightRecords(records);
+      // 按 featureSlug 索引 PRD/SDD
+      const prdMap = new Map<string, PrdFrontmatter & { _body?: string }>();
+      for (const p of prds) if ((p as any)._featureSlug) prdMap.set((p as any)._featureSlug, p as any);
+      setFeaturePrds(prdMap);
+      const sddMap = new Map<string, SddFrontmatter & { _body?: string }>();
+      for (const s of sdds) if ((s as any)._featureSlug) sddMap.set((s as any)._featureSlug, s as any);
+      setFeatureSdds(sddMap);
     } catch (e) {
       if (currentVersion !== loadVersion) return;
       setLoadError('数据加载失败，请检查网络连接后刷新');
@@ -735,7 +810,7 @@ const SoloProduct: Component = () => {
                 <span style={{ 'margin-left': '6px', 'font-size': '12px', padding: '1px 6px', background: themeColors.hover, color: themeColors.textSecondary, 'border-radius': '9999px' }}>{requirements().length}</span>
               </button>
               <button style={tabStyle(activeTab() === 'features')} onClick={() => setActiveTab('features')}>
-                📦 功能注册
+                📦 产品模块
                 <span style={{ 'margin-left': '6px', 'font-size': '12px', padding: '1px 6px', background: themeColors.hover, color: themeColors.textSecondary, 'border-radius': '9999px' }}>{features().length}</span>
               </button>
               <button style={tabStyle(activeTab() === 'feedbacks')} onClick={() => setActiveTab('feedbacks')}>
@@ -839,14 +914,14 @@ const SoloProduct: Component = () => {
                 </div>
               </Show>
 
-              {/* Features Registry */}
+              {/* Product Modules */}
               <Show when={activeTab() === 'features'}>
                 <div style={{ display: 'flex', 'flex-direction': 'column', gap: '12px' }}>
                   <Show when={features().length === 0}>
                     <div style={{ 'text-align': 'center', padding: '48px 0', color: themeColors.textMuted, 'font-size': '14px' }}>
                       <div style={{ 'font-size': '32px', 'margin-bottom': '8px' }}>📦</div>
-                      <div>暂无功能注册</div>
-                      <div style={{ 'font-size': '12px', 'margin-top': '4px' }}>在 product/features/_index.yml 中添加功能条目</div>
+                      <div>暂无产品模块</div>
+                      <div style={{ 'font-size': '12px', 'margin-top': '4px' }}>在 product/features/_index.yml 中添加模块条目</div>
                     </div>
                   </Show>
                   <For each={features()}>
@@ -857,21 +932,145 @@ const SoloProduct: Component = () => {
                         planned: { label: '规划中', bg: themeColors.hover, color: themeColors.textSecondary },
                       };
                       const s = statusCfg[feat.status] ?? statusCfg.planned;
+                      const isExpanded = () => expandedFeatureId() === feat.id;
+                      const slug = feat.id;
+                      const prd = () => featurePrds().get(slug);
+                      const sdd = () => featureSdds().get(slug);
+                      const prdStatusCfg: Record<string, { label: string; bg: string; color: string }> = {
+                        approved: { label: '已审批', bg: themeColors.successBg, color: chartColors.success },
+                        reviewing: { label: '审核中', bg: themeColors.warningBg, color: themeColors.warningDark },
+                        draft: { label: '草稿', bg: themeColors.hover, color: themeColors.textSecondary },
+                      };
                       return (
-                        <div style={{ 'border-radius': '12px', border: `1px solid ${themeColors.borderLight}`, padding: '14px 16px' }}>
-                          <div style={{ display: 'flex', 'align-items': 'center', gap: '8px', 'margin-bottom': '6px', 'flex-wrap': 'wrap' }}>
-                            <span style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text }}>{feat.title ?? feat.name}</span>
-                            <span style={{ 'font-size': '11px', padding: '1px 6px', 'border-radius': '4px', background: s.bg, color: s.color }}>{s.label}</span>
-                            <Show when={feat.since}>
-                              <span style={{ 'font-size': '11px', color: themeColors.textMuted }}>since {feat.since}</span>
-                            </Show>
-                            <Show when={feat.hypothesis}>
-                              <span style={{ 'font-size': '11px', padding: '1px 6px', 'border-radius': '4px', background: themeColors.primaryBg, color: chartColors.primary }}>🔗 {feat.hypothesis}</span>
+                        <div style={{ 'border-radius': '12px', border: `1px solid ${isExpanded() ? chartColors.primary : themeColors.borderLight}`, overflow: 'hidden', transition: 'border-color 0.2s' }}>
+                          {/* Card Header — clickable */}
+                          <div
+                            style={{ padding: '14px 16px', cursor: 'pointer', 'user-select': 'none', background: isExpanded() ? themeColors.primaryBg : 'transparent', transition: 'background 0.2s' }}
+                            onClick={() => { setExpandedFeatureId(isExpanded() ? null : feat.id); setFeatureDocTab('prd'); }}
+                          >
+                            <div style={{ display: 'flex', 'align-items': 'center', gap: '8px', 'flex-wrap': 'wrap' }}>
+                              <span style={{ 'font-size': '12px', color: themeColors.textMuted, transition: 'transform 0.2s', transform: isExpanded() ? 'rotate(90deg)' : 'rotate(0deg)' }}>▶</span>
+                              <span style={{ 'font-weight': 600, 'font-size': '14px', color: themeColors.text }}>{feat.title ?? feat.name}</span>
+                              <span style={{ 'font-size': '11px', padding: '1px 6px', 'border-radius': '4px', background: s.bg, color: s.color }}>{s.label}</span>
+                              <Show when={feat.since}>
+                                <span style={{ 'font-size': '11px', color: themeColors.textMuted }}>since {feat.since}</span>
+                              </Show>
+                              <Show when={feat.hypothesis}>
+                                <span style={{ 'font-size': '11px', padding: '1px 6px', 'border-radius': '4px', background: themeColors.primaryBg, color: chartColors.primary }}>🔗 {feat.hypothesis}</span>
+                              </Show>
+                              {/* PRD/SDD 有无指示器 */}
+                              <Show when={prd()}>
+                                <span style={{ 'font-size': '10px', padding: '1px 5px', 'border-radius': '3px', background: '#e6f7ff', color: '#1890ff' }}>PRD</span>
+                              </Show>
+                              <Show when={sdd()}>
+                                <span style={{ 'font-size': '10px', padding: '1px 5px', 'border-radius': '3px', background: '#f6ffed', color: '#52c41a' }}>SDD</span>
+                              </Show>
+                            </div>
+                            <Show when={feat.brief ?? feat.description}>
+                              <div style={{ 'font-size': '13px', color: themeColors.textSecondary, 'margin-top': '4px', 'padding-left': '20px' }}>
+                                {feat.brief ?? feat.description}
+                              </div>
                             </Show>
                           </div>
-                          <div style={{ 'font-size': '13px', color: themeColors.textSecondary }}>
-                            {feat.brief ?? feat.description ?? ''}
-                          </div>
+
+                          {/* Expanded Detail: PRD / SDD tabs */}
+                          <Show when={isExpanded()}>
+                            <div style={{ 'border-top': `1px solid ${themeColors.borderLight}`, padding: '12px 16px' }}>
+                              {/* Doc sub-tabs */}
+                              <div style={{ display: 'flex', gap: '4px', 'margin-bottom': '12px' }}>
+                                <button
+                                  style={{ padding: '4px 12px', 'font-size': '12px', 'border-radius': '6px', border: 'none', cursor: 'pointer', background: featureDocTab() === 'prd' ? chartColors.primary : themeColors.hover, color: featureDocTab() === 'prd' ? '#fff' : themeColors.textSecondary, transition: 'all 0.15s' }}
+                                  onClick={(e) => { e.stopPropagation(); setFeatureDocTab('prd'); }}
+                                >
+                                  📖 功能设计 (PRD)
+                                </button>
+                                <button
+                                  style={{ padding: '4px 12px', 'font-size': '12px', 'border-radius': '6px', border: 'none', cursor: 'pointer', background: featureDocTab() === 'sdd' ? chartColors.primary : themeColors.hover, color: featureDocTab() === 'sdd' ? '#fff' : themeColors.textSecondary, transition: 'all 0.15s' }}
+                                  onClick={(e) => { e.stopPropagation(); setFeatureDocTab('sdd'); }}
+                                >
+                                  🛠 技术设计 (SDD)
+                                </button>
+                              </div>
+
+                              {/* PRD content */}
+                              <Show when={featureDocTab() === 'prd'}>
+                                <Show when={prd()} fallback={
+                                  <div style={{ 'text-align': 'center', padding: '24px 0', color: themeColors.textMuted, 'font-size': '13px' }}>
+                                    <div style={{ 'margin-bottom': '4px' }}>📄 暂无 PRD 文档</div>
+                                    <div style={{ 'font-size': '11px' }}>在 product/features/{slug}/PRD.md 中添加功能设计文档</div>
+                                  </div>
+                                }>
+                                  {(p) => {
+                                    const ps = prdStatusCfg[(p() as any).status] ?? prdStatusCfg.draft;
+                                    const bodyText = () => (p() as any)._body || '';
+                                    return (
+                                      <div>
+                                        <div style={{ display: 'flex', 'align-items': 'center', gap: '8px', 'margin-bottom': '8px', 'flex-wrap': 'wrap' }}>
+                                          <span style={{ 'font-weight': 600, 'font-size': '13px', color: themeColors.text }}>{(p() as any).title}</span>
+                                          <span style={{ 'font-size': '10px', padding: '1px 5px', 'border-radius': '3px', background: ps.bg, color: ps.color }}>{ps.label}</span>
+                                          <Show when={(p() as any).owner}>
+                                            <span style={{ 'font-size': '11px', color: themeColors.textMuted }}>负责人: {(p() as any).owner}</span>
+                                          </Show>
+                                          <div style={{ 'margin-left': 'auto', display: 'flex', gap: '4px' }}>
+                                            <button
+                                              style={{ padding: '2px 8px', 'font-size': '11px', 'border-radius': '4px', border: `1px solid ${themeColors.border}`, background: 'transparent', color: themeColors.textSecondary, cursor: 'pointer' }}
+                                              onClick={(e) => { e.stopPropagation(); setModalEditorView(null); setFullscreenDoc({ type: 'prd', slug, title: (p() as any).title || slug, body: bodyText(), meta: p() as any }); setFullscreenEditContent(bodyText()); setFullscreenMode('edit'); }}
+                                            >编辑</button>
+                                            <button
+                                              style={{ padding: '2px 8px', 'font-size': '11px', 'border-radius': '4px', border: `1px solid ${themeColors.border}`, background: 'transparent', color: themeColors.textSecondary, cursor: 'pointer' }}
+                                              onClick={(e) => { e.stopPropagation(); setFullscreenDoc({ type: 'prd', slug, title: (p() as any).title || slug, body: bodyText(), meta: p() as any }); setFullscreenMode('view'); setFullscreenEditContent(bodyText()); }}
+                                            >全屏</button>
+                                          </div>
+                                        </div>
+                                        <Show when={bodyText()}>
+                                          <div style={{ 'font-size': '13px', color: themeColors.text, 'line-height': '1.7', 'max-height': '400px', overflow: 'auto', padding: '8px 12px', background: themeColors.hover, 'border-radius': '6px' }} innerHTML={markdownToSafeHtml(bodyText())} />
+                                        </Show>
+                                      </div>
+                                    );
+                                  }}
+                                </Show>
+                              </Show>
+
+                              {/* SDD content */}
+                              <Show when={featureDocTab() === 'sdd'}>
+                                <Show when={sdd()} fallback={
+                                  <div style={{ 'text-align': 'center', padding: '24px 0', color: themeColors.textMuted, 'font-size': '13px' }}>
+                                    <div style={{ 'margin-bottom': '4px' }}>📄 暂无 SDD 文档</div>
+                                    <div style={{ 'font-size': '11px' }}>在 product/features/{slug}/SDD.md 中添加技术设计文档</div>
+                                  </div>
+                                }>
+                                  {(d) => {
+                                    const ds = prdStatusCfg[(d() as any).status] ?? prdStatusCfg.draft;
+                                    const bodyText = () => (d() as any)._body || '';
+                                    return (
+                                      <div>
+                                        <div style={{ display: 'flex', 'align-items': 'center', gap: '8px', 'margin-bottom': '8px', 'flex-wrap': 'wrap' }}>
+                                          <span style={{ 'font-weight': 600, 'font-size': '13px', color: themeColors.text }}>{(d() as any).title}</span>
+                                          <span style={{ 'font-size': '10px', padding: '1px 5px', 'border-radius': '3px', background: ds.bg, color: ds.color }}>{ds.label}</span>
+                                          <Show when={(d() as any).owner}>
+                                            <span style={{ 'font-size': '11px', color: themeColors.textMuted }}>负责人: {(d() as any).owner}</span>
+                                          </Show>
+                                          <div style={{ 'margin-left': 'auto', display: 'flex', gap: '4px' }}>
+                                            <button
+                                              style={{ padding: '2px 8px', 'font-size': '11px', 'border-radius': '4px', border: `1px solid ${themeColors.border}`, background: 'transparent', color: themeColors.textSecondary, cursor: 'pointer' }}
+                                              onClick={(e) => { e.stopPropagation(); setModalEditorView(null); setFullscreenDoc({ type: 'sdd', slug, title: (d() as any).title || slug, body: bodyText(), meta: d() as any }); setFullscreenEditContent(bodyText()); setFullscreenMode('edit'); }}
+                                            >编辑</button>
+                                            <button
+                                              style={{ padding: '2px 8px', 'font-size': '11px', 'border-radius': '4px', border: `1px solid ${themeColors.border}`, background: 'transparent', color: themeColors.textSecondary, cursor: 'pointer' }}
+                                              onClick={(e) => { e.stopPropagation(); setFullscreenDoc({ type: 'sdd', slug, title: (d() as any).title || slug, body: bodyText(), meta: d() as any }); setFullscreenMode('view'); setFullscreenEditContent(bodyText()); }}
+                                            >全屏</button>
+                                          </div>
+                                        </div>
+                                        <Show when={bodyText()}>
+                                          <div style={{ 'font-size': '13px', color: themeColors.text, 'line-height': '1.7', 'max-height': '400px', overflow: 'auto', padding: '8px 12px', background: themeColors.hover, 'border-radius': '6px' }} innerHTML={markdownToSafeHtml(bodyText())} />
+                                        </Show>
+                                      </div>
+                                    );
+                                  }}
+                                </Show>
+                              </Show>
+                            </div>
+                          </Show>
                         </div>
                       );
                     }}
@@ -929,6 +1128,7 @@ const SoloProduct: Component = () => {
             callAgentFn={actions.callAgent}
             productName={productStore.activeProduct()?.name}
             workDir={productStore.activeProduct()?.workDir ?? ''}
+            skillApi={skillApi}
             productContext={[
               productOverview() ? `## 产品概述\n${productOverview()}` : '',
               productRoadmap() ? `## 路线图\n${productRoadmap()}` : '',
@@ -1145,6 +1345,104 @@ const SoloProduct: Component = () => {
             setRequirements(updated);
           }}
         />
+      </Show>
+
+      {/* Fullscreen Document Modal */}
+      <Show when={fullscreenDoc()}>
+        {(doc) => (
+          <div class={modalOverlayClass} onClick={() => setFullscreenDoc(null)}>
+            <div class={modalShellClass} style={{ width: '80vw', 'max-width': '80vw' }} onClick={(e: MouseEvent) => e.stopPropagation()}>
+              <div class={modalHeaderClass}>
+                <div>
+                  <h2 class={modalTitleClass}>{doc().title}</h2>
+                  <span style={{ 'font-size': '12px', color: themeColors.textSecondary }}>{doc().type === 'prd' ? '功能设计 (PRD)' : '技术设计 (SDD)'}</span>
+                </div>
+                <div style={{ display: 'flex', gap: '6px', 'align-items': 'center' }}>
+                  <button
+                    class={fullscreenMode() === 'edit' ? pillPrimaryClass : pillSecondaryClass}
+                    onClick={() => { if (fullscreenMode() === 'edit') { setFullscreenMode('view'); } else { setModalEditorView(null); setFullscreenEditContent(doc().body); setFullscreenMode('edit'); } }}
+                  >{fullscreenMode() === 'edit' ? '预览' : '编辑'}</button>
+                  <button class={modalHeaderButtonClass} onClick={() => setFullscreenDoc(null)}>✕</button>
+                </div>
+              </div>
+              <div class={modalBodyClass} style={{ padding: '0' }}>
+                <Show when={fullscreenMode() === 'edit'} fallback={
+                  <div style={{ 'font-size': '14px', color: themeColors.text, 'line-height': '1.8', padding: '24px' }} innerHTML={markdownToSafeHtml(doc().body)} />
+                }>
+                  {/* Markdown 工具栏 */}
+                  <div style={{
+                    display: 'flex', gap: '2px', 'align-items': 'center', 'flex-wrap': 'wrap',
+                    padding: '4px 10px', 'border-bottom': `1px solid ${themeColors.border}`,
+                    background: themeColors.hover,
+                  }}>
+                    {/* 标题 */}
+                    {([['H1', '# '], ['H2', '## '], ['H3', '### ']] as [string, string][]).map(([label, p]) => (
+                      <button
+                        title={`标题 ${label}`}
+                        style={{ padding: '3px 7px', 'font-size': '11px', 'font-weight': 700, 'border-radius': '4px', border: 'none', background: 'transparent', color: themeColors.textSecondary, cursor: 'pointer', 'font-family': 'inherit' }}
+                        onClick={(e) => { e.preventDefault(); mdLinePrefix(p); }}
+                      >{label}</button>
+                    ))}
+                    <span style={{ width: '1px', height: '16px', background: themeColors.border, margin: '0 4px' }} />
+                    {/* 粗体、斜体、删除线 */}
+                    <button title="加粗 (Ctrl+B)" style={{ padding: '3px 7px', 'font-size': '12px', 'font-weight': 700, 'border-radius': '4px', border: 'none', background: 'transparent', color: themeColors.textSecondary, cursor: 'pointer' }} onClick={(e) => { e.preventDefault(); mdWrapSel('**'); }}>B</button>
+                    <button title="斜体 (Ctrl+I)" style={{ padding: '3px 7px', 'font-size': '12px', 'font-style': 'italic', 'border-radius': '4px', border: 'none', background: 'transparent', color: themeColors.textSecondary, cursor: 'pointer' }} onClick={(e) => { e.preventDefault(); mdWrapSel('*'); }}>I</button>
+                    <button title="删除线" style={{ padding: '3px 7px', 'font-size': '12px', 'text-decoration': 'line-through', 'border-radius': '4px', border: 'none', background: 'transparent', color: themeColors.textSecondary, cursor: 'pointer' }} onClick={(e) => { e.preventDefault(); mdWrapSel('~~'); }}>S</button>
+                    <span style={{ width: '1px', height: '16px', background: themeColors.border, margin: '0 4px' }} />
+                    {/* 代码 */}
+                    <button title="内联代码" style={{ padding: '3px 7px', 'font-size': '11px', 'font-family': 'monospace', 'border-radius': '4px', border: 'none', background: 'transparent', color: themeColors.textSecondary, cursor: 'pointer' }} onClick={(e) => { e.preventDefault(); mdWrapSel('`'); }}>`code`</button>
+                    <button title="代码块" style={{ padding: '3px 7px', 'font-size': '11px', 'font-family': 'monospace', 'border-radius': '4px', border: 'none', background: 'transparent', color: themeColors.textSecondary, cursor: 'pointer' }} onClick={(e) => { e.preventDefault(); mdWrapSel('```\n', '\n```'); }}>```</button>
+                    <span style={{ width: '1px', height: '16px', background: themeColors.border, margin: '0 4px' }} />
+                    {/* 列表、引用 */}
+                    <button title="无序列表" style={{ padding: '3px 7px', 'font-size': '13px', 'border-radius': '4px', border: 'none', background: 'transparent', color: themeColors.textSecondary, cursor: 'pointer' }} onClick={(e) => { e.preventDefault(); mdLinePrefix('- '); }}>• 列表</button>
+                    <button title="有序列表" style={{ padding: '3px 7px', 'font-size': '11px', 'border-radius': '4px', border: 'none', background: 'transparent', color: themeColors.textSecondary, cursor: 'pointer' }} onClick={(e) => { e.preventDefault(); mdLinePrefix('1. '); }}>1. 列表</button>
+                    <button title="引用" style={{ padding: '3px 7px', 'font-size': '12px', 'border-radius': '4px', border: 'none', background: 'transparent', color: themeColors.textSecondary, cursor: 'pointer' }} onClick={(e) => { e.preventDefault(); mdLinePrefix('> '); }}>&#10077; 引用</button>
+                    <span style={{ width: '1px', height: '16px', background: themeColors.border, margin: '0 4px' }} />
+                    {/* 链接、分割线 */}
+                    <button title="插入链接" style={{ padding: '3px 7px', 'font-size': '11px', 'border-radius': '4px', border: 'none', background: 'transparent', color: themeColors.textSecondary, cursor: 'pointer' }} onClick={(e) => { e.preventDefault(); mdWrapSel('[', '](url)'); }}>🔗 链接</button>
+                    <button title="分割线" style={{ padding: '3px 7px', 'font-size': '11px', 'border-radius': '4px', border: 'none', background: 'transparent', color: themeColors.textSecondary, cursor: 'pointer' }} onClick={(e) => { e.preventDefault(); mdInsertAt('\n---\n'); }}>— 分割线</button>
+                  </div>
+                  {/* 编辑器 */}
+                  <div style={{ 'min-height': '400px' }}>
+                    <LiveMarkdownEditor
+                      value={fullscreenEditContent()}
+                      onChange={setFullscreenEditContent}
+                      onEditorReady={setModalEditorView}
+                      placeholder={`编辑 ${doc().type === 'prd' ? 'PRD' : 'SDD'} 内容...`}
+                    />
+                  </div>
+                </Show>
+              </div>
+              <Show when={fullscreenMode() === 'edit'}>
+                <div class={modalFooterClass}>
+                  <div style={{ display: 'flex', 'justify-content': 'flex-end', gap: '8px' }}>
+                    <button class={pillSecondaryClass} onClick={() => setFullscreenMode('view')}>取消</button>
+                    <button class={pillPrimaryClass} onClick={async () => {
+                      const workDir = productStore.activeProduct()?.workDir;
+                      if (!workDir) return;
+                      const d = doc();
+                      if (d.type === 'prd') {
+                        await savePrd(workDir, { ...(d.meta as any), _featureSlug: d.slug, description: fullscreenEditContent() });
+                        const prds = await loadPrds(workDir);
+                        const prdMap = new Map<string, PrdFrontmatter & { _body?: string }>();
+                        for (const pr of prds) if ((pr as any)._featureSlug) prdMap.set((pr as any)._featureSlug, pr as any);
+                        setFeaturePrds(prdMap);
+                      } else {
+                        await saveSdd(workDir, { ...(d.meta as any), _featureSlug: d.slug }, fullscreenEditContent());
+                        const sdds = await loadSdds(workDir);
+                        const sddMap = new Map<string, SddFrontmatter & { _body?: string }>();
+                        for (const sd of sdds) if ((sd as any)._featureSlug) sddMap.set((sd as any)._featureSlug, sd as any);
+                        setFeatureSdds(sddMap);
+                      }
+                      setFullscreenDoc({ ...d, body: fullscreenEditContent() });
+                      setFullscreenMode('view');
+                    }}>保存</button>
+                  </div>
+                </div>
+              </Show>
+            </div>
+          </div>
+        )}
       </Show>
     </div>
   );

@@ -214,6 +214,13 @@ export interface PrdFrontmatter {
   nfr?: string;
 }
 
+/** 从 Markdown body 中提取第一个 # 标题作为 title fallback */
+function extractFirstHeading(body: string): string | undefined {
+  if (!body) return undefined;
+  const match = body.match(/^#\s+(.+)$/m);
+  return match?.[1]?.trim() || undefined;
+}
+
 /**
  * 从 product/features/ 子目录加载所有 PRD
  * 遍历 product/features/ 下每个功能子目录，读取其中的 PRD.md
@@ -227,22 +234,85 @@ export async function loadPrds(workDir: string): Promise<PrdFrontmatter[]> {
     const results: PrdFrontmatter[] = [];
     await Promise.all(
       featureDirs.map(async (dir) => {
-        const prdPath = `${dir.path}/PRD.md`;
+        // 使用绝对路径构造，避免 fileList Level 1/2 返回相对路径导致读取失败
+        // 注意：不传 directory，因为 prdPath 已是绝对路径，传 workDir 会导致 Level 3 双重拼接
+        const prdPath = `${featuresDir}/${dir.name}/PRD.md`;
         try {
           const doc = await readMarkdownWithFrontmatter<Record<string, unknown>>(
             prdPath,
             { frontmatter: {} as Record<string, unknown>, body: '' },
           );
-          if (doc.frontmatter && Object.keys(doc.frontmatter).length > 0) {
-            const prd = {
-              ...(doc.frontmatter as unknown as PrdFrontmatter),
-              _body: doc.body,
-              _featureSlug: dir.name,
-            };
-            if (prd.id) results.push(prd);
-          }
+          const fm = (doc.frontmatter ?? {}) as Record<string, unknown>;
+          // id: 优先 id → feat → 目录名 fallback
+          const id = (fm.id as string) || (fm.feat as string) || dir.name;
+          // title: 优先 frontmatter title → body 首个 # 标题 → 目录名
+          const title = (fm.title as string) || extractFirstHeading(doc.body) || dir.name;
+          const prd = {
+            ...(fm as unknown as PrdFrontmatter),
+            id,
+            title,
+            _body: doc.body,
+            _featureSlug: dir.name,
+          };
+          results.push(prd);
         } catch {
           // 该功能目录下没有 PRD.md，跳过
+        }
+      }),
+    );
+    return results;
+  } catch {
+    return [];
+  }
+}
+
+// ─── SDD ─────────────────────────────────────────────────────────────────────
+
+export interface SddFrontmatter {
+  id: string;
+  title: string;
+  status?: 'draft' | 'reviewing' | 'approved';
+  owner?: string;
+  createdAt?: string;
+  _body?: string;
+  _featureSlug?: string;
+}
+
+/**
+ * 从 product/features/ 子目录加载所有 SDD
+ * 遍历 product/features/ 下每个功能子目录，读取其中的 SDD.md
+ */
+export async function loadSdds(workDir: string): Promise<SddFrontmatter[]> {
+  const featuresDir = `${workDir}/product/features`;
+  try {
+    const nodes = await fileList(featuresDir);
+    const featureDirs = nodes.filter((n) => n.type === 'directory');
+    const results: SddFrontmatter[] = [];
+    await Promise.all(
+      featureDirs.map(async (dir) => {
+        // 使用绝对路径构造，避免 fileList Level 1/2 返回相对路径导致读取失败
+        // 注意：不传 directory，因为 sddPath 已是绝对路径，传 workDir 会导致 Level 3 双重拼接
+        const sddPath = `${featuresDir}/${dir.name}/SDD.md`;
+        try {
+          const doc = await readMarkdownWithFrontmatter<Record<string, unknown>>(
+            sddPath,
+            { frontmatter: {} as Record<string, unknown>, body: '' },
+          );
+          const fm = (doc.frontmatter ?? {}) as Record<string, unknown>;
+          // id: 优先 id → feat → 目录名 fallback
+          const id = (fm.id as string) || (fm.feat as string) || dir.name;
+          // title: 优先 frontmatter title → body 首个 # 标题 → 目录名
+          const title = (fm.title as string) || extractFirstHeading(doc.body) || dir.name;
+          const sdd = {
+            ...(fm as unknown as SddFrontmatter),
+            id,
+            title,
+            _body: doc.body,
+            _featureSlug: dir.name,
+          };
+          results.push(sdd);
+        } catch {
+          // 该功能目录下没有 SDD.md，跳过
         }
       }),
     );
@@ -260,10 +330,11 @@ export async function savePrd(
   workDir: string,
   prd: PrdFrontmatter & { description?: string; userStories?: unknown[]; _featureSlug?: string },
 ): Promise<boolean> {
-  const { description, userStories, _featureSlug, ...frontmatter } = prd as PrdFrontmatter & { description?: string; userStories?: unknown[]; _featureSlug?: string };
+  const { description, userStories, _featureSlug, _body, ...frontmatter } = prd as PrdFrontmatter & { description?: string; userStories?: unknown[]; _featureSlug?: string; _body?: string };
   // 确定功能目录 slug：优先使用 _featureSlug，否则从 id 或 title 生成
   const slug = _featureSlug || toFeatureSlug(prd.id || prd.title);
-  const body = description ? `## 需求描述\n\n${description}\n` : '';
+  // 直接使用编辑后的 body 内容写入文件，与 saveSdd 行为保持一致
+  const body = description ?? '';
   return writeMarkdownWithFrontmatter(
     `${workDir}/product/features/${slug}/PRD.md`,
     {
@@ -279,6 +350,23 @@ export async function savePrd(
 export async function deletePrd(workDir: string, id: string, featureSlug?: string): Promise<boolean> {
   const slug = featureSlug || toFeatureSlug(id);
   return deleteFile(`${workDir}/product/features/${slug}/PRD.md`);
+}
+
+/**
+ * 保存单个 SDD（创建或更新）
+ * 写入 product/features/{featureSlug}/SDD.md
+ */
+export async function saveSdd(
+  workDir: string,
+  sdd: SddFrontmatter & { _featureSlug?: string },
+  body: string,
+): Promise<boolean> {
+  const { _featureSlug, _body, ...frontmatter } = sdd as SddFrontmatter & { _featureSlug?: string; _body?: string };
+  const slug = _featureSlug || toFeatureSlug(sdd.id || sdd.title);
+  return writeMarkdownWithFrontmatter(
+    `${workDir}/product/features/${slug}/SDD.md`,
+    { frontmatter: frontmatter as unknown as Record<string, unknown>, body },
+  );
 }
 
 /** 将 ID 或 title 转为 kebab-case 功能目录名 */
@@ -517,7 +605,7 @@ export interface GlobalAgentWorkshopData {
 
 /**
  * 加载用户级 Agent Workshop 数据（~/.xingjing/agent-workshop-solo.yaml）
- * `~` 经由 expandTildePath() 展开为用户主目录绝对路径，不会在 workspace 下创建字面量目录。
+ * @deprecated Agent 存储已迁移到 .opencode/agents/。仅保留供迁移逻辑使用。
  */
 export async function loadGlobalAgentWorkshop(): Promise<GlobalAgentWorkshopData> {
   return readYaml<GlobalAgentWorkshopData>(GLOBAL_AGENT_WORKSHOP_FILE, {});

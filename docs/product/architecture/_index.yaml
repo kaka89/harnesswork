@@ -76,3 +76,14 @@ items:
     file: ../features/git-auth-injection/spec/SDD-013-git-auth-injection.md
     created: "2026-04-18"
     updated: "2026-04-18"
+
+  - id: SDD-014
+    title: 产品假设数据流优化——PRD回写自动触发 + 上下文治理 + 假设转需求入口
+    status: draft
+    author: architect-agent
+    reviewers: [tech-lead]
+    source_spec: SDD-007
+    revision: "1.0"
+    file: SDD-014-hypothesis-flow-optimization.md
+    created: "2026-04-21"
+    updated: "2026-04-21"

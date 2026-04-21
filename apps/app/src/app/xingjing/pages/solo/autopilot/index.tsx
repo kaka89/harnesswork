@@ -40,11 +40,11 @@ import { getHealthScore } from '../../../services/knowledge-health';
 import { buildKnowledgeIndex } from '../../../services/knowledge-index';
 import { loadSession as loadMemorySession, loadMemoryIndex, saveMemoryMeta } from '../../../services/memory-store';
 import {
-  SOLO_AGENTS,
   parseMention,
   type AutopilotAgent,
   type AgentExecutionStatus,
 } from '../../../services/autopilot-executor';
+import { listAllAgents, getBuiltinAgents } from '../../../services/agent-registry';
 import { callAgent, isClientReady, setProviderAuth, buildGitSystemContext } from '../../../services/opencode-client';
 import ArtifactWorkspace, {
   type ArtifactItem,
@@ -583,12 +583,14 @@ const SoloAutopilot = () => {
   const [goal, setGoal] = createSignal('');
   const [runState, setRunState] = createSignal<RunState>('idle');
   const [chatMode, setChatMode] = createSignal<ChatMode>('dispatch');
+  // Agent 列表：同步初始值用内置常量（避免闪烁），异步更新加载自定义 Agent
+  const [allAgents, setAllAgents] = createSignal<AutopilotAgent[]>(getBuiltinAgents('solo'));
   const [agentStatuses, setAgentStatuses] = createSignal<AgentStatus>(
-    Object.fromEntries(SOLO_AGENTS.map((a) => [a.id, 'idle']))
+    Object.fromEntries(getBuiltinAgents('solo').map((a) => [a.id, 'idle']))
   );
   const [agentTasks, setAgentTasks] = createSignal<AgentTasks>({});
   const [agentDone, setAgentDone] = createSignal<AgentDone>(
-    Object.fromEntries(SOLO_AGENTS.map((a) => [a.id, 0]))
+    Object.fromEntries(getBuiltinAgents('solo').map((a) => [a.id, 0]))
   );
   const [progress, setProgress] = createSignal(0);
   const [agentError, setAgentError] = createSignal<string | null>(null);
@@ -947,6 +949,11 @@ const SoloAutopilot = () => {
   onMount(async () => {
     const workDir = productStore.activeProduct()?.workDir;
 
+    // 异步加载完整 Agent 列表（内置 + 自定义）
+    listAllAgents('solo').then((agents) => {
+      setAllAgents(agents);
+    }).catch(() => {});
+
     if (workDir) {
       // 知识健康度
       buildKnowledgeIndex(workDir, null).then((idx) => {
@@ -968,7 +975,7 @@ const SoloAutopilot = () => {
     client: () => openworkCtx?.opencodeClient?.() ?? null,
     workspaceId: () => resolvedWorkspaceId(),
     workDir: () => productStore.activeProduct()?.workDir ?? '',
-    availableAgents: SOLO_AGENTS,
+    availableAgents: allAgents(),
     model: () => {
       const m = getSessionModel();
       if (!m) return null;
@@ -983,7 +990,7 @@ const SoloAutopilot = () => {
     },
     skillApi: null,
     onArtifactExtracted: (artifact) => {
-      const agent = SOLO_AGENTS.find((a) => a.id === artifact.agentId);
+      const agent = allAgents().find((a) => a.id === artifact.agentId);
       if (!agent) return;
 
       const newArtifact: ArtifactItem = {
@@ -1021,7 +1028,7 @@ const SoloAutopilot = () => {
     if (elapsedTimerRef) { clearInterval(elapsedTimerRef); elapsedTimerRef = undefined; }
     setElapsedSec(0);
     setRunState('idle');
-    setAgentStatuses(Object.fromEntries(SOLO_AGENTS.map((a) => [a.id, 'idle' as const])));
+    setAgentStatuses(Object.fromEntries(allAgents().map((a) => [a.id, 'idle' as const])));
     setAgentTasks({});
     setArtifactsData([]);
     setArtifactCollapsed(true);
@@ -1141,7 +1148,7 @@ const SoloAutopilot = () => {
     setRunState('running');
     setGoal('');  // 清空输入框
 
-    const { targetAgent, cleanText } = parseMention(text, SOLO_AGENTS);
+    const { targetAgent, cleanText } = parseMention(text, allAgents());
 
     try {
       if (targetAgent) {
@@ -1396,10 +1403,10 @@ const SoloAutopilot = () => {
       {/* ── 左侧 Agent 面板（数据从 orchestrator.state() 实时派生） ── */}
       <div style={{ 'flex-shrink': '0', display: 'flex', 'flex-direction': 'column', overflow: 'hidden' }}>
         <AgentPanelSidebar
-          agents={SOLO_AGENTS}
+          agents={allAgents()}
           agentStatuses={(() => {
             // 从 orchestrator agentSlots 派生实时状态，映射 'pending' → 'waiting'
-            const result: AgentStatus = Object.fromEntries(SOLO_AGENTS.map((a) => [a.id, 'idle' as const]));
+            const result: AgentStatus = Object.fromEntries(allAgents().map((a) => [a.id, 'idle' as const]));
             orchestrator.state().agentSlots.forEach((slot, agentId) => {
               const s = slot.status();
               result[agentId] = s === 'pending' ? 'waiting' : (s as any);
@@ -1430,7 +1437,7 @@ const SoloAutopilot = () => {
           })()}
           agentDone={(() => {
             // 已完成的 agent 计 1，其余 0
-            const result: AgentDone = Object.fromEntries(SOLO_AGENTS.map((a) => [a.id, 0]));
+            const result: AgentDone = Object.fromEntries(allAgents().map((a) => [a.id, 0]));
             orchestrator.state().agentSlots.forEach((slot, agentId) => {
               if (slot.status() === 'done') result[agentId] = 1;
             });
@@ -1765,7 +1772,7 @@ const SoloAutopilot = () => {
             onChange={setGoal}
             isRunning={isRunning()}
             hasSession={hasDispatchSession()}
-            agents={SOLO_AGENTS}
+            agents={allAgents()}
             configuredModels={configuredModels()}
             selectedModelId={sessionModelId()}
             onModelChange={setSessionModelId}

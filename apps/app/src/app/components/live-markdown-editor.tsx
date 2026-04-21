@@ -19,6 +19,7 @@ type Props = {
   ariaLabel?: string;
   autofocus?: boolean;
   class?: string;
+  onEditorReady?: (view: EditorView) => void;
 };
 
 type EmphasisRange = {
@@ -311,6 +312,8 @@ export default function LiveMarkdownEditor(props: Props) {
       state: createState(props.value ?? ""),
       parent: hostEl,
     });
+
+    props.onEditorReady?.(view);
 
     if (props.autofocus) {
       queueMicrotask(() => view?.focus());

@@ -166,48 +166,6 @@ export const defaultGitRepos: GitRepoConfig[] = [
   },
 ];
 
-// ==================== 定时任务配置 ====================
-
-export interface ScheduledTask {
-  id: string;
-  name: string;
-  cron: string;
-  agentName: string;
-  description: string;
-  enabled: boolean;
-  lastRun: string;
-}
-
-export const defaultScheduledTasks: ScheduledTask[] = [
-  {
-    id: 'cron-1',
-    name: '每日编码任务执行',
-    cron: '0 2 * * *',
-    agentName: '编码 Agent',
-    description: '每日凌晨 2:00 运行编码 Agent，自动完成需求下发的开发任务',
-    enabled: true,
-    lastRun: '2026-04-10 02:00:15',
-  },
-  {
-    id: 'cron-2',
-    name: '每周迭代报告生成',
-    cron: '0 9 * * 1',
-    agentName: '效能分析 Agent',
-    description: '每周一 9:00 自动生成迭代进度报告与效能分析',
-    enabled: true,
-    lastRun: '2026-04-07 09:00:08',
-  },
-  {
-    id: 'cron-3',
-    name: '每日质量扫描',
-    cron: '0 18 * * *',
-    agentName: '质量守护 Agent',
-    description: '每天 18:00 运行质量扫描，检查代码规范、安全漏洞与测试覆盖率',
-    enabled: false,
-    lastRun: '2026-04-09 18:00:22',
-  },
-];
-
 // ==================== 节点门控配置 ====================
 
 export interface GateNode {

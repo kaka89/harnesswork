@@ -13,7 +13,9 @@ import {
   ensureProductFiles,
 } from '../services/file-store';
 import { callAgent as _callAgent, setProviderAuth, setOpenworkFileOps, setSharedClient, type CallAgentOptions } from '../services/opencode-client';
+import { setSchedulerApi } from '../services/scheduler-client';
 import { ensureAgentsRegistered } from '../services/agent-registry';
+import { ensureSkillsRegistered } from '../services/skill-registry';
 import { appendAgentLog } from '../services/agent-logger';
 import { currentUser } from '../services/auth-service';
 import { DEFAULT_ALLOWED_TOOLS } from '../mock/settings';
@@ -105,6 +107,9 @@ export interface XingjingOpenworkContext {
   reloadEngine?: (workspaceId: string) => Promise<boolean>;
   // ── 新增：目录列表（OpenWork Server readdir）──
   listDir?: (absPath: string) => Promise<Array<{ name: string; path: string; type: 'dir' | 'file'; ext?: string }> | null>;
+  // ── 新增：Scheduler API（定时任务）──
+  listScheduledJobs?: (workspaceId: string) => Promise<any[]>;
+  deleteScheduledJob?: (workspaceId: string, name: string) => Promise<any>;
 }
 
 interface AppState {
@@ -270,12 +275,39 @@ export const AppStoreProvider: ParentComponent<{
     }
   });
 
+  // ── 注入 OpenWork Scheduler API（定时任务）──
+  createEffect(() => {
+    const ctx = props.openworkCtx;
+    const wsId = resolvedWorkspaceId();
+    if (ctx?.listScheduledJobs && ctx?.deleteScheduledJob && wsId) {
+      setSchedulerApi({
+        listJobs: () => ctx.listScheduledJobs!(wsId),
+        deleteJob: (name: string) => ctx.deleteScheduledJob!(wsId, name).then(() => {}),
+      });
+    } else {
+      setSchedulerApi(null);
+    }
+  });
+
   // ── 工作区就绪后，确保内置 Agent 已注册到 .opencode/agents/ ──
   createEffect(() => {
     const wsId = resolvedWorkspaceId();
     if (wsId) {
       const mode = state.appMode;
       void ensureAgentsRegistered(mode);
+      // 同步确保内置 Skill 已注册到 .opencode/skills/
+      void ensureSkillsRegistered(
+        mode,
+        (name, content, description) => {
+          if (!props.openworkCtx) return Promise.resolve(false);
+          return props.openworkCtx.upsertSkill(wsId, name, content, description);
+        },
+        async () => {
+          if (!props.openworkCtx) return [];
+          const items = await props.openworkCtx.listSkills(wsId);
+          return items.map(s => ({ name: s.name }));
+        },
+      );
     }
   });
 

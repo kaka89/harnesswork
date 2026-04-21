@@ -154,6 +154,12 @@ export default function XingjingNativePage(props: XingjingNativePageProps) {
               .then((r) => r.items as OpenworkAuditEntry[]).catch(() => []),
           listDir: (absPath: string) =>
             props.openworkServerClient!.readdir(absPath).catch(() => null),
+          listScheduledJobs: (workspaceId: string) =>
+            props.openworkServerClient!.listScheduledJobs(workspaceId)
+              .then((r) => r.items).catch(() => []),
+          deleteScheduledJob: (workspaceId: string, name: string) =>
+            props.openworkServerClient!.deleteScheduledJob(workspaceId, name)
+              .then(() => undefined).catch(() => undefined),
         }
       : undefined
   );

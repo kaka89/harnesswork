@@ -19,6 +19,8 @@ import {
   extractQueryFromToolInput,
   summarizeSearchResults,
 } from './web-search';
+import type { SkillApiAdapter } from './knowledge-behavior';
+import { injectSkillContext } from './skill-manager';
 
 // ─── 类型定义 ─────────────────────────────────────────────────────────────────
 
@@ -34,6 +36,8 @@ export interface InsightRunOpts {
   productContext?: string;
   /** 三源知识注入 */
   knowledgeContext?: string;
+  /** OpenWork Skill API 适配器（用于动态 Skill 注入，record 模式使用） */
+  skillApi?: SkillApiAdapter | null;
   // ── 进度回调 ────────────────────────────────────────────────────
   onModeDetected?: (mode: InsightMode) => void;
   onToolStep?: (step: ToolCallStep) => void;
@@ -109,7 +113,7 @@ ${productContext || '（暂无产品上下文）'}
 ## 🎯 建议的假设
 （如果本次调研产生了高置信度的可验证假设，输出 JSON，否则省略此节）
 \`\`\`hypothesis
-{"belief":"我认为...","why":"因为外部数据显示...","method":"通过...验证","impact":"high|medium|low"}
+{"belief":"我认为...","why":"因为外部数据显示...","method":"通过...验证","impact":"high|medium|low","feature":"关联功能模块（可选）","expected_result":"预期量化结果（可选）"}
 \`\`\``;
 }
 
@@ -119,25 +123,7 @@ function buildRecordSystemPrompt(productContext: string): string {
 用户会描述一个想法、观察或用户反馈，你需要帮助将其结构化为可验证的产品假设。
 
 【当前产品上下文】
-${productContext || '（暂无产品上下文）'}
-
-【工作方式】：
-1. 用 1-2 句话确认你的理解，补充缺失的上下文
-2. 输出结构化假设（严格 JSON 格式，放在 \`\`\`hypothesis 代码块中）
-3. 如果信息不足以构建假设，追问 1 个最关键的问题
-
-【输出格式】：
-先写确认语，然后：
-\`\`\`hypothesis
-{
-  "belief": "我认为[具体功能/改变]能[具体预期结果]",
-  "why": "因为[用户痛点/数据支撑/逻辑推理]",
-  "method": "通过[具体验证方法：内测/A-B测试/问卷/数据分析/用户访谈]，观察[可量化指标]",
-  "impact": "high|medium|low"
-}
-\`\`\`
-
-最后，如果有帮助，可以附上 1-2 条执行建议。`;
+${productContext || '（暂无产品上下文）'}`;
 }
 
 function buildGenerateSystemPrompt(productContext: string): string {
@@ -196,6 +182,7 @@ export function parseHypothesisFromOutput(text: string): Hypothesis | null {
   try {
     const raw = JSON.parse(match[1].trim()) as {
       belief?: string; why?: string; method?: string; impact?: string;
+      feature?: string; expected_result?: string; detail?: string;
     };
     if (!raw.belief) return null;
     return {
@@ -207,6 +194,9 @@ export function parseHypothesisFromOutput(text: string): Hypothesis | null {
       impact: (['high', 'medium', 'low'].includes(raw.impact ?? '')
         ? raw.impact as 'high' | 'medium' | 'low'
         : 'medium'),
+      ...(raw.feature ? { feature: raw.feature.trim() } : {}),
+      ...(raw.expected_result ? { result: raw.expected_result.trim() } : {}),
+      ...(raw.detail ? { markdownDetail: raw.detail.trim() } : {}),
       createdAt: new Date().toISOString().slice(0, 10),
     };
   } catch { return null; }
@@ -303,9 +293,13 @@ export async function runInsightAgent(
       systemPrompt = buildResearchSystemPrompt(productCtx);
       autoApproveTools = ['web_search', 'browser', 'webSearch', 'web-search'];
       break;
-    case 'record':
-      systemPrompt = buildRecordSystemPrompt(productCtx);
+    case 'record': {
+      const basePrompt = buildRecordSystemPrompt(productCtx);
+      // 动态注入 product-hypothesis Skill 内容作为假设模板和质量标准
+      const skillContext = await injectSkillContext(['product-hypothesis'], opts.skillApi ?? null);
+      systemPrompt = basePrompt + skillContext;
       break;
+    }
     case 'generate':
       systemPrompt = buildGenerateSystemPrompt(productCtx);
       autoApproveTools = ['web_search', 'browser', 'webSearch', 'web-search'];

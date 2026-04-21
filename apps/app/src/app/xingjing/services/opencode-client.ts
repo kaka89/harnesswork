@@ -235,6 +235,12 @@ export async function fileList(
   path: string,
   directory?: string,
 ): Promise<FileNode[]> {
+  // ~ 路径直达 Tauri native fs（Levels 0-2 不支持 ~ 展开）
+  if (path.startsWith('~')) {
+    const nativeResult = await tauriNativeFileList(path, directory);
+    return nativeResult ?? [];
+  }
+
   // Level 0: OpenWork Server readdir API
   if (_preferredListLevel <= 0 && _owFileOps?.list) {
     try {
@@ -584,20 +590,45 @@ export async function fileDelete(
   path: string,
   directory?: string,
 ): Promise<boolean> {
-  const dir = directory ?? _directory;
+  // ~ 路径跳过 OpenCode，直达 Tauri native fs
+  if (!path.startsWith('~')) {
+    const dir = directory ?? _directory;
+    try {
+      const url = `${_baseUrl}/file/content`;
+      const delHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+      const delAuth = getAuthHeader();
+      if (delAuth) delHeaders['Authorization'] = delAuth;
+      const resp = await safeFetch()(url, {
+        method: 'DELETE',
+        headers: delHeaders,
+        body: JSON.stringify({ path, ...(dir ? { directory: dir } : {}) }),
+      });
+      if (resp.ok) return true;
+      console.warn('[xingjing] fileDelete OpenCode DELETE 失败, status:', resp.status);
+    } catch {
+      console.warn('[xingjing] fileDelete OpenCode DELETE 异常');
+    }
+  }
+  // Tauri native fallback
+  return tauriNativeFileDelete(path, directory);
+}
+
+/**
+ * Tauri 原生文件删除（~ 路径降级兜底）
+ */
+async function tauriNativeFileDelete(
+  path: string,
+  directory?: string,
+): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
   try {
-    const url = `${_baseUrl}/file/content`;
-    const delHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
-    const delAuth = getAuthHeader();
-    if (delAuth) delHeaders['Authorization'] = delAuth;
-    const resp = await safeFetch()(url, {
-      method: 'DELETE',
-      headers: delHeaders,
-      body: JSON.stringify({ path, ...(dir ? { directory: dir } : {}) }),
-    });
-    return resp.ok;
-  } catch {
-    console.warn('[xingjing] fileDelete: not supported, operating in read-only mode');
+    const { remove } = await import('@tauri-apps/plugin-fs');
+    const raw = directory ? `${directory}/${path}` : path;
+    const fullPath = await expandTildePath(raw);
+    await remove(fullPath);
+    return true;
+  } catch (e) {
+    console.warn('[xingjing] tauriNativeFileDelete 失败, path:', path, 'error:', (e as Error)?.message ?? e);
     return false;
   }
 }

@@ -130,18 +130,6 @@ export function createScheduledTask(
 }
 
 /**
- * 切换任务启停
- * @deprecated OpenWork Scheduler 不支持 enabled/disabled，已安装即启用
- */
-export async function toggleScheduledTask(
-  _workDir: string,
-  _taskId: string,
-  _enabled: boolean,
-): Promise<void> {
-  // no-op: OpenWork Scheduler 不支持 enabled 概念
-}
-
-/**
  * 删除定时任务。
  * 通过注入的 OpenWork Scheduler API 删除。
  */

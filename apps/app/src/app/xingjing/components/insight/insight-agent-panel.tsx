@@ -20,6 +20,7 @@ import type { CallAgentOptions } from '../../services/opencode-client';
 import type { Hypothesis } from '../../mock/solo';
 import type { RequirementOutput } from '../../mock/solo';
 import type { InsightRecord, ProductSuggestion } from '../../services/insight-store';
+import type { SkillApiAdapter } from '../../services/knowledge-behavior';
 import { themeColors, chartColors } from '../../utils/colors';
 import ToolCallStepCard, { type ToolCallStep } from './tool-call-step-card';
 import HypothesisDraftCard from './hypothesis-draft-card';
@@ -43,6 +44,8 @@ interface InsightAgentPanelProps {
   productContext?: string;
   productName?: string;
   workDir: string;
+  /** OpenWork Skill API 适配器（用于 record 模式的 Skill 注入） */
+  skillApi?: SkillApiAdapter | null;
   onHypothesisSave: (h: Hypothesis) => void;
   onRequirementSave: (r: RequirementOutput) => void;
   onInsightRecord: (r: InsightRecord) => void;
@@ -119,6 +122,7 @@ export const InsightAgentPanel: Component<InsightAgentPanelProps> = (props) => {
       mode: mode() === 'auto' ? undefined : mode(),
       callAgentFn: props.callAgentFn,
       productContext: props.productContext,
+      skillApi: props.skillApi ?? null,
       onModeDetected: (detectedMode) => {
         updateAssistant(m => ({ ...m, mode: detectedMode }));
       },

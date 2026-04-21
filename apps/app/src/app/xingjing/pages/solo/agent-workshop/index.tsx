@@ -6,10 +6,12 @@ import {
 } from '../../../mock/agentWorkshop';
 import { soloTasks as mockSoloTasks, SoloTask } from '../../../mock/solo';
 import {
-  loadSoloTasks, loadAgentDefs, loadAgentWorkshopData,
-  loadGlobalAgentWorkshop, saveGlobalAgentWorkshop,
+  loadSoloTasks,
   loadAgentAssignments, saveAgentAssignments,
 } from '../../../services/file-store';
+import { listAllAgents, saveAgentToFile, deleteAgentFile } from '../../../services/agent-registry';
+import { buildSkillMarkdown, saveSkillToGlobal } from '../../../services/skill-registry';
+import type { AutopilotAgent } from '../../../services/autopilot-executor';
 import { useAppStore } from '../../../stores/app-store';
 import { themeColors, chartColors } from '../../../utils/colors';
 import { Plus, Trash2, Edit2, Clock, CheckCircle, Zap, Loader2 } from 'lucide-solid';
@@ -172,48 +174,24 @@ const SoloAgentWorkshop: Component = () => {
   const [dropOver, setDropOver] = createSignal(false);
 
   onMount(async () => {
-    // 1. 加载用户级搭档/技能/关联数据（跨产品共享，存储于 ~/.xingjing/）
-    const globalData = await loadGlobalAgentWorkshop();
-    let hasGlobalAgents = false;
-    if (globalData.agents && globalData.agents.length > 0) {
-      setAgents(globalData.agents as unknown as AgentDef[]);
-      hasGlobalAgents = true;
-    }
-    if (globalData.agentSkills && Object.keys(globalData.agentSkills).length > 0) {
-      setAgentSkills(globalData.agentSkills);
-    }
-    if (globalData.skills && globalData.skills.length > 0) {
-      setSkillPool(globalData.skills as unknown as SkillDef[]);
-    }
-
-    // 2. 迁移兼容：若用户级无数据，尝试从旧 workspace 路径加载并一次性迁移
-    const workDir = productStore.activeProduct()?.workDir;
-    if (!hasGlobalAgents && workDir) {
-      const legacyData = await loadAgentWorkshopData(workDir, 'solo');
-      if (legacyData.agents && legacyData.agents.length > 0) {
-        setAgents(legacyData.agents as unknown as AgentDef[]);
-        if (legacyData.skills) setSkillPool(legacyData.skills as unknown as SkillDef[]);
-        if (legacyData.agentSkills) setAgentSkills(legacyData.agentSkills);
-        // 立即写入用户级存储完成迁移
-        saveGlobalAgentWorkshop({
-          agents: legacyData.agents,
-          skills: legacyData.skills,
-          agentSkills: legacyData.agentSkills,
-        }).catch(() => {});
-      } else {
-        // 尝试从 .opencode/agents/ 加载种子 Agent 定义
-        try {
-          const agentDefs = await loadAgentDefs(workDir);
-          if (agentDefs.length > 0) {
-            setAgents(agentDefs.map(d => ({
-              ...d, skills: d.skills ?? [],
-            })) as unknown as AgentDef[]);
-          }
-        } catch { /* keep mock agents */ }
+    // 1. 从 ~/.xingjing/agents/ + 内置常量 统一加载 Agent 列表（全局自定义 + 内置）
+    try {
+      const allAgentsList = await listAllAgents('solo');
+      if (allAgentsList.length > 0) {
+        setAgents(allAgentsList.map(a => ({
+          id: a.id, name: a.name, role: a.role,
+          color: a.color, bgColor: a.bgColor, borderColor: a.borderColor,
+          emoji: a.emoji, skills: a.skills, description: a.description,
+        })) as AgentDef[]);
+        // 构建 agentSkills 映射
+        const skillsMap: Record<string, string[]> = {};
+        allAgentsList.forEach(a => { skillsMap[a.id] = [...a.skills]; });
+        setAgentSkills(skillsMap);
       }
-    }
+    } catch { /* 保留 mock 数据 */ }
 
-    // 3. 加载产品级数据（任务 + 指派）
+    // 2. 加载产品级数据（任务 + 指派）
+    const workDir = productStore.activeProduct()?.workDir;
     if (workDir) {
       try {
         const taskFiles = await loadSoloTasks(workDir);
@@ -222,6 +200,29 @@ const SoloAgentWorkshop: Component = () => {
       const assignData = await loadAgentAssignments(workDir, 'solo');
       if (assignData.length > 0) setAssignments(assignData as unknown as AgentAssignment[]);
     }
+
+    // 3. 从 OpenWork 加载自定义 Skill（合并到内置 skillPool）
+    try {
+      const owSkills = await actions.listOpenworkSkills();
+      if (owSkills.length > 0) {
+        const builtinNames = new Set(soloSkillPool.map(s => s.name));
+        const customSkills: SkillDef[] = owSkills
+          .filter(s => !builtinNames.has(s.name))
+          .map(s => ({
+            id: `ow-${s.name}`,
+            name: s.name,
+            description: s.description || '',
+            category: '',
+          }));
+        if (customSkills.length > 0) {
+          setSkillPool(prev => {
+            const existingNames = new Set(prev.map(p => p.name));
+            const newOnes = customSkills.filter(c => !existingNames.has(c.name));
+            return [...prev, ...newOnes];
+          });
+        }
+      }
+    } catch { /* OpenWork Skill 加载失败不影响页面 */ }
 
     // 4. 恢复 agentIdCounter — 避免重载后 ID 碰撞
     const maxExistingId = agents()
@@ -235,14 +236,14 @@ const SoloAgentWorkshop: Component = () => {
 
   // ─── 持久化助手 ───
 
-  /** 用户级持久化：agents + skills + agentSkills → ~/.xingjing/agent-workshop-solo.yaml */
-  const persistGlobalData = () => {
-    saveGlobalAgentWorkshop({
-      agents: agents() as unknown as Array<Record<string, unknown>>,
-      skills: skillPool() as unknown as Array<Record<string, unknown>>,
-      agentSkills: agentSkills(),
-    }).catch((e) => {
-      console.warn('[xingjing] persistGlobalData 失败:', (e as Error)?.message ?? e);
+  /** Agent 持久化：写入 ~/.xingjing/agents/{agentId}.md */
+  const persistAgent = (agentDef: AgentDef) => {
+    const autopilotAgent: AutopilotAgent = {
+      ...agentDef,
+      systemPrompt: '',  // Workshop 创建的 Agent 默认空 systemPrompt
+    };
+    saveAgentToFile(autopilotAgent).catch((e) => {
+      console.warn('[xingjing] persistAgent 失败:', (e as Error)?.message ?? e);
     });
   };
 
@@ -290,11 +291,19 @@ const SoloAgentWorkshop: Component = () => {
 
   const addSkillToAgent = (agentId: string, skillName: string) => {
     if (getAgentSkills(agentId).includes(skillName)) return;
-    setAgentSkills(prev => ({ ...prev, [agentId]: [...(prev[agentId] || []), skillName] }));
+    const updated = [...(agentSkills()[agentId] || []), skillName];
+    setAgentSkills(prev => ({ ...prev, [agentId]: updated }));
+    // 同步持久化：更新 Agent 文件中的 skills 字段
+    const ag = agents().find(a => a.id === agentId);
+    if (ag) persistAgent({ ...ag, skills: updated });
   };
 
   const removeSkillFromAgent = (agentId: string, skillName: string) => {
-    setAgentSkills(prev => ({ ...prev, [agentId]: (prev[agentId] || []).filter(s => s !== skillName) }));
+    const updated = (agentSkills()[agentId] || []).filter(s => s !== skillName);
+    setAgentSkills(prev => ({ ...prev, [agentId]: updated }));
+    // 同步持久化：更新 Agent 文件中的 skills 字段
+    const ag = agents().find(a => a.id === agentId);
+    if (ag) persistAgent({ ...ag, skills: updated });
   };
 
   const moveSkill = (agentId: string, from: number, to: number) => {
@@ -461,6 +470,7 @@ const SoloAgentWorkshop: Component = () => {
       const updated: AgentDef = { ...ea, ...f, emoji: selectedEmoji(), ...selectedColor() };
       setAgents(prev => prev.map(a => a.id === ea.id ? updated : a));
       if (selectedAgent()?.id === ea.id) setSelectedAgent(updated);
+      persistAgent(updated);
     } else {
       const id = `custom-solo-${++agentIdCounter}`;
       const newAgent: AgentDef = {
@@ -468,9 +478,9 @@ const SoloAgentWorkshop: Component = () => {
       };
       setAgents(prev => [...prev, newAgent]);
       setAgentSkills(prev => ({ ...prev, [id]: [] }));
+      persistAgent(newAgent);
     }
     setAgentModalOpen(false);
-    persistGlobalData();
   };
 
   const deleteAgent = (agentId: string) => {
@@ -479,7 +489,8 @@ const SoloAgentWorkshop: Component = () => {
     setAgentSkills(prev => { const n = { ...prev }; delete n[agentId]; return n; });
     if (selectedAgent()?.id === agentId) setSelectedAgent(null);
     setConfirmDeleteAgentId(null);
-    persistGlobalData();
+    // 删除 .opencode/agents/{agentId}.md 文件
+    deleteAgentFile(agentId).catch(() => {});
     persistAssignments();  // 删除搭档也清理了其 assignments
   };
 
@@ -502,7 +513,7 @@ const SoloAgentWorkshop: Component = () => {
     setSkillModalOpen(true);
   };
 
-  const saveSkill = () => {
+  const saveSkill = async () => {
     const f = skillForm();
     if (!f.name.trim()) return;
     const es = editingSkill();
@@ -528,7 +539,16 @@ const SoloAgentWorkshop: Component = () => {
       if (ag) addSkillToAgent(ag.id, newSkill.name);
     }
     setSkillModalOpen(false);
-    persistGlobalData();
+    // 持久化 Skill 到 OpenWork（.opencode/skills/{name}/SKILL.md）+ 全局目录
+    try {
+      const content = buildSkillMarkdown(newSkill);
+      await actions.upsertOpenworkSkill(newSkill.name, content, newSkill.description);
+      // 同步写入全局目录（跨 workspace 可用）
+      await saveSkillToGlobal(newSkill.name, content);
+    } catch { /* Skill 持久化失败不阻塞 UI */ }
+    // Skill 变更后重新持久化关联的 Agent
+    const ag = selectedAgent();
+    if (ag) persistAgent(ag);
   };
 
   const orchStatusStyle = (status: string) => {

@@ -94,7 +94,7 @@ export const soloAgents: AgentDef[] = [
     bgColor: '#e6f0ff',
     borderColor: '#91c5ff',
     emoji: '🧠',
-    skills: ['需求分析', '假设拆解', '用户洞察', '功能优先级'],
+    skills: ['假设验证', 'product-hypothesis', '用户洞察', '功能优先级'],
     description: '以产品经理视角分析目标，拆解为可验证的假设和功能点',
   },
   {
@@ -105,7 +105,7 @@ export const soloAgents: AgentDef[] = [
     bgColor: '#e6fffb',
     borderColor: '#87e8de',
     emoji: '⚙️',
-    skills: ['技术方案', '代码实现', 'Bug 修复', '部署执行'],
+    skills: ['技术方案', 'MVP 开发', 'Bug 修复', '一键部署'],
     description: '选择最简技术方案，直接生成可运行代码，无需评审',
   },
   {
@@ -116,7 +116,7 @@ export const soloAgents: AgentDef[] = [
     bgColor: '#fff7e6',
     borderColor: '#ffd591',
     emoji: '📈',
-    skills: ['用户获取', '留存策略', '文案生成', '社区运营'],
+    skills: ['用户获取', '留存策略', '增长文案', '社区运营'],
     description: '制定增长策略，生成营销文案，规划用户触达方案',
   },
   {

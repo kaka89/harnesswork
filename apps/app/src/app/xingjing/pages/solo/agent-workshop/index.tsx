@@ -1,7 +1,7 @@
 import { Component, createSignal, For, Show, onMount } from 'solid-js';
 import { soloAgents, AgentDef } from '../../../mock/autopilot';
 import {
-  soloSkillPool, SkillDef, initialSoloAssignments, AgentAssignment,
+  SkillDef, initialSoloAssignments, AgentAssignment,
   agentColorPresets, emojiPresets, ColorPreset, soloOrchestrations,
 } from '../../../mock/agentWorkshop';
 import { soloTasks as mockSoloTasks, SoloTask } from '../../../mock/solo';
@@ -10,7 +10,8 @@ import {
   loadAgentAssignments, saveAgentAssignments,
 } from '../../../services/file-store';
 import { listAllAgents, saveAgentToFile, deleteAgentFile } from '../../../services/agent-registry';
-import { buildSkillMarkdown, saveSkillToGlobal } from '../../../services/skill-registry';
+import { buildSkillMarkdown, saveSkillToGlobal, deleteSkillFromGlobal, ensureSkillsRegistered } from '../../../services/skill-registry';
+import { SOLO_SKILL_DEFS } from '../../../skills/solo-skill-defs';
 import type { AutopilotAgent } from '../../../services/autopilot-executor';
 import { useAppStore } from '../../../stores/app-store';
 import { themeColors, chartColors } from '../../../utils/colors';
@@ -110,6 +111,7 @@ const AgentCard: Component<{
 const SkillPoolItem: Component<{
   skill: SkillDef;
   onEdit: () => void;
+  onDelete: () => void;
   onDragStart: (skillName: string) => void;
 }> = (props) => {
   return (
@@ -140,8 +142,17 @@ const SkillPoolItem: Component<{
         class="flex-shrink-0 text-xs"
         style={{ color: themeColors.textMuted }}
         onClick={(e) => { e.stopPropagation(); props.onEdit(); }}
+        title="编辑"
       >
         ✎
+      </button>
+      <button
+        class="flex-shrink-0 text-xs"
+        style={{ color: '#ef4444' }}
+        onClick={(e) => { e.stopPropagation(); props.onDelete(); }}
+        title="删除"
+      >
+        ✕
       </button>
     </div>
   );
@@ -159,7 +170,16 @@ const SoloAgentWorkshop: Component = () => {
   })();
   const [agentSkills, setAgentSkills] = createSignal<Record<string, string[]>>(initialAgentSkills);
   const [assignments, setAssignments] = createSignal<AgentAssignment[]>([...initialSoloAssignments]);
-  const [skillPool, setSkillPool] = createSignal<SkillDef[]>([...soloSkillPool]);
+  const [skillPool, setSkillPool] = createSignal<SkillDef[]>([]);
+  const [skillPoolLoading, setSkillPoolLoading] = createSignal(false);
+  let skillsRegistered = false;
+  // 用内置池预填充 category，补全 OpenWork 列表中缺失的字段
+  // 从 SKILL.md frontmatter 解析 category，作为 categoryCache 的初始值
+  const categoryCache = new Map<string, string>();
+  for (const [name, content] of Object.entries(SOLO_SKILL_DEFS)) {
+    const m = content.match(/^category:\s*(.+)$/m);
+    if (m) categoryCache.set(name, m[1].trim());
+  }
 
   const { actions } = useAppStore();
 
@@ -172,6 +192,35 @@ const SoloAgentWorkshop: Component = () => {
   // Drag state
   const [, setDraggingSkill] = createSignal<string | null>(null);
   const [dropOver, setDropOver] = createSignal(false);
+
+  const refreshSkillPool = async () => {
+    setSkillPoolLoading(true);
+    try {
+      // 1. 首次加载时确保内置 Skill 已写入 .opencode/skills/
+      if (!skillsRegistered) {
+        await ensureSkillsRegistered(
+          'solo',
+          (n, c, d) => actions.upsertOpenworkSkill(n, c, d),
+          () => actions.listOpenworkSkills(),
+        );
+        skillsRegistered = true;
+      }
+      // 2. 从 OpenWork 拉取所有 Skill 作为权威列表
+      const owSkills = await actions.listOpenworkSkills();
+      const defs: SkillDef[] = owSkills.map(s => ({
+        id: `ow-${s.name}`,
+        name: s.name,
+        description: s.description || '',
+        category: categoryCache.get(s.name) || '',
+        trigger: s.trigger,
+      }));
+      setSkillPool(defs);
+    } catch {
+      // 降级：保留当前 pool（首次加载失败时为空，后续失败保留上次状态）
+    } finally {
+      setSkillPoolLoading(false);
+    }
+  };
 
   onMount(async () => {
     // 1. 从 ~/.xingjing/agents/ + 内置常量 统一加载 Agent 列表（全局自定义 + 内置）
@@ -201,28 +250,8 @@ const SoloAgentWorkshop: Component = () => {
       if (assignData.length > 0) setAssignments(assignData as unknown as AgentAssignment[]);
     }
 
-    // 3. 从 OpenWork 加载自定义 Skill（合并到内置 skillPool）
-    try {
-      const owSkills = await actions.listOpenworkSkills();
-      if (owSkills.length > 0) {
-        const builtinNames = new Set(soloSkillPool.map(s => s.name));
-        const customSkills: SkillDef[] = owSkills
-          .filter(s => !builtinNames.has(s.name))
-          .map(s => ({
-            id: `ow-${s.name}`,
-            name: s.name,
-            description: s.description || '',
-            category: '',
-          }));
-        if (customSkills.length > 0) {
-          setSkillPool(prev => {
-            const existingNames = new Set(prev.map(p => p.name));
-            const newOnes = customSkills.filter(c => !existingNames.has(c.name));
-            return [...prev, ...newOnes];
-          });
-        }
-      }
-    } catch { /* OpenWork Skill 加载失败不影响页面 */ }
+    // 3. 从 OpenWork 加载 Skill 池（权威数据源）
+    await refreshSkillPool();
 
     // 4. 恢复 agentIdCounter — 避免重载后 ID 碰撞
     const maxExistingId = agents()
@@ -270,6 +299,9 @@ const SoloAgentWorkshop: Component = () => {
   const [skillForm, setSkillForm] = createSignal({
     name: '', description: '', category: soloCategoryOptions[0],
     outputType: '', inputParams: [] as Array<{ name: string; type: string; required: boolean; description: string }>,
+    systemPrompt: '',
+    trigger: '',   // 自动触发条件
+    glob: '',      // 文件匹配模式
   });
 
   const [confirmDeleteAgentId, setConfirmDeleteAgentId] = createSignal<string | null>(null);
@@ -369,8 +401,6 @@ const SoloAgentWorkshop: Component = () => {
 
     for (let i = 0; i < skills.length; i++) {
       const skillName = skills[i];
-      const skillDef = skillPool().find(s => s.name === skillName);
-
       setOrchestrations(prev => prev.map(o =>
         o.agentId === agentId && o.taskId === taskId
           ? { ...o, steps: o.steps.map((s, idx) => idx === i ? { ...s, status: 'running' as const } : s) }
@@ -378,7 +408,14 @@ const SoloAgentWorkshop: Component = () => {
       ));
 
       // 合并 Agent 人设 + Skill 系统提示
-      const skillBasePrompt = skillDef?.systemPrompt || `你是一个专业的${skillName}执行助手。`;
+      let skillBasePrompt = `你是一个专业的${skillName}执行助手。`;
+      try {
+        const detail = await actions.getOpenworkSkill(skillName);
+        if (detail) {
+          const bodyMatch = detail.content.match(/^---\n[\s\S]*?\n---\n?([\s\S]*)$/);
+          skillBasePrompt = bodyMatch?.[1]?.trim() || detail.content;
+        }
+      } catch { /* 降级使用默认提示 */ }
       const systemPrompt = agentPersona ? `${agentPersona}\n\n${skillBasePrompt}` : skillBasePrompt;
       const prevOutput = i > 0 ? initialSteps[i - 1].output : '';
       const userPrompt = `请以「${agent?.name ?? 'AI搭档'}」的身份执行「${skillName}」技能。\n当前任务：${taskTitle}${prevOutput ? `\n上一步输出：\n${prevOutput}` : ''}\n\n请输出执行结果，包含：\n1. 执行摘要（2~3句）\n2. 产出物（如有，用 ### 产出物：标题\n内容 格式输出）`;
@@ -497,19 +534,51 @@ const SoloAgentWorkshop: Component = () => {
   // Skill Modal
   const openCreateSkillModal = () => {
     setEditingSkill(null);
-    setSkillForm({ name: '', description: '', category: soloCategoryOptions[0], outputType: '', inputParams: [] });
+    setSkillForm({ name: '', description: '', category: soloCategoryOptions[0], outputType: '', inputParams: [], systemPrompt: '', trigger: '', glob: '' });
     setSkillModalOpen(true);
   };
 
-  const openEditSkillModal = (skill: SkillDef) => {
+  const openEditSkillModal = async (skill: SkillDef) => {
     setEditingSkill(skill);
-    setSkillForm({
-      name: skill.name,
-      description: skill.description,
-      category: skill.category || soloCategoryOptions[0],
-      outputType: skill.outputType || '',
-      inputParams: [...(skill.inputParams || [])],
-    });
+    // 从 OpenWork 获取完整 SKILL.md 内容以还原编辑字段
+    try {
+      const detail = await actions.getOpenworkSkill(skill.name);
+      if (detail) {
+        const content = detail.content;
+        const bodyMatch = content.match(/^---\n[\s\S]*?\n---\n?([\s\S]*)$/);
+        const body = bodyMatch ? bodyMatch[1].trim() : content;
+        const catMatch = content.match(/^category:\s*(.+)$/m);
+        const cat = catMatch?.[1]?.trim() || skill.category || soloCategoryOptions[0];
+        const triggerMatch = content.match(/^trigger:\s*(.+)$/m);
+        const triggerVal = triggerMatch?.[1]?.trim() || skill.trigger || '';
+        const globMatch = content.match(/^glob:\s*(.+)$/m);
+        const globVal = globMatch?.[1]?.trim() || skill.glob || '';
+        setSkillForm({
+          name: skill.name,
+          description: skill.description,
+          category: cat,
+          outputType: skill.outputType || '',
+          inputParams: [...(skill.inputParams || [])],
+          systemPrompt: body,
+          trigger: triggerVal,
+          glob: globVal,
+        });
+      } else {
+        setSkillForm({
+          name: skill.name, description: skill.description,
+          category: skill.category || soloCategoryOptions[0],
+          outputType: '', inputParams: [], systemPrompt: '',
+          trigger: skill.trigger || '', glob: skill.glob || '',
+        });
+      }
+    } catch {
+      setSkillForm({
+        name: skill.name, description: skill.description,
+        category: skill.category || soloCategoryOptions[0],
+        outputType: '', inputParams: [], systemPrompt: '',
+        trigger: '', glob: '',
+      });
+    }
     setSkillModalOpen(true);
   };
 
@@ -521,6 +590,7 @@ const SoloAgentWorkshop: Component = () => {
       id: es ? es.id : `solo-skill-${Date.now()}`,
       name: f.name, description: f.description, category: f.category,
       outputType: f.outputType, inputParams: f.inputParams,
+      trigger: f.trigger || undefined, glob: f.glob || undefined,
     };
     if (es) {
       setSkillPool(prev => prev.map(s => s.id === es.id ? newSkill : s));
@@ -539,16 +609,57 @@ const SoloAgentWorkshop: Component = () => {
       if (ag) addSkillToAgent(ag.id, newSkill.name);
     }
     setSkillModalOpen(false);
-    // 持久化 Skill 到 OpenWork（.opencode/skills/{name}/SKILL.md）+ 全局目录
+    // 持久化 Skill
     try {
-      const content = buildSkillMarkdown(newSkill);
+      const content = buildSkillMarkdown({ ...newSkill, systemPrompt: f.systemPrompt });
+      // ① 写入当前 workspace（所有 Skill 都写）
       await actions.upsertOpenworkSkill(newSkill.name, content, newSkill.description);
-      // 同步写入全局目录（跨 workspace 可用）
-      await saveSkillToGlobal(newSkill.name, content);
+      // ② 仅用户自建 Skill 双写全局目录（内置 Skill 不写入全局，避免污染）
+      const isBuiltin = es
+        ? Object.keys(SOLO_SKILL_DEFS).includes(es.name)
+        : Object.keys(SOLO_SKILL_DEFS).includes(newSkill.name);
+      if (!isBuiltin) {
+        await saveSkillToGlobal(newSkill.name, content);
+      }
+      // 更新 category 缓存
+      if (newSkill.category) categoryCache.set(newSkill.name, newSkill.category);
+      await refreshSkillPool();
     } catch { /* Skill 持久化失败不阻塞 UI */ }
     // Skill 变更后重新持久化关联的 Agent
     const ag = selectedAgent();
     if (ag) persistAgent(ag);
+  };
+
+  const handleDeleteSkill = async (skill: SkillDef) => {
+    if (!confirm(`确认删除 Skill「${skill.name}」？此操作不可撤销。`)) return;
+
+    // 从所有 Agent 的 skills 中移除引用
+    setAgentSkills(prev => {
+      const updated = { ...prev };
+      Object.keys(updated).forEach(agentId => {
+        updated[agentId] = updated[agentId].filter(n => n !== skill.name);
+      });
+      return updated;
+    });
+    // 持久化 Agent 文件变更
+    agents().forEach(a => {
+      persistAgent({ ...a, skills: (agentSkills()[a.id] || []).filter(n => n !== skill.name) });
+    });
+
+    // ① 删除当前 workspace 中的 Skill
+    try {
+      await actions.deleteOpenworkSkill(skill.name);
+    } catch { /* 删除失败不阻塞 UI */ }
+
+    // ② 同步删除全局目录（仅用户自建 Skill 需要）
+    const isBuiltin = Object.keys(SOLO_SKILL_DEFS).includes(skill.name);
+    if (!isBuiltin) {
+      try {
+        await deleteSkillFromGlobal(skill.name);
+      } catch { /* 全局目录删除失败不阻塞 */ }
+    }
+
+    await refreshSkillPool();
   };
 
   const orchStatusStyle = (status: string) => {
@@ -627,15 +738,23 @@ const SoloAgentWorkshop: Component = () => {
             </div>
 
             <div class="p-2 flex flex-col gap-1.5 max-h-[calc(100vh-320px)] overflow-y-auto">
-              <For each={skillPool()}>
-                {(skill) => (
-                  <SkillPoolItem
-                    skill={skill}
-                    onEdit={() => openEditSkillModal(skill)}
-                    onDragStart={(name) => setDraggingSkill(name)}
-                  />
-                )}
-              </For>
+              <Show when={skillPoolLoading()}>
+                <div class="p-4 text-xs text-center" style={{ color: themeColors.textMuted }}>
+                  <Loader2 size={14} class="animate-spin inline mr-1" />加载中...
+                </div>
+              </Show>
+              <Show when={!skillPoolLoading()}>
+                <For each={skillPool()}>
+                  {(skill) => (
+                    <SkillPoolItem
+                      skill={skill}
+                      onEdit={() => openEditSkillModal(skill)}
+                      onDelete={() => handleDeleteSkill(skill)}
+                      onDragStart={(name) => setDraggingSkill(name)}
+                    />
+                  )}
+                </For>
+              </Show>
             </div>
           </div>
         </div>
@@ -1100,6 +1219,30 @@ const SoloAgentWorkshop: Component = () => {
                 </div>
               </div>
 
+              {/* Trigger & Glob */}
+              <div class="grid grid-cols-2 gap-3">
+                <div>
+                  <div class="text-xs mb-1" style={{ color: themeColors.textMuted }}>触发条件</div>
+                  <input
+                    value={skillForm().trigger}
+                    onInput={e => setSkillForm(prev => ({ ...prev, trigger: e.currentTarget.value }))}
+                    placeholder="如：用户讨论产品需求时"
+                    class="w-full rounded-lg px-3 py-2 text-sm outline-none"
+                    style={{ border: `1px solid ${themeColors.border}`, background: themeColors.surface, color: themeColors.text }}
+                  />
+                </div>
+                <div>
+                  <div class="text-xs mb-1" style={{ color: themeColors.textMuted }}>文件匹配</div>
+                  <input
+                    value={skillForm().glob}
+                    onInput={e => setSkillForm(prev => ({ ...prev, glob: e.currentTarget.value }))}
+                    placeholder="如：*.tsx, *.css"
+                    class="w-full rounded-lg px-3 py-2 text-sm outline-none font-mono"
+                    style={{ border: `1px solid ${themeColors.border}`, background: themeColors.surface, color: themeColors.text }}
+                  />
+                </div>
+              </div>
+
               {/* Input Params */}
               <div>
                 <div class="text-xs mb-2" style={{ color: themeColors.textMuted }}>输入参数</div>
@@ -1174,6 +1317,19 @@ const SoloAgentWorkshop: Component = () => {
                     + 添加参数
                   </button>
                 </div>
+              </div>
+
+              {/* System Prompt */}
+              <div>
+                <div class="text-xs mb-1" style={{ color: themeColors.textMuted }}>System Prompt（Skill 主提示词）</div>
+                <textarea
+                  value={skillForm().systemPrompt}
+                  onInput={e => setSkillForm(prev => ({ ...prev, systemPrompt: e.currentTarget.value }))}
+                  placeholder="该 Skill 的完整执行指令..."
+                  class="w-full rounded-lg px-3 py-2 text-sm outline-none resize-none font-mono"
+                  style={{ border: `1px solid ${themeColors.border}`, background: themeColors.surface, color: themeColors.text }}
+                  rows={6}
+                />
               </div>
             </div>
 

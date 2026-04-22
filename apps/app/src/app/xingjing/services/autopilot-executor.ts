@@ -96,7 +96,7 @@ export const SOLO_AGENTS: AutopilotAgent[] = [
   {
     id: 'product-brain', name: 'AI产品搭档', role: 'AI产品搭档',
     color: '#1264e5', bgColor: '#e6f0ff', borderColor: '#91c5ff', emoji: '🧠',
-    skills: ['需求分析', '假设拆解', '用户洞察', '功能优先级'],
+    skills: ['假设验证', 'product-hypothesis', '用户洞察', '功能优先级'],
     description: '以产品经理视角分析目标，拆解为可验证的假设和功能点',
     systemPrompt: `你是 AI 产品搭档，以 solo 创业者视角分析目标。聚焦 MVP，识别最核心的用户价值，拆解为最小可验证的功能点。保持简洁，每个决策都要理由充分。
 
@@ -109,14 +109,14 @@ ${OUTPUT_FORMAT}`,
   {
     id: 'eng-brain', name: 'AI工程搭档', role: 'AI工程搭档',
     color: '#08979c', bgColor: '#e6fffb', borderColor: '#87e8de', emoji: '⚙️',
-    skills: ['技术方案', '代码实现', 'Bug 修复', '部署执行'],
+    skills: ['技术方案', 'MVP 开发', 'Bug 修复', '一键部署'],
     description: '选择最简技术方案，直接生成可运行代码，无需评审',
     systemPrompt: `你是 AI 工程搭档，偏好最简可用方案。直接给出技术选型、具体实现步骤和代码片段。不做过度设计，优先复用已有能力。${OUTPUT_FORMAT}`,
   },
   {
     id: 'growth-brain', name: 'AI增长搭档', role: 'AI增长搭档',
     color: '#d46b08', bgColor: '#fff7e6', borderColor: '#ffd591', emoji: '📈',
-    skills: ['用户获取', '留存策略', '文案生成', '社区运营'],
+    skills: ['用户获取', '留存策略', '增长文案', '社区运营'],
     description: '制定增长策略，生成营销文案，规划用户触达方案',
     systemPrompt: `你是 AI 增长搭档，专注用户获取和留存。基于目标制定具体增长策略，生成可直接使用的营销文案和触达方案。${OUTPUT_FORMAT}`,
   },

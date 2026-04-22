@@ -115,6 +115,11 @@ export function createMessageAccumulator(opts: MessageAccumulatorOptions): Messa
     // 依赖变化时清理旧订阅
     doCleanup();
 
+    // [FIX] 清空上一个 session 的残留数据，防止旧消息抢占渲染
+    setMessages([]);
+    setParts([]);
+    setTodos([]);
+
     if (!client || !sessionId) return;
 
     const controller = new AbortController();
@@ -138,6 +143,12 @@ export function createMessageAccumulator(opts: MessageAccumulatorOptions): Messa
 
           // 跳过心跳等非活动事件
           if (NON_ACTIVITY_EVENTS.has(evt.type)) continue;
+
+          // 内容事件到达时重新激活 streaming 标记（处理同一 session 上多次命令执行的场景）
+          // session.idle/completed 会将 isStreaming 置 false，后续命令触发的新内容事件需重新激活
+          if (evt.type.startsWith('message.') && !isStreaming()) {
+            setIsStreaming(true);
+          }
 
           const p = evt.props;
 
@@ -197,7 +208,32 @@ export function createMessageAccumulator(opts: MessageAccumulatorOptions): Messa
             const field = typeof p.field === 'string' ? p.field : 'text';
 
             if (partId && delta) {
-              setParts((prev) => appendPartDelta(prev, partId, field, delta));
+              // [FIX] delta 事件可能先于 message.part.updated 到达（SSE 事件竞态）
+              // 如果 part 尚未注册，自动创建并初始化，避免 delta 内容被静默丢弃
+              const existingPart = parts.find((pp) => pp.id === partId);
+              if (!existingPart) {
+                const newPart = {
+                  id: partId,
+                  messageID: msgId ?? '',
+                  sessionID: sessionId,
+                  type: 'text' as const,
+                  text: field === 'text' ? delta : '',
+                  ...(field !== 'text' ? { [field]: delta } : {}),
+                } as unknown as Part;
+                setParts((prev) => upsertPartInfo(prev, newPart));
+                // 确保 parent message 存在
+                if (msgId && !messages.find((m) => m.id === msgId)) {
+                  setMessages((prev) =>
+                    upsertMessageInfo(prev, {
+                      id: msgId,
+                      sessionID: sessionId,
+                      role: 'assistant',
+                    }),
+                  );
+                }
+              } else {
+                setParts((prev) => appendPartDelta(prev, partId, field, delta));
+              }
             }
             continue;
           }

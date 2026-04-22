@@ -1377,6 +1377,12 @@ export function createOpenworkServerClient(options: { baseUrl: string; token?: s
         method: "POST",
         body: payload,
       }),
+    deleteSkill: (workspaceId: string, name: string) =>
+      requestJson<{ ok: boolean; path: string }>(
+        baseUrl,
+        `/workspace/${workspaceId}/skills/${encodeURIComponent(name)}`,
+        { token, hostToken, method: "DELETE" },
+      ),
     listMcp: (workspaceId: string) =>
       requestJson<{ items: OpenworkMcpItem[] }>(baseUrl, `/workspace/${workspaceId}/mcp`, { token, hostToken }),
     addMcp: (workspaceId: string, payload: { name: string; config: Record<string, unknown> }) =>

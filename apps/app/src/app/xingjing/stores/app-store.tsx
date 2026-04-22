@@ -103,6 +103,8 @@ export interface XingjingOpenworkContext {
   // ── 新增：Hub Skill ──
   listHubSkills?: () => Promise<Array<{ name: string; description: string }>>;
   installHubSkill?: (workspaceId: string, name: string) => Promise<boolean>;
+  // ── 新增：删除 workspace Skill ──
+  deleteSkill?: (workspaceId: string, name: string) => Promise<boolean>;
   // ── 新增：Engine 管理 ──
   reloadEngine?: (workspaceId: string) => Promise<boolean>;
   // ── 新增：目录列表（OpenWork Server readdir）──
@@ -179,6 +181,7 @@ const AppStoreContext = createContext<{
     listAudit: (limit?: number) => Promise<OpenworkAuditEntry[]>;
     getOpenworkSkill: (name: string) => Promise<OpenworkSkillContent | null>;
     upsertOpenworkSkill: (name: string, content: string, description?: string) => Promise<boolean>;
+    deleteOpenworkSkill: (name: string) => Promise<boolean>;
     readOpencodeConfig: () => Promise<unknown>;
     writeOpencodeConfig: (content: string) => Promise<boolean>;
     /**
@@ -598,6 +601,11 @@ export const AppStoreProvider: ParentComponent<{
       const wsId = resolvedWorkspaceId();
       if (!wsId || !props.openworkCtx?.installHubSkill) return false;
       return props.openworkCtx.installHubSkill(wsId, name);
+    },
+    deleteOpenworkSkill: async (name: string): Promise<boolean> => {
+      const wsId = resolvedWorkspaceId();
+      if (!wsId || !props.openworkCtx?.deleteSkill) return false;
+      return props.openworkCtx.deleteSkill(wsId, name);
     },
     getOpenworkSkill: (name: string): Promise<OpenworkSkillContent | null> => {
       const wsId = resolvedWorkspaceId();

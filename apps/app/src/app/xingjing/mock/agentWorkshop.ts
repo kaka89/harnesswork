@@ -47,6 +47,7 @@ export interface SkillDef {
   inputParams?: SkillInputParam[];
   outputType?: string;
   trigger?: string;
+  glob?: string;
 }
 
 // ─── Skill Execution & Orchestration ──────────────────────────────
@@ -134,63 +135,7 @@ export const soloSkillPool: SkillDef[] = [
   { id: 'ss01', name: '假设验证', category: '产品', description: '设计实验验证产品假设的可行性' },
   { id: 'ss02', name: '功能优先级', category: '产品', description: '基于商业价值与用户反馈排优先级' },
   { id: 'ss03', name: '用户洞察', category: '产品', description: '从反馈中提炼用户真实需求' },
-  {
-    id: 'ss13',
-    name: 'product-hypothesis',
-    category: '产品',
-    description: '帮助独立开发者快速结构化产品假设，确保每个假设都有可验证的信念、支撑逻辑和验证方法',
-    trigger: '用户描述产品想法、用户观察或功能灵感时自动触发',
-    systemPrompt: `# 产品假设结构化生成
-
-## 你的角色
-你是产品假设结构化助手，帮助将模糊的想法转化为可验证的假设。
-
-## 工作流程
-1. 理解：用 1-2 句话确认理解用户的想法
-2. 追问（可选）：信息不足时追问最多 1 个关键问题
-3. 结构化：按模板输出完整假设
-4. 建议：附 1-2 条执行建议
-
-## 假设模板（严格遵循）
-
-输出必须包含 \`\`\`hypothesis 代码块，JSON 格式：
-
-\`\`\`hypothesis
-{
-  "belief": "我认为[具体功能/改变]能[具体预期结果]",
-  "why": "因为[用户痛点/数据支撑/逻辑推理]",
-  "method": "通过[验证方法：内测/A-B测试/问卷/数据分析/用户访谈]，观察[可量化指标]",
-  "impact": "high|medium|low",
-  "feature": "关联功能模块名称（可选）",
-  "expected_result": "预期验证结果的量化描述（可选）",
-  "detail": "补充背景、推理链、参考数据（可选，支持 Markdown）"
-}
-\`\`\`
-
-## 字段规范
-
-| 字段 | 必填 | 格式要求 |
-|------|------|----------|
-| belief | 是 | 必须包含「具体动作」和「预期效果」，禁止模糊表达 |
-| why | 是 | 必须有数据/痛点/逻辑支撑，禁止"因为我觉得" |
-| method | 是 | 必须是可执行的验证方法，包含观察指标 |
-| impact | 是 | high=影响核心指标 / medium=改善体验 / low=锦上添花 |
-| feature | 否 | 关联产品的具体功能模块 |
-| expected_result | 否 | 验证成功时预期看到的量化结果 |
-| detail | 否 | Markdown 格式的详细推理、竞品参考、数据来源 |
-
-## 质量检查
-生成前自查：
-- belief 是否具体到可以设计实验验证？
-- method 是否在 1-2 周内可执行？
-- impact 评估是否有支撑理由？
-
-## 反模式（禁止输出）
-- "我认为产品应该更好" — 缺少具体改变和预期结果
-- "因为感觉用户需要" — 缺少数据或逻辑支撑
-- "通过观察来验证" — 缺少具体验证方法和指标
-- impact 为 high 但没有解释为什么影响核心指标`,
-  },
+  { id: 'ss13', name: 'product-hypothesis', category: '产品', description: '帮助独立开发者快速结构化产品假设' },
   { id: 'ss04', name: 'MVP 开发', category: '工程', description: '用最小代码量实现核心功能' },
   { id: 'ss05', name: 'Bug 修复', category: '工程', description: '快速定位并修复生产问题' },
   { id: 'ss06', name: '技术方案', category: '工程', description: '选择最简可行的技术实现路径' },
@@ -200,6 +145,9 @@ export const soloSkillPool: SkillDef[] = [
   { id: 'ss10', name: '社区运营', category: '增长', description: '管理社区互动并回复用户' },
   { id: 'ss11', name: '数据监控', category: '运营', description: '监控核心商业指标（DAU/MRR/留存）' },
   { id: 'ss12', name: '客服回复', category: '运营', description: '生成客服回复并分类用户反馈' },
+  { id: 'ss14', name: '用户获取', category: '增长', description: '规划用户获取渠道，设计增长实验' },
+  { id: 'ss15', name: '发布管理', category: '运营', description: '规划并执行软件版本的发布流程' },
+  { id: 'ss16', name: '故障处理', category: '运营', description: '快速响应并处理生产故障，恢复服务' },
 ];
 
 // ─── Agent-Task Assignments ────────────────────────────────────────

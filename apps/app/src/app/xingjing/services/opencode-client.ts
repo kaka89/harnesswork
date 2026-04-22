@@ -11,6 +11,7 @@
 import { createClient, waitForHealthy } from '../../lib/opencode';
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 import { isTauriRuntime } from '../../utils';
+import type { ComposerAttachment } from '../../types';
 
 /** 解析不受 CORS 限制的 fetch（Tauri 环境用 tauriFetch，否则用浏览器 fetch） */
 const safeFetch = (): typeof globalThis.fetch =>
@@ -1003,6 +1004,16 @@ export function getBaseUrl(): string {
   return _baseUrl;
 }
 
+// ─── 附件工具函数（对齐 OpenWork actions-store.ts fileToDataUrl）────────────────
+
+const fileToDataUrl = (file: File) =>
+  new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error(`Failed to read attachment: ${file.name}`));
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+    reader.readAsDataURL(file);
+  });
+
 export interface CallAgentOptions {
   /** Agent 系统提示（角色设定）*/
   systemPrompt?: string;
@@ -1069,6 +1080,8 @@ export interface CallAgentOptions {
   existingSessionId?: string;
   /** Session 建立回调（新建或复用），返回当前 sessionId，供调用方缓存以便后续复用 */
   onSessionCreated?: (sessionId: string) => void;
+  /** 附件列表（图片/PDF，对齐 OpenWork ComposerAttachment 类型） */
+  attachments?: ComposerAttachment[];
 }
 
 /**
@@ -1651,7 +1664,21 @@ async function runAgentSession(
 
       void (async () => {
         try {
-          console.log('[xingjing-diag] promptAsync 发送', { sessionId: finalSid, hasModel: !!opts.model, modelID: opts.model?.modelID });
+          console.log('[xingjing-diag] promptAsync 发送', { sessionId: finalSid, hasModel: !!opts.model, modelID: opts.model?.modelID, attachmentCount: opts.attachments?.length ?? 0 });
+          // 构建 parts 数组（对齐 OpenWork actions-store.buildPromptParts）
+          const parts: Array<{ type: string; [key: string]: unknown }> = [
+            { type: 'text', text: fullPrompt },
+          ];
+          if (opts.attachments?.length) {
+            for (const att of opts.attachments) {
+              parts.push({
+                type: 'file',
+                url: await fileToDataUrl(att.file),
+                filename: att.name,
+                mime: att.mimeType,
+              });
+            }
+          }
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           await (client.session as any).promptAsync({
             sessionID: finalSid,
@@ -1659,7 +1686,7 @@ async function runAgentSession(
             ...(opts.model ? { model: opts.model } : {}),
             // 不传 tools 参数：工具调用由 session 级权限规则控制。
             // 传 tools:{} 会导致 OpenCode 状态机无法从 busy 转为 idle，session 永远不完成。
-            parts: [{ type: 'text', text: fullPrompt }],
+            parts,
           });
           console.log('[xingjing-diag] promptAsync 已发送', { sessionId: finalSid });
         } catch {

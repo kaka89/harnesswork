@@ -9,8 +9,9 @@
  * - 运行时加载走 OpenWork 原生路径（getSkill API）
  */
 
-import { soloSkillPool, teamSkillPool, type SkillDef } from '../mock/agentWorkshop';
-import { fileRead, fileWrite, fileList } from './opencode-client';
+import { SOLO_SKILL_DEFS } from '../skills/solo-skill-defs';
+import { teamSkillPool, type SkillDef } from '../mock/agentWorkshop';
+import { fileRead, fileWrite, fileList, fileDelete } from './opencode-client';
 
 // ─── 全局存储路径 ─────────────────────────────────────
 
@@ -30,8 +31,6 @@ export async function ensureSkillsRegistered(
   upsertSkill: (name: string, content: string, description?: string) => Promise<boolean>,
   listSkills: () => Promise<Array<{ name: string }>>,
 ): Promise<void> {
-  const pool = mode === 'solo' ? soloSkillPool : teamSkillPool;
-
   // 发现已存在的 Skill，避免重复写入
   let existing: Set<string>;
   try {
@@ -42,13 +41,27 @@ export async function ensureSkillsRegistered(
   }
 
   // 仅写入尚不存在的内置 Skill
-  for (const skill of pool) {
-    if (existing.has(skill.name)) continue;
-    try {
-      const content = buildSkillMarkdown(skill);
-      await upsertSkill(skill.name, content, skill.description);
-    } catch {
-      // 单个 Skill 写入失败不影响其他
+  if (mode === 'solo') {
+    // solo 模式：直接使用 SKILL.md 格式定义（无需 buildSkillMarkdown 转换）
+    for (const [name, content] of Object.entries(SOLO_SKILL_DEFS)) {
+      if (existing.has(name)) continue;
+      try {
+        await upsertSkill(name, content);
+      } catch {
+        // 单个 Skill 写入失败不影响其他
+      }
+    }
+  } else {
+    // team 模式：保持原有 buildSkillMarkdown 路径
+    const pool = teamSkillPool;
+    for (const skill of pool) {
+      if (existing.has(skill.name)) continue;
+      try {
+        const content = buildSkillMarkdown(skill);
+        await upsertSkill(skill.name, content, skill.description);
+      } catch {
+        // 单个 Skill 写入失败不影响其他
+      }
     }
   }
 
@@ -75,6 +88,7 @@ export function buildSkillMarkdown(skill: SkillDef): string {
   ];
   if (skill.category) frontmatterLines.push(`category: ${skill.category}`);
   if (skill.trigger) frontmatterLines.push(`trigger: ${skill.trigger}`);
+  if (skill.glob) frontmatterLines.push(`glob: ${skill.glob}`);
   frontmatterLines.push('---');
 
   const body = skill.systemPrompt || `你是一个专业的${skill.name}执行助手。`;
@@ -112,5 +126,18 @@ export async function listGlobalCustomSkills(): Promise<Array<{ name: string; co
     return results;
   } catch {
     return [];
+  }
+}
+
+/**
+ * 从全局目录删除自定义 Skill（~/.xingjing/skills/{name}/SKILL.md）
+ * 与 deleteOpenworkSkill 配合使用，实现双向删除。
+ * 仅用于用户自建 Skill，内置 Skill 不调用。
+ */
+export async function deleteSkillFromGlobal(name: string): Promise<boolean> {
+  try {
+    return await fileDelete(`${GLOBAL_SKILLS_DIR}/${name}/SKILL.md`);
+  } catch {
+    return false;
   }
 }

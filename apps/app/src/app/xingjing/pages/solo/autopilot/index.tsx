@@ -58,11 +58,12 @@ import AgentSessionView from '../../../components/autopilot/agent-session-view';
 import SessionTabBar from '../../../components/autopilot/session-tab-bar';
 import MessageList from '../../../../components/session/message-list';
 import { createMessageAccumulator } from '../../../services/message-accumulator';
-import type { MessageWithParts } from '../../../../types';
+import type { MessageWithParts, ComposerAttachment } from '../../../../types';
 import EnhancedComposer, {
   type CapabilityBadge,
   type SlashCommand,
 } from '../../../components/autopilot/enhanced-composer';
+import { listCommands as listCommandsTyped } from '../../../../lib/opencode-session';
 
 // ─── 类型 ─────────────────────────────────────────────────────────────────────
 
@@ -654,6 +655,8 @@ const SoloAutopilot = () => {
   // ── Chat 模式：普通对话消息（不走 Orchestrator，直接 callAgent）──────────────
   const [chatMessages, setChatMessages] = createSignal<ChatMsg[]>([]);
   const [chatLoading, setChatLoading] = createSignal(false);
+  /** 标记"正在等待命令流式响应"，用于 session.command() 后的异步完成检测 */
+  const [commandPending, setCommandPending] = createSignal(false);
   /** 当前对话的 OpenCode Session ID（多轮复用同一 session） */
   const [currentChatSessionId, setCurrentChatSessionId] = createSignal<string | null>(null);
   // 历史会话恢复中的 sessionId（用于 loading 指示）
@@ -707,7 +710,13 @@ const SoloAutopilot = () => {
     // 累积器消息（实时会话）完全接管，不与 legacy 合并（防止重复显示）
     // 同时对用户消息剥离注入的系统上下文（去除 systemPrompt/时间/知识库内容）
     if (accMsgs.length > 0) {
-      return accMsgs.map(stripAccUserMsg);
+      result.push(...accMsgs.map(stripAccUserMsg));
+      // 命令场景：accumulator 已有旧消息但还没收到新的用户消息
+      // → 追加 pending 以保证用户看到自己发的命令
+      if (pending) {
+        result.push(pending);
+      }
+      return result;
     }
 
     // 乐观占位消息（仅在 accumulator 尚无消息时显示）
@@ -718,14 +727,23 @@ const SoloAutopilot = () => {
     return result;
   });
 
-  // 副作用独立到 createEffect：accumulator 收到用户消息后清除乐观占位
-  // 同时检测含系统上下文标记的消息（role 可能被误判为 assistant）
+  // 副作用独立到 createEffect：accumulator 收到与 pending 匹配的用户消息后清除乐观占位
+  // 改为精确匹配 pending 内容，避免已有旧 user 消息误触发清除（命令路径场景）
   createEffect(() => {
     const accMsgs = chatAccumulator.messages();
-    if (pendingUserMsg() && accMsgs.some(m =>
-      (m.info as any).role === 'user' ||
+    const pending = pendingUserMsg();
+    if (!pending) return;
+    const pendingText = (pending.parts.find(p => p.type === 'text') as any)?.text ?? '';
+    // 检测 accumulator 是否已包含与 pending 内容匹配的新 user message
+    const hasMatchingUserMsg = accMsgs.some(m =>
+      (m.info as any).role === 'user' &&
+      m.parts.some(p => p.type === 'text' && ((p as any).text ?? '').includes(pendingText))
+    );
+    // 或检测含系统上下文标记的消息（role 可能被误判为 assistant）
+    const hasSysCtxMsg = accMsgs.some(m =>
       m.parts.some(p => p.type === 'text' && ((p as any).text ?? '').includes('## 当前系统时间'))
-    )) {
+    );
+    if (hasMatchingUserMsg || hasSysCtxMsg) {
       setPendingUserMsg(null);
     }
   });
@@ -738,6 +756,34 @@ const SoloAutopilot = () => {
         chatScrollRef.scrollTop = chatScrollRef.scrollHeight;
       }
     });
+  });
+
+  // ── 命令执行流式完成检测 ─────────────────────────────────────────────────────────
+  // 当 accumulator.isStreaming 从 true→false 且 commandPending 为 true 时，关闭 chatLoading
+  // [FIX] 同时处理「流式已在 HTTP 等待期间完成」的场景：
+  //       commandPending=true 时 streaming 已为 false 且 accumulator 有 assistant 消息
+  let _prevStreamingForCmd = false;
+  createEffect(() => {
+    const streaming = chatAccumulator.isStreaming();
+    const pending = commandPending();
+    // 正常路径：streaming true→false 转换
+    if (pending && _prevStreamingForCmd && !streaming) {
+      console.log('[solo-chat] 命令流式输出完成，关闭 chatLoading');
+      setChatLoading(false);
+      setCommandPending(false);
+    }
+    // 补偿路径：commandPending 在 streaming 已结束后设置（HTTP 等待期间 SSE 流已完成）
+    // 检测条件：pending 为 true、streaming 为 false、且 accumulator 已有 assistant 消息
+    if (pending && !_prevStreamingForCmd && !streaming) {
+      const accMsgs = chatAccumulator.messages();
+      const hasAssistantMsg = accMsgs.some(m => (m.info as any).role === 'assistant');
+      if (hasAssistantMsg) {
+        console.log('[solo-chat] 命令流式已在 HTTP 等待期间完成（补偿路径），关闭 chatLoading');
+        setChatLoading(false);
+        setCommandPending(false);
+      }
+    }
+    _prevStreamingForCmd = streaming;
   });
 
   // MessageList 工具步骤展开状态
@@ -1045,10 +1091,11 @@ const SoloAutopilot = () => {
     setPermissionQueue([]);
   };
 
-  // ── handleChatSend：💬 普通对话模式，直接 callAgent，内联显示 ──────────────────
-  const handleChatSend = async () => {
+  // ── handleChatSend：💬 普通对话模式，支持 callAgent + session.command ──────────
+  const handleChatSend = async (attachments?: ComposerAttachment[]) => {
     const text = goal().trim();
-    if (!text || chatLoading()) return;
+    // ✅ 保留 chatLoading() 防重复发送 + 扩展为支持仅附件发送
+    if ((!text && !(attachments?.length)) || chatLoading()) return;
 
     // ▸ 诊断日志：记录入口状态
     const _model = getSessionModel();
@@ -1059,6 +1106,7 @@ const SoloAutopilot = () => {
       existingSessionId: currentChatSessionId(),
       configuredModelsCount: configuredModels().length,
       workDir: productStore.activeProduct()?.workDir,
+      pendingCommand: pendingCommand(),
     });
 
     // ▸ 前置模型验证（与 dispatch 模式保持一致）
@@ -1067,7 +1115,121 @@ const SoloAutopilot = () => {
       return;
     }
 
-    // 乐观 UI：立即展示用户消息
+    // ── 检测命令执行路径 ──
+    const cmd = pendingCommand();
+    setPendingCommand(null);  // 消费一次性命令
+
+    let commandName = cmd?.name ?? null;
+    let commandArgs = '';
+    if (!commandName && text.startsWith('/')) {
+      // 支持直接输入 /command-name args 的文本格式
+      const spaceIdx = text.indexOf(' ');
+      commandName = spaceIdx > 0 ? text.slice(1, spaceIdx) : text.slice(1);
+      commandArgs = spaceIdx > 0 ? text.slice(spaceIdx + 1).trim() : '';
+    } else if (commandName) {
+      // 去掉输入框中的 /command-name 前缀，剩下的作为 args
+      const prefix = `/${commandName}`;
+      commandArgs = text.startsWith(prefix) ? text.slice(prefix.length).trim() : text;
+    }
+
+    // ── 命令执行路径：通过 session.command() ──
+    if (commandName) {
+      const client = openworkCtx?.opencodeClient?.();
+      if (!client) { setAgentError('OpenCode 未连接'); return; }
+
+      // 乐观 UI + 加载状态
+      const syntheticUserMsg: MessageWithParts = {
+        info: {
+          id: `pending-${Date.now()}`,
+          sessionID: currentChatSessionId() || 'pending',
+          role: 'user',
+          time: { created: Date.now() / 1000 },
+        } as any,
+        parts: [{ id: `part-${Date.now()}`, type: 'text', text: `/${commandName} ${commandArgs}`, messageID: '' } as any],
+      };
+      setPendingUserMsg(syntheticUserMsg);
+
+      setChatLoading(true);
+      setGoal('');
+      setAgentError(null);
+
+      const model = getSessionModel();
+      const modelStr = model ? `${model.providerID}/${model.modelID}` : undefined;
+      const workDir = productStore.activeProduct()?.workDir;
+
+      // 确保有 session（直接创建，不发送空 prompt）
+      let sid = currentChatSessionId();
+      if (!sid) {
+        try {
+          console.log('[solo-chat] 为命令创建新 session（不发送空 prompt）');
+          const result = await client.session.create({
+            title: `/${commandName}`,
+            ...(workDir ? { directory: workDir } : {}),
+          } as any);
+          sid = (result.data as { id: string } | undefined)?.id ?? null;
+          if (sid) {
+            setCurrentChatSessionId(sid);
+            setChatAccSessionId(sid);  // 触发 accumulator SSE 订阅
+            if (workDir) void saveMemoryMeta(workDir, sid, { tags: [], mode: 'chat' });
+            // 让出微任务 tick，使 accumulator 的 createEffect 启动 SSE 订阅
+            await Promise.resolve();
+          }
+        } catch (e) {
+          console.error('[xingjing] session.create for command failed:', e);
+        }
+      }
+
+      if (!sid) {
+        setAgentError('无法创建会话');
+        setChatLoading(false);
+        return;
+      }
+
+      // [FIX] 在 HTTP 调用前设置 commandPending，确保 streaming 完成检测 effect
+      // 能捕获 SSE 流式在 await 期间完成的 isStreaming true→false 转换
+      setCommandPending(true);
+      try {
+        await client.session.command({
+          sessionID: sid,
+          command: commandName,
+          arguments: commandArgs,
+          model: modelStr,
+        });
+        // HTTP 调用返回后 SSE 异步执行，chatLoading 由 commandPending effect 管理
+        // 补偿检查：如果 SSE 流在 HTTP 等待期间已完成，effect 可能已清除了 commandPending
+        // 这里无需额外处理，effect 的补偿路径会在下一个 tick 自动检测
+        // 超时兜底：若命令 30s 内未完成流式输出，释放 loading 状态
+        setTimeout(() => {
+          if (commandPending()) {
+            console.warn('[solo-chat] 命令流式超时 30s，释放 loading');
+            setChatLoading(false);
+            setCommandPending(false);
+          }
+        }, 30000);
+      } catch (e) {
+        setCommandPending(false);
+        setAgentError(`命令执行失败：${e}`);
+        setChatLoading(false);
+      }
+      return;
+    }
+
+    // ── 普通对话路径 ──
+
+    // 乐观 UI：立即展示用户消息（含附件 file parts 供 MessageList 渲染）
+    const userParts: any[] = [{ id: `part-${Date.now()}`, type: 'text', text, messageID: '' }];
+    if (attachments?.length) {
+      for (const att of attachments) {
+        userParts.push({
+          id: `att-${att.id}`,
+          type: 'file',
+          url: att.previewUrl || '',
+          filename: att.name,
+          mime: att.mimeType,
+          messageID: '',
+        });
+      }
+    }
     const syntheticUserMsg: MessageWithParts = {
       info: {
         id: `pending-${Date.now()}`,
@@ -1075,7 +1237,7 @@ const SoloAutopilot = () => {
         role: 'user',
         time: { created: Date.now() / 1000 },
       } as any,
-      parts: [{ id: `part-${Date.now()}`, type: 'text', text, messageID: '' } as any],
+      parts: userParts,
     };
     setPendingUserMsg(syntheticUserMsg);
 
@@ -1099,6 +1261,7 @@ const SoloAutopilot = () => {
       directory: workDir,
       existingSessionId: currentChatSessionId() || undefined,
       owSessionStatusById: openworkCtx?.sessionStatusById,
+      attachments,
       // 关键：session 建立后触发累积器订阅
       onSessionCreated: (sid) => {
         setCurrentChatSessionId(sid);
@@ -1125,20 +1288,21 @@ const SoloAutopilot = () => {
   };
 
   // ── handleStart：🚀 团队调度模式 ─────────────────────────────────────────────
-  const handleStart = async () => {
+  const handleStart = async (attachments?: ComposerAttachment[]) => {
     const text = goal().trim();
-    if (!text) return;
+    if (!text && !(attachments?.length)) return;
 
     console.log('[solo-chat] handleStart 入口', {
       mode: chatMode(),
       hasModel: !!getSessionModel(),
       modelID: getSessionModel()?.modelID,
       configuredModelsCount: configuredModels().length,
+      attachmentCount: attachments?.length ?? 0,
     });
 
-    // ── chat 模式：走直接对话路径 ──
+    // ── chat 模式：走直接对话路径（传递附件）──
     if (chatMode() === 'chat') {
-      await handleChatSend();
+      await handleChatSend(attachments);
       return;
     }
 
@@ -1289,57 +1453,29 @@ const SoloAutopilot = () => {
     document.removeEventListener('pointerup', handleFloatResizeEnd);
   });
 
-  // ── Slash 命令 ─────────────────────────────────────────────────────────────────
-  const slashCommands: SlashCommand[] = [
-    {
-      id: 'prd', label: '生成 PRD', description: '一键生成产品需求文档',
-      icon: '📋',
-      action: (text) => {
-        setGoal(`@product-brain 请基于以下描述生成完整 PRD：${text}`);
-        setChatMode('dispatch');
-      },
-    },
-    {
-      id: 'arch', label: '架构评审', description: '对当前方案做技术架构评审',
-      icon: '🏗️',
-      action: (text) => {
-        setGoal(`请对以下方案做完整技术架构评审，输出 SDD 和风险清单：${text}`);
-        setChatMode('dispatch');
-      },
-    },
-    {
-      id: 'test', label: '生成测试用例', description: '生成覆盖完整的测试用例',
-      icon: '🧪',
-      action: (text) => {
-        setGoal(`@eng-brain 请为以下功能生成完整测试用例（含边界场景）：${text}`);
-        setChatMode('dispatch');
-      },
-    },
-    {
-      id: 'report', label: '迭代报告', description: '生成本周迭代进度报告',
-      icon: '📊',
-      action: (_) => {
-        setGoal('请汇总当前迭代状态，生成本周进度报告，包含完成事项、风险和下周计划');
-        setChatMode('dispatch');
-      },
-    },
-    {
-      id: 'growth', label: '增长实验', description: '设计并分析增长实验方案',
-      icon: '🚀',
-      action: (text) => {
-        setGoal(`请设计 3 个可快速验证的增长实验方案，场景：${text}`);
-        setChatMode('dispatch');
-      },
-    },
-    {
-      id: 'review', label: '代码评审', description: '对代码或实现方案做 Review',
-      icon: '💻',
-      action: (text) => {
-        setGoal(`@eng-brain 请对以下代码/方案做 Code Review，指出问题并给出改进建议：${text}`);
-        setChatMode('dispatch');
-      },
-    },
-  ];
+  // ── Slash 命令（动态加载）─────────────────────────────────────────────────────────
+
+  // 待执行的命令（用户选中后暂存，提交时执行）
+  const [pendingCommand, setPendingCommand] = createSignal<{ name: string } | null>(null);
+
+  // 从 OpenCode 获取可用命令（含 skills）
+  const listSlashCommands = async (): Promise<SlashCommand[]> => {
+    const client = openworkCtx?.opencodeClient?.();
+    if (!client) return [];
+    const workDir = productStore.activeProduct()?.workDir;
+    const cmds = await listCommandsTyped(client, workDir);
+    return cmds.map(c => ({
+      id: c.id,
+      name: c.name,
+      description: c.description,
+      source: c.source,
+    }));
+  };
+
+  // 用户选中斜杠命令
+  const handleCommandSelect = (cmd: SlashCommand) => {
+    setPendingCommand({ name: cmd.name });
+  };
 
   // ── 渲染 ────────────────────────────────────────────────────────────────────────
 
@@ -1784,14 +1920,15 @@ const SoloAutopilot = () => {
             onModelChange={setSessionModelId}
             onSubmit={handleStart}
             onStop={() => {
-              // 可扩展：abort 当前执行
+              orchestrator.abort();
               setRunState('idle');
             }}
             onReset={reset}
             mode={chatMode()}
             onModeChange={setChatMode}
             capabilities={capabilities()}
-            slashCommands={slashCommands}
+            listCommands={listSlashCommands}
+            onCommandSelect={handleCommandSelect}
             knowledgeScore={knowledgeHealthScore()}
             placeholder={
               chatMode() === 'chat'

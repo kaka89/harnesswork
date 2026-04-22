@@ -6,12 +6,18 @@ const EnvSchema = z.object({
   DATABASE_HOST: z.string().min(1).optional(),
   DATABASE_USERNAME: z.string().min(1).optional(),
   DATABASE_PASSWORD: z.string().optional(),
+  DEN_DB_ENCRYPTION_KEY: z.string().trim().min(32),
   DB_MODE: z.enum(["mysql", "planetscale"]).optional(),
   BETTER_AUTH_SECRET: z.string().min(32),
   BETTER_AUTH_URL: z.string().min(1),
   DEN_BETTER_AUTH_TRUSTED_ORIGINS: z.string().optional(),
   GITHUB_CLIENT_ID: z.string().optional(),
   GITHUB_CLIENT_SECRET: z.string().optional(),
+  GITHUB_CONNECTOR_APP_ID: z.string().optional(),
+  GITHUB_CONNECTOR_APP_CLIENT_ID: z.string().optional(),
+  GITHUB_CONNECTOR_APP_CLIENT_SECRET: z.string().optional(),
+  GITHUB_CONNECTOR_APP_PRIVATE_KEY: z.string().optional(),
+  GITHUB_CONNECTOR_APP_WEBHOOK_SECRET: z.string().optional(),
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
   LOOPS_API_KEY: z.string().optional(),
@@ -67,6 +73,7 @@ const EnvSchema = z.object({
   DAYTONA_SIGNED_PREVIEW_EXPIRES_SECONDS: z.string().optional(),
   DAYTONA_WORKER_PROXY_BASE_URL: z.string().optional(),
   DAYTONA_SANDBOX_NAME_PREFIX: z.string().optional(),
+  DAYTONA_SHARED_VOLUME_NAME: z.string().optional(),
   DAYTONA_VOLUME_NAME_PREFIX: z.string().optional(),
   DAYTONA_WORKSPACE_MOUNT_PATH: z.string().optional(),
   DAYTONA_DATA_MOUNT_PATH: z.string().optional(),
@@ -145,6 +152,7 @@ const planetscaleCredentials =
 
 export const env = {
   databaseUrl: parsed.DATABASE_URL,
+  dbEncryptionKey: optionalString(parsed.DEN_DB_ENCRYPTION_KEY),
   dbMode: parsed.DB_MODE ?? (parsed.DATABASE_URL ? "mysql" : "planetscale"),
   planetscale: planetscaleCredentials,
   betterAuthSecret: parsed.BETTER_AUTH_SECRET,
@@ -154,6 +162,13 @@ export const env = {
   github: {
     clientId: optionalString(parsed.GITHUB_CLIENT_ID),
     clientSecret: optionalString(parsed.GITHUB_CLIENT_SECRET),
+  },
+  githubConnectorApp: {
+    appId: optionalString(parsed.GITHUB_CONNECTOR_APP_ID),
+    clientId: optionalString(parsed.GITHUB_CONNECTOR_APP_CLIENT_ID),
+    clientSecret: optionalString(parsed.GITHUB_CONNECTOR_APP_CLIENT_SECRET),
+    privateKey: optionalString(parsed.GITHUB_CONNECTOR_APP_PRIVATE_KEY),
+    webhookSecret: optionalString(parsed.GITHUB_CONNECTOR_APP_WEBHOOK_SECRET),
   },
   google: {
     clientId: optionalString(parsed.GOOGLE_CLIENT_ID),
@@ -238,8 +253,10 @@ export const env = {
       optionalString(parsed.DAYTONA_WORKER_PROXY_BASE_URL) ?? "https://workers.den.openworklabs",
     sandboxNamePrefix:
       optionalString(parsed.DAYTONA_SANDBOX_NAME_PREFIX) ?? "den-daytona-worker",
-    volumeNamePrefix:
-      optionalString(parsed.DAYTONA_VOLUME_NAME_PREFIX) ?? "den-daytona-worker",
+    sharedVolumeName:
+      optionalString(parsed.DAYTONA_SHARED_VOLUME_NAME) ??
+      optionalString(parsed.DAYTONA_VOLUME_NAME_PREFIX) ??
+      "den-daytona-workers",
     workspaceMountPath:
       optionalString(parsed.DAYTONA_WORKSPACE_MOUNT_PATH) ?? "/workspace",
     dataMountPath:

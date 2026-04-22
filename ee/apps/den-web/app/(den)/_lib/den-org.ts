@@ -1,3 +1,7 @@
+import { normalizeDesktopAppRestrictions, type DesktopAppRestrictions } from "@openwork/types/den/desktop-app-restrictions";
+
+export type DenDesktopAppRestrictions = DesktopAppRestrictions;
+
 export type DenOrgSummary = {
   id: string;
   name: string;
@@ -64,6 +68,7 @@ export type DenInvitationPreview = {
     id: string;
     name: string;
     slug: string;
+    allowedEmailDomains: string[] | null;
   };
 };
 
@@ -77,15 +82,47 @@ export type DenOrgRole = {
   updatedAt: string | null;
 };
 
+export type DenOrgApiKey = {
+  id: string;
+  configId: string;
+  name: string | null;
+  start: string | null;
+  prefix: string | null;
+  enabled: boolean;
+  rateLimitEnabled: boolean;
+  rateLimitMax: number | null;
+  rateLimitTimeWindow: number | null;
+  lastRequest: string | null;
+  expiresAt: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  owner: {
+    userId: string;
+    memberId: string;
+    name: string;
+    email: string;
+    image: string | null;
+  };
+};
+
 export type DenOrgContext = {
   organization: {
     id: string;
     name: string;
     slug: string;
     logo: string | null;
+    allowedEmailDomains: string[] | null;
+    desktopAppRestrictions: DenDesktopAppRestrictions;
     metadata: string | null;
     createdAt: string | null;
     updatedAt: string | null;
+    owner: {
+      memberId: string;
+      userId: string;
+      name: string | null;
+      email: string | null;
+      image: string | null;
+    } | null;
   };
   currentMember: {
     id: string;
@@ -100,6 +137,10 @@ export type DenOrgContext = {
   teams: DenOrgTeam[];
   currentMemberTeams: DenCurrentMemberTeam[];
 };
+
+export type DenOrganizationMetadata = {
+  allowedDesktopVersions?: string[];
+} & Record<string, unknown>;
 
 export const DEN_ROLE_PERMISSION_OPTIONS = {
   organization: ["update", "delete"],
@@ -125,6 +166,49 @@ function asBoolean(value: unknown): boolean {
 
 function asString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
+}
+
+function asStringArray(value: unknown): string[] | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+
+  return value.filter((entry): entry is string => typeof entry === "string");
+}
+
+function normalizeDesktopVersionString(value: string): string | null {
+  const normalized = value.trim().replace(/^v/i, "");
+  return /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(normalized)
+    ? normalized
+    : null;
+}
+
+export function parseOrganizationMetadata(metadata: string | null): DenOrganizationMetadata | null {
+  if (!metadata) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(metadata) as unknown;
+    return isRecord(parsed) ? (parsed as DenOrganizationMetadata) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function getAllowedDesktopVersionsFromMetadata(metadata: string | null): string[] | null {
+  const parsed = parseOrganizationMetadata(metadata);
+  const values = asStringArray(parsed?.allowedDesktopVersions);
+
+  if (!values) {
+    return null;
+  }
+
+  return [...new Set(values.map((entry) => normalizeDesktopVersionString(entry)).filter((entry): entry is string => Boolean(entry)))];
+}
+
+function asDesktopAppRestrictions(value: unknown): DenDesktopAppRestrictions {
+  return normalizeDesktopAppRestrictions(value);
 }
 
 function parsePermissionRecord(value: unknown): Record<string, string[]> {
@@ -161,6 +245,7 @@ export function getOrgAccessFlags(roleValue: string, isOwner: boolean) {
     canManageMembers: isOwner,
     canManageRoles: isOwner,
     canManageTeams: isAdmin,
+    canManageApiKeys: isAdmin,
   };
 }
 
@@ -172,64 +257,100 @@ export function formatRoleLabel(role: string): string {
     .join(" ");
 }
 
-export function getOrgDashboardRoute(orgSlug: string): string {
-  return `/o/${encodeURIComponent(orgSlug)}/dashboard`;
+export function getOrgDashboardRoute(_orgSlug?: string | null): string {
+  return "/dashboard";
 }
 
 export function getJoinOrgRoute(invitationId: string): string {
   return `/join-org?invite=${encodeURIComponent(invitationId)}`;
 }
 
-export function getManageMembersRoute(orgSlug: string): string {
+export function getManageMembersRoute(orgSlug?: string | null): string {
   return `${getOrgDashboardRoute(orgSlug)}/manage-members`;
 }
 
-export function getMembersRoute(orgSlug: string): string {
+export function getMembersRoute(orgSlug?: string | null): string {
   return `${getOrgDashboardRoute(orgSlug)}/members`;
 }
 
-export function getSharedSetupsRoute(orgSlug: string): string {
+export function getSharedSetupsRoute(orgSlug?: string | null): string {
   return `${getOrgDashboardRoute(orgSlug)}/shared-setups`;
 }
 
-export function getBackgroundAgentsRoute(orgSlug: string): string {
+export function getBackgroundAgentsRoute(orgSlug?: string | null): string {
   return `${getOrgDashboardRoute(orgSlug)}/background-agents`;
 }
 
-export function getCustomLlmProvidersRoute(orgSlug: string): string {
+export function getCustomLlmProvidersRoute(orgSlug?: string | null): string {
   return `${getOrgDashboardRoute(orgSlug)}/custom-llm-providers`;
 }
 
-export function getBillingRoute(orgSlug: string): string {
+export function getLlmProvidersRoute(orgSlug?: string | null): string {
+  return getCustomLlmProvidersRoute(orgSlug);
+}
+
+export function getLlmProviderRoute(orgSlug: string | null | undefined, llmProviderId: string): string {
+  return `${getLlmProvidersRoute(orgSlug)}/${encodeURIComponent(llmProviderId)}`;
+}
+
+export function getEditLlmProviderRoute(orgSlug: string | null | undefined, llmProviderId: string): string {
+  return `${getLlmProviderRoute(orgSlug, llmProviderId)}/edit`;
+}
+
+export function getNewLlmProviderRoute(orgSlug?: string | null): string {
+  return `${getLlmProvidersRoute(orgSlug)}/new`;
+}
+
+export function getBillingRoute(orgSlug?: string | null): string {
   return `${getOrgDashboardRoute(orgSlug)}/billing`;
 }
 
-export function getSkillHubsRoute(orgSlug: string): string {
+export function getOrgSettingsRoute(orgSlug?: string | null): string {
+  return `${getOrgDashboardRoute(orgSlug)}/org-settings`;
+}
+
+export function getApiKeysRoute(orgSlug?: string | null): string {
+  return `${getOrgDashboardRoute(orgSlug)}/api-keys`;
+}
+
+export function getSkillHubsRoute(orgSlug?: string | null): string {
   return `${getOrgDashboardRoute(orgSlug)}/skill-hubs`;
 }
 
-export function getSkillHubRoute(orgSlug: string, skillHubId: string): string {
+export function getSkillHubRoute(orgSlug: string | null | undefined, skillHubId: string): string {
   return `${getSkillHubsRoute(orgSlug)}/${encodeURIComponent(skillHubId)}`;
 }
 
-export function getEditSkillHubRoute(orgSlug: string, skillHubId: string): string {
+export function getEditSkillHubRoute(orgSlug: string | null | undefined, skillHubId: string): string {
   return `${getSkillHubRoute(orgSlug, skillHubId)}/edit`;
 }
 
-export function getNewSkillHubRoute(orgSlug: string): string {
+export function getNewSkillHubRoute(orgSlug?: string | null): string {
   return `${getSkillHubsRoute(orgSlug)}/new`;
 }
 
-export function getSkillDetailRoute(orgSlug: string, skillId: string): string {
+export function getSkillDetailRoute(orgSlug: string | null | undefined, skillId: string): string {
   return `${getSkillHubsRoute(orgSlug)}/skills/${encodeURIComponent(skillId)}`;
 }
 
-export function getEditSkillRoute(orgSlug: string, skillId: string): string {
+export function getEditSkillRoute(orgSlug: string | null | undefined, skillId: string): string {
   return `${getSkillDetailRoute(orgSlug, skillId)}/edit`;
 }
 
-export function getNewSkillRoute(orgSlug: string): string {
+export function getNewSkillRoute(orgSlug?: string | null): string {
   return `${getSkillHubsRoute(orgSlug)}/skills/new`;
+}
+
+export function getPluginsRoute(orgSlug?: string | null): string {
+  return `${getOrgDashboardRoute(orgSlug)}/plugins`;
+}
+
+export function getPluginRoute(orgSlug: string | null | undefined, pluginId: string): string {
+  return `${getPluginsRoute(orgSlug)}/${encodeURIComponent(pluginId)}`;
+}
+
+export function getIntegrationsRoute(orgSlug?: string | null): string {
+  return `${getOrgDashboardRoute(orgSlug)}/integrations`;
 }
 
 export function parseOrgListPayload(payload: unknown): {
@@ -290,6 +411,9 @@ export function parseOrgContextPayload(payload: unknown): DenOrgContext | null {
   const organizationId = asString(organization.id);
   const organizationName = asString(organization.name);
   const organizationSlug = asString(organization.slug);
+  const organizationOwner = isRecord(organization.owner) ? organization.owner : null;
+  const organizationOwnerMemberId = organizationOwner ? asString(organizationOwner.memberId) : null;
+  const organizationOwnerUserId = organizationOwner ? asString(organizationOwner.userId) : null;
   const currentMemberId = asString(currentMember.id);
   const currentMemberUserId = asString(currentMember.userId);
   const currentMemberRole = asString(currentMember.role);
@@ -439,9 +563,20 @@ export function parseOrgContextPayload(payload: unknown): DenOrgContext | null {
       name: organizationName,
       slug: organizationSlug,
       logo: asString(organization.logo),
+      allowedEmailDomains: asStringArray(organization.allowedEmailDomains),
+      desktopAppRestrictions: asDesktopAppRestrictions(organization.desktopAppRestrictions),
       metadata: asString(organization.metadata),
       createdAt: asIsoString(organization.createdAt),
       updatedAt: asIsoString(organization.updatedAt),
+      owner: organizationOwner && organizationOwnerMemberId && organizationOwnerUserId
+        ? {
+          memberId: organizationOwnerMemberId,
+          userId: organizationOwnerUserId,
+          name: asString(organizationOwner.name),
+          email: asString(organizationOwner.email),
+          image: asString(organizationOwner.image),
+        }
+        : null,
     },
     currentMember: {
       id: currentMemberId,
@@ -490,6 +625,70 @@ export function parseInvitationPreviewPayload(payload: unknown): DenInvitationPr
       id: organizationId,
       name: organizationName,
       slug: organizationSlug,
+      allowedEmailDomains: asStringArray(organization.allowedEmailDomains),
     },
   };
+}
+
+export function isEmailAllowedForOrganization(allowedEmailDomains: readonly string[] | null | undefined, email: string): boolean {
+  if (!allowedEmailDomains || allowedEmailDomains.length === 0) {
+    return true;
+  }
+
+  const normalized = email.trim().toLowerCase();
+  const atIndex = normalized.lastIndexOf("@");
+  if (atIndex === -1 || atIndex + 1 >= normalized.length) {
+    return false;
+  }
+
+  return allowedEmailDomains.includes(normalized.slice(atIndex + 1));
+}
+
+export function parseOrgApiKeysPayload(payload: unknown): DenOrgApiKey[] {
+  if (!isRecord(payload) || !Array.isArray(payload.apiKeys)) {
+    return [];
+  }
+
+  return payload.apiKeys
+    .map((entry) => {
+      if (!isRecord(entry) || !isRecord(entry.owner)) {
+        return null;
+      }
+
+      const id = asString(entry.id);
+      const configId = asString(entry.configId);
+      const owner = entry.owner;
+      const ownerUserId = asString(owner.userId);
+      const ownerMemberId = asString(owner.memberId);
+      const ownerName = asString(owner.name);
+      const ownerEmail = asString(owner.email);
+
+      if (!id || !configId || !ownerUserId || !ownerMemberId || !ownerName || !ownerEmail) {
+        return null;
+      }
+
+      return {
+        id,
+        configId,
+        name: asString(entry.name),
+        start: asString(entry.start),
+        prefix: asString(entry.prefix),
+        enabled: asBoolean(entry.enabled),
+        rateLimitEnabled: asBoolean(entry.rateLimitEnabled),
+        rateLimitMax: typeof entry.rateLimitMax === "number" ? entry.rateLimitMax : null,
+        rateLimitTimeWindow: typeof entry.rateLimitTimeWindow === "number" ? entry.rateLimitTimeWindow : null,
+        lastRequest: asIsoString(entry.lastRequest),
+        expiresAt: asIsoString(entry.expiresAt),
+        createdAt: asIsoString(entry.createdAt),
+        updatedAt: asIsoString(entry.updatedAt),
+        owner: {
+          userId: ownerUserId,
+          memberId: ownerMemberId,
+          name: ownerName,
+          email: ownerEmail,
+          image: asString(owner.image),
+        },
+      } satisfies DenOrgApiKey;
+    })
+    .filter((entry): entry is DenOrgApiKey => entry !== null);
 }

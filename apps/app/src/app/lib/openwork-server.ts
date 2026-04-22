@@ -1,4 +1,5 @@
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+import type { Message, Part, Session, Todo } from "@opencode-ai/sdk/v2/client";
 import { isTauriRuntime } from "../utils";
 import type { ExecResult, OpencodeConfigFile, ScheduledJob, WorkspaceInfo, WorkspaceList } from "./tauri";
 
@@ -103,6 +104,21 @@ export type OpenworkWorkspaceList = {
   items: OpenworkWorkspaceInfo[];
   workspaces?: WorkspaceInfo[];
   activeId?: string | null;
+};
+
+export type OpenworkSessionMessage = {
+  info: Message;
+  parts: Part[];
+};
+
+export type OpenworkSessionSnapshot = {
+  session: Session;
+  messages: OpenworkSessionMessage[];
+  todos: Todo[];
+  status:
+    | { type: "idle" }
+    | { type: "busy" }
+    | { type: "retry"; attempt: number; message: string; next: number };
 };
 
 export type OpenworkPluginItem = {
@@ -690,30 +706,6 @@ export function clearOpenworkServerSettings() {
   }
 }
 
-export function deriveOpenworkServerUrl(
-  opencodeBaseUrl: string,
-  settings?: OpenworkServerSettings,
-) {
-  const override = settings?.urlOverride?.trim();
-  if (override) {
-    return normalizeOpenworkServerUrl(override);
-  }
-
-  const base = opencodeBaseUrl.trim();
-  if (!base) return null;
-  try {
-    const url = new URL(base);
-    const port = settings?.portOverride ?? DEFAULT_OPENWORK_SERVER_PORT;
-    url.port = String(port);
-    url.pathname = "";
-    url.search = "";
-    url.hash = "";
-    return url.origin;
-  } catch {
-    return null;
-  }
-}
-
 export class OpenworkServerError extends Error {
   status: number;
   code: string;
@@ -759,8 +751,22 @@ function buildAuthHeaders(token?: string, hostToken?: string, extra?: Record<str
   return headers;
 }
 
-// Use Tauri's fetch when running in the desktop app to avoid CORS issues
-const resolveFetch = () => (isTauriRuntime() ? tauriFetch : globalThis.fetch);
+// Use Tauri's fetch when running in the desktop app to avoid CORS issues.
+// Stream URLs (SSE) bypass the plugin because its `fetch_read_body` IPC call
+// blocks until the body closes — that freezes the webview for infinite bodies.
+const OPENWORK_STREAM_URL_RE = /\/events(\b|\?)|\/event-stream\b|\/stream\b/;
+
+function isStreamUrl(url: string): boolean {
+  return OPENWORK_STREAM_URL_RE.test(url);
+}
+
+const resolveFetch = (url?: string) => {
+  if (!isTauriRuntime()) return globalThis.fetch;
+  if (url && isStreamUrl(url)) {
+    return typeof window !== "undefined" ? window.fetch.bind(window) : globalThis.fetch;
+  }
+  return tauriFetch;
+};
 
 const DEFAULT_OPENWORK_SERVER_TIMEOUT_MS = 10_000;
 
@@ -811,7 +817,7 @@ async function requestJson<T>(
   options: { method?: string; token?: string; hostToken?: string; body?: unknown; timeoutMs?: number } = {},
 ): Promise<T> {
   const url = `${baseUrl}${path}`;
-  const fetchImpl = resolveFetch();
+  const fetchImpl = resolveFetch(url);
   const response = await fetchWithTimeout(
     fetchImpl,
     url,
@@ -841,7 +847,7 @@ async function requestJsonRaw<T>(
   options: { method?: string; token?: string; hostToken?: string; body?: unknown; timeoutMs?: number } = {},
 ): Promise<RawJsonResponse<T>> {
   const url = `${baseUrl}${path}`;
-  const fetchImpl = resolveFetch();
+  const fetchImpl = resolveFetch(url);
   const response = await fetchWithTimeout(
     fetchImpl,
     url,
@@ -870,7 +876,7 @@ async function requestMultipartRaw(
   options: { method?: string; token?: string; hostToken?: string; body?: FormData; timeoutMs?: number } = {},
 ): Promise<{ ok: boolean; status: number; text: string }>{
   const url = `${baseUrl}${path}`;
-  const fetchImpl = resolveFetch();
+  const fetchImpl = resolveFetch(url);
   const response = await fetchWithTimeout(
     fetchImpl,
     url,
@@ -891,7 +897,7 @@ async function requestBinary(
   options: { method?: string; token?: string; hostToken?: string; timeoutMs?: number } = {},
 ): Promise<{ data: ArrayBuffer; contentType: string | null; filename: string | null }>{
   const url = `${baseUrl}${path}`;
-  const fetchImpl = resolveFetch();
+  const fetchImpl = resolveFetch(url);
   const response = await fetchWithTimeout(
     fetchImpl,
     url,
@@ -936,6 +942,7 @@ export function createOpenworkServerClient(options: { baseUrl: string; token?: s
     activateWorkspace: 10_000,
     deleteWorkspace: 10_000,
     deleteSession: 12_000,
+    sessionRead: 12_000,
     status: 6_000,
     config: 10_000,
     opencodeRouter: 10_000,
@@ -1009,6 +1016,48 @@ export function createOpenworkServerClient(options: { baseUrl: string; token?: s
         `/workspace/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}`,
         { token, hostToken, method: "DELETE", timeoutMs: timeouts.deleteSession },
       ),
+    listSessions: (
+      workspaceId: string,
+      options?: { roots?: boolean; start?: number; search?: string; limit?: number },
+    ) => {
+      const query = new URLSearchParams();
+      if (typeof options?.roots === "boolean") query.set("roots", String(options.roots));
+      if (typeof options?.start === "number") query.set("start", String(options.start));
+      if (options?.search?.trim()) query.set("search", options.search.trim());
+      if (typeof options?.limit === "number") query.set("limit", String(options.limit));
+      const suffix = query.size ? `?${query.toString()}` : "";
+      return requestJson<{ items: Session[] }>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/sessions${suffix}`,
+        { token, hostToken, timeoutMs: timeouts.sessionRead },
+      );
+    },
+    getSession: (workspaceId: string, sessionId: string) =>
+      requestJson<{ item: Session }>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}`,
+        { token, hostToken, timeoutMs: timeouts.sessionRead },
+      ),
+    getSessionMessages: (workspaceId: string, sessionId: string, options?: { limit?: number }) => {
+      const query = new URLSearchParams();
+      if (typeof options?.limit === "number") query.set("limit", String(options.limit));
+      const suffix = query.size ? `?${query.toString()}` : "";
+      return requestJson<{ items: OpenworkSessionMessage[] }>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}/messages${suffix}`,
+        { token, hostToken, timeoutMs: timeouts.sessionRead },
+      );
+    },
+    getSessionSnapshot: (workspaceId: string, sessionId: string, options?: { limit?: number }) => {
+      const query = new URLSearchParams();
+      if (typeof options?.limit === "number") query.set("limit", String(options.limit));
+      const suffix = query.size ? `?${query.toString()}` : "";
+      return requestJson<{ item: OpenworkSessionSnapshot }>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}/snapshot${suffix}`,
+        { token, hostToken, timeoutMs: timeouts.sessionRead },
+      );
+    },
     exportWorkspace: (
       workspaceId: string,
       options?: { sensitiveMode?: OpenworkWorkspaceExportSensitiveMode },
@@ -1377,6 +1426,16 @@ export function createOpenworkServerClient(options: { baseUrl: string; token?: s
         method: "POST",
         body: payload,
       }),
+    deleteSkill: (workspaceId: string, name: string) =>
+      requestJson<{ path: string }>(
+        baseUrl,
+        `/workspace/${workspaceId}/skills/${encodeURIComponent(name)}`,
+        {
+          token,
+          hostToken,
+          method: "DELETE",
+        },
+      ),
     listMcp: (workspaceId: string) =>
       requestJson<{ items: OpenworkMcpItem[] }>(baseUrl, `/workspace/${workspaceId}/mcp`, { token, hostToken }),
     addMcp: (workspaceId: string, payload: { name: string; config: Record<string, unknown> }) =>

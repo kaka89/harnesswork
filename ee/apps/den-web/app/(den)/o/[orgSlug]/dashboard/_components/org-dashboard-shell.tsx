@@ -6,24 +6,30 @@ import { useMemo, useState } from "react";
 import {
   BookOpen,
   Bot,
-  ChevronDown,
   CreditCard,
   Cpu,
   FileText,
   Home,
+  KeyRound,
   LogOut,
   MessageSquare,
   Share2,
+  SlidersHorizontal,
   Users,
 } from "lucide-react";
 import { useDenFlow } from "../../../../_providers/den-flow-provider";
 import {
   formatRoleLabel,
   getBackgroundAgentsRoute,
+  getApiKeysRoute,
   getBillingRoute,
   getCustomLlmProvidersRoute,
+  getOrgAccessFlags,
+  getIntegrationsRoute,
   getMembersRoute,
   getOrgDashboardRoute,
+  getOrgSettingsRoute,
+  getPluginsRoute,
   getSharedSetupsRoute,
   getSkillHubsRoute,
 } from "../../../../_lib/den-org";
@@ -96,17 +102,29 @@ function getDashboardPageTitle(pathname: string, orgSlug: string | null) {
   if (pathname.startsWith(getMembersRoute(orgSlug))) {
     return "Members";
   }
+  if (pathname.startsWith(getApiKeysRoute(orgSlug))) {
+    return "API Keys";
+  }
   if (pathname.startsWith(getBackgroundAgentsRoute(orgSlug))) {
     return "Shared Workspaces";
   }
   if (pathname.startsWith(getCustomLlmProvidersRoute(orgSlug))) {
-    return "Custom LLMs";
+    return "LLM Providers";
   }
   if (pathname.startsWith(getSkillHubsRoute(orgSlug))) {
     return "Skill Hubs";
   }
+  if (pathname.startsWith(getPluginsRoute(orgSlug))) {
+    return "Plugins";
+  }
+  if (pathname.startsWith(getIntegrationsRoute(orgSlug))) {
+    return "Integrations";
+  }
   if (pathname.startsWith(getBillingRoute(orgSlug)) || pathname === "/checkout") {
     return "Billing";
+  }
+  if (pathname.startsWith(getOrgSettingsRoute(orgSlug))) {
+    return "Org Settings";
   }
 
   return "Home";
@@ -118,13 +136,17 @@ export function OrgDashboardShell({ children }: { children: React.ReactNode }) {
   const {
     activeOrg,
     orgDirectory,
+    orgContext,
     orgBusy,
     orgError,
-    mutationBusy,
-    createOrganization,
     switchOrganization,
   } = useOrgDashboard();
   const [switcherOpen, setSwitcherOpen] = useState(false);
+
+  const access = getOrgAccessFlags(
+    orgContext?.currentMember.role ?? "member",
+    orgContext?.currentMember.isOwner ?? false,
+  );
 
   const pageTitle = getDashboardPageTitle(pathname, activeOrg?.slug ?? null);
   const feedbackHref = buildDenFeedbackUrl({
@@ -149,12 +171,12 @@ export function OrgDashboardShell({ children }: { children: React.ReactNode }) {
       icon: Bot,
       badge: "Alpha",
     },
-    {
-      href: activeOrg ? getCustomLlmProvidersRoute(activeOrg.slug) : "#",
-      label: "Custom LLMs",
-      icon: Cpu,
-      badge: "Soon",
-    },
+      {
+        href: activeOrg ? getCustomLlmProvidersRoute(activeOrg.slug) : "#",
+        label: "LLM Providers",
+        icon: Cpu,
+        badge: "New",
+      },
     {
       href: activeOrg ? getSkillHubsRoute(activeOrg.slug) : "#",
       label: "Skill Hubs",
@@ -166,10 +188,22 @@ export function OrgDashboardShell({ children }: { children: React.ReactNode }) {
       label: "Members",
       icon: Users,
     },
+    ...(access.canManageApiKeys
+      ? [{
+          href: activeOrg ? getApiKeysRoute(activeOrg.slug) : "#",
+          label: "API Keys",
+          icon: KeyRound,
+        }]
+      : []),
     {
       href: activeOrg ? getBillingRoute(activeOrg.slug) : "/checkout",
       label: "Billing",
       icon: CreditCard,
+    },
+    {
+      href: activeOrg ? getOrgSettingsRoute(activeOrg.slug) : "#",
+      label: "Org Settings",
+      icon: SlidersHorizontal,
     },
   ];
 

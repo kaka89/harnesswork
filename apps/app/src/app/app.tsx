@@ -2364,6 +2364,8 @@ export default function App() {
             isRecommended: o.isRecommended,
           }))}
           submitProviderApiKey={submitProviderApiKey}
+          messagesBySessionId={messagesBySessionId}
+          ensureSessionLoaded={ensureSessionLoaded}
         />
       </Match>
       <Match when={true}>

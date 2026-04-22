@@ -57,7 +57,6 @@ import { createTeamSessionOrchestrator } from '../../../services/team-session-or
 import AgentSessionView from '../../../components/autopilot/agent-session-view';
 import SessionTabBar from '../../../components/autopilot/session-tab-bar';
 import MessageList from '../../../../components/session/message-list';
-import { createMessageAccumulator } from '../../../services/message-accumulator';
 import type { MessageWithParts, ComposerAttachment } from '../../../../types';
 import EnhancedComposer, {
   type CapabilityBadge,
@@ -662,15 +661,12 @@ const SoloAutopilot = () => {
   // 历史会话恢复中的 sessionId（用于 loading 指示）
   const [restoringSessionId, setRestoringSessionId] = createSignal<string | null>(null);
 
-  // ── Solo Chat 消息累积器（Part-based 消息源）──────────────────────────────────
-  const [chatAccSessionId, setChatAccSessionId] = createSignal<string | null>(null);
-  // ⚠️ 重要：不传 onPermissionAsked / onQuestionAsked
-  // 权限处理由 callAgent 独占（含 autoApproveTools 白名单逻辑 + 手动审批弹窗）
-  const chatAccumulator = createMessageAccumulator({
-    client: () => openworkCtx?.opencodeClient?.() ?? null,
-    sessionId: chatAccSessionId,
-    directory: () => productStore.activeProduct()?.workDir,
-  });
+  // ── SDD-015: 从 OpenWork 全局 session store 读取消息 ──────────────────────────
+  // 全局 SSE 已捕获所有 session 事件，无需独立 accumulator
+  const getSessionMessages = (sid: string | null): MessageWithParts[] => {
+    if (!sid) return [];
+    return openworkCtx?.messagesBySessionId?.(sid) ?? [];
+  };
 
   // 乐观 UI：用户消息即时展示占位
   const [pendingUserMsg, setPendingUserMsg] = createSignal<MessageWithParts | null>(null);
@@ -693,10 +689,11 @@ const SoloAutopilot = () => {
     };
   }
 
-  // 合并消息源用于渲染：累积器消息(实时) + 旧格式消息(历史恢复) + 乐观占位
+  // 合并消息源用于渲染：全局 store 消息(实时) + 旧格式消息(历史恢复) + 乐观占位
   // 使用 createMemo 确保只在依赖变化时重新计算，且不含副作用
   const chatDisplayMessages = createMemo((): MessageWithParts[] => {
-    const accMsgs = chatAccumulator.messages();
+    const sid = currentChatSessionId();
+    const storeMsgs = getSessionMessages(sid);
     const legacy = chatMessages();
     const pending = pendingUserMsg();
 
@@ -707,19 +704,15 @@ const SoloAutopilot = () => {
       result.push(...legacy.map(legacyToMessageWithParts));
     }
 
-    // 累积器消息（实时会话）完全接管，不与 legacy 合并（防止重复显示）
-    // 同时对用户消息剥离注入的系统上下文（去除 systemPrompt/时间/知识库内容）
-    if (accMsgs.length > 0) {
-      result.push(...accMsgs.map(stripAccUserMsg));
-      // 命令场景：accumulator 已有旧消息但还没收到新的用户消息
-      // → 追加 pending 以保证用户看到自己发的命令
-      if (pending) {
-        result.push(pending);
-      }
+    // OpenWork 全局 store 消息（实时会话）
+    if (storeMsgs.length > 0) {
+      result.push(...storeMsgs.map(stripAccUserMsg));
+      // 命令场景：store 已有旧消息但还没收到新的用户消息 → 追加 pending
+      if (pending) result.push(pending);
       return result;
     }
 
-    // 乐观占位消息（仅在 accumulator 尚无消息时显示）
+    // 乐观占位消息（仅在 store 尚无消息时显示）
     if (pending) {
       result.push(pending);
     }
@@ -727,20 +720,18 @@ const SoloAutopilot = () => {
     return result;
   });
 
-  // 副作用独立到 createEffect：accumulator 收到与 pending 匹配的用户消息后清除乐观占位
-  // 改为精确匹配 pending 内容，避免已有旧 user 消息误触发清除（命令路径场景）
+  // 副作用独立到 createEffect：全局 store 收到与 pending 匹配的用户消息后清除乐观占位
   createEffect(() => {
-    const accMsgs = chatAccumulator.messages();
+    const sid = currentChatSessionId();
+    const storeMsgs = getSessionMessages(sid);
     const pending = pendingUserMsg();
     if (!pending) return;
     const pendingText = (pending.parts.find(p => p.type === 'text') as any)?.text ?? '';
-    // 检测 accumulator 是否已包含与 pending 内容匹配的新 user message
-    const hasMatchingUserMsg = accMsgs.some(m =>
+    const hasMatchingUserMsg = storeMsgs.some(m =>
       (m.info as any).role === 'user' &&
       m.parts.some(p => p.type === 'text' && ((p as any).text ?? '').includes(pendingText))
     );
-    // 或检测含系统上下文标记的消息（role 可能被误判为 assistant）
-    const hasSysCtxMsg = accMsgs.some(m =>
+    const hasSysCtxMsg = storeMsgs.some(m =>
       m.parts.some(p => p.type === 'text' && ((p as any).text ?? '').includes('## 当前系统时间'))
     );
     if (hasMatchingUserMsg || hasSysCtxMsg) {
@@ -758,32 +749,18 @@ const SoloAutopilot = () => {
     });
   });
 
-  // ── 命令执行流式完成检测 ─────────────────────────────────────────────────────────
-  // 当 accumulator.isStreaming 从 true→false 且 commandPending 为 true 时，关闭 chatLoading
-  // [FIX] 同时处理「流式已在 HTTP 等待期间完成」的场景：
-  //       commandPending=true 时 streaming 已为 false 且 accumulator 有 assistant 消息
-  let _prevStreamingForCmd = false;
+  // ── SDD-015: 基于 sessionStatus 的完成检测 ──────────────────────────────────
+  // OpenWork 全局 SSE 维护 sessionStatusById，当 session 进入 idle/completed 状态时释放 loading
   createEffect(() => {
-    const streaming = chatAccumulator.isStreaming();
-    const pending = commandPending();
-    // 正常路径：streaming true→false 转换
-    if (pending && _prevStreamingForCmd && !streaming) {
-      console.log('[solo-chat] 命令流式输出完成，关闭 chatLoading');
+    const sid = currentChatSessionId();
+    if (!sid || !chatLoading()) return;
+    const statusMap = openworkCtx?.sessionStatusById?.() ?? {};
+    const status = statusMap[sid] ?? 'idle';
+    if (status === 'idle' || status === 'completed') {
+      console.log(`[solo-chat] session ${sid} status=${status}，释放 chatLoading`);
       setChatLoading(false);
       setCommandPending(false);
     }
-    // 补偿路径：commandPending 在 streaming 已结束后设置（HTTP 等待期间 SSE 流已完成）
-    // 检测条件：pending 为 true、streaming 为 false、且 accumulator 已有 assistant 消息
-    if (pending && !_prevStreamingForCmd && !streaming) {
-      const accMsgs = chatAccumulator.messages();
-      const hasAssistantMsg = accMsgs.some(m => (m.info as any).role === 'assistant');
-      if (hasAssistantMsg) {
-        console.log('[solo-chat] 命令流式已在 HTTP 等待期间完成（补偿路径），关闭 chatLoading');
-        setChatLoading(false);
-        setCommandPending(false);
-      }
-    }
-    _prevStreamingForCmd = streaming;
   });
 
   // MessageList 工具步骤展开状态
@@ -946,11 +923,12 @@ const SoloAutopilot = () => {
       // 恢复历史时，让用户可继续在同一 session 中对话
       if (item.mode === 'chat') {
         setCurrentChatSessionId(item.id);
-        // 绑定累积器到已恢复的 session，后续对话消息通过 accumulator SSE 订阅
-        setChatAccSessionId(item.id);
+        // SDD-015: 确保全局 store 加载该 session 的消息
+        if (openworkCtx?.ensureSessionLoaded) {
+          void openworkCtx.ensureSessionLoaded(item.id);
+        }
       } else {
         setCurrentChatSessionId(null);
-        setChatAccSessionId(null);
       }
       setShowHistory(false);
     } catch (err) {
@@ -1169,10 +1147,11 @@ const SoloAutopilot = () => {
           sid = (result.data as { id: string } | undefined)?.id ?? null;
           if (sid) {
             setCurrentChatSessionId(sid);
-            setChatAccSessionId(sid);  // 触发 accumulator SSE 订阅
+            // SDD-015: 确保全局 store 加载该 session 的消息
+            if (openworkCtx?.ensureSessionLoaded) {
+              void openworkCtx.ensureSessionLoaded(sid);
+            }
             if (workDir) void saveMemoryMeta(workDir, sid, { tags: [], mode: 'chat' });
-            // 让出微任务 tick，使 accumulator 的 createEffect 启动 SSE 订阅
-            await Promise.resolve();
           }
         } catch (e) {
           console.error('[xingjing] session.create for command failed:', e);
@@ -1262,10 +1241,13 @@ const SoloAutopilot = () => {
       existingSessionId: currentChatSessionId() || undefined,
       owSessionStatusById: openworkCtx?.sessionStatusById,
       attachments,
-      // 关键：session 建立后触发累积器订阅
+      // 关键：session 建立后确保全局 store 加载
       onSessionCreated: (sid) => {
         setCurrentChatSessionId(sid);
-        setChatAccSessionId(sid);    // 触发 accumulator 的 createEffect → SSE 订阅
+        // SDD-015: 确保全局 store 加载该 session 消息（全局 SSE 已在接收事件）
+        if (openworkCtx?.ensureSessionLoaded) {
+          void openworkCtx.ensureSessionLoaded(sid);
+        }
         // 将 chat 模式记录到 sidecar，供历史列表正确判断模式
         if (workDir) void saveMemoryMeta(workDir, sid, { tags: [], mode: 'chat' });
       },
@@ -1479,9 +1461,9 @@ const SoloAutopilot = () => {
 
   // ── 渲染 ────────────────────────────────────────────────────────────────────────
 
-  // chat 模式：accumulator 有消息 OR 有乐观占位消息 OR 正在流式
+  // chat 模式：全局 store 有消息 OR 有乐观占位消息 OR 正在加载
   const hasChatContent = () =>
-    chatDisplayMessages().length > 0 || chatAccumulator.isStreaming() || chatLoading();
+    chatDisplayMessages().length > 0 || chatLoading();
 
   // dispatch 模式：session 已创建 OR 正在运行（与原始实现对齐，isRunning 是关键！）
   const hasDispatchSession = () => !!(
@@ -1535,7 +1517,6 @@ const SoloAutopilot = () => {
             setChatMessages([]);
             setChatMode('dispatch');
             setCurrentChatSessionId(null);
-            setChatAccSessionId(null);
             setPendingUserMsg(null);
             setShowHistory(false);
           }}
@@ -1644,7 +1625,6 @@ const SoloAutopilot = () => {
                   setChatMessages([]);
                   setChatMode('dispatch');
                   setCurrentChatSessionId(null);
-                  setChatAccSessionId(null);
                   setPendingUserMsg(null);
                 }}
                 title="新建会话"
@@ -1771,7 +1751,7 @@ const SoloAutopilot = () => {
           >
             <MessageList
               messages={chatDisplayMessages()}
-              isStreaming={chatAccumulator.isStreaming() || chatLoading()}
+              isStreaming={chatLoading()}
               developerMode={false}
               showThinking={true}
               expandedStepIds={chatExpandedStepIds()}

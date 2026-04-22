@@ -16,6 +16,7 @@ import { checkAuth, currentUser } from '../xingjing/services/auth-service';
 import AuthPage from '../xingjing/pages/auth';
 import type { OpenworkServerClient, OpenworkCommandItem, OpenworkAuditEntry } from '../lib/openwork-server';
 import type { createClient } from '../lib/opencode';
+import type { MessageWithParts } from '../types';
 
 // 团队版页面
 const Autopilot = lazy(() => import('../xingjing/pages/autopilot'));
@@ -65,6 +66,9 @@ interface XingjingNativePageProps {
   }>;
   /** 通过 OpenWork Provider Store 提交 API Key */
   submitProviderApiKey?: (providerId: string, apiKey: string) => Promise<string>;
+  // ── SDD-015：OpenWork 全局 session store 消息读取 ──
+  messagesBySessionId?: (id: string | null) => MessageWithParts[];
+  ensureSessionLoaded?: (id: string) => Promise<void>;
 }
 
 export default function XingjingNativePage(props: XingjingNativePageProps) {
@@ -160,6 +164,9 @@ export default function XingjingNativePage(props: XingjingNativePageProps) {
           deleteScheduledJob: (workspaceId: string, name: string) =>
             props.openworkServerClient!.deleteScheduledJob(workspaceId, name)
               .then(() => undefined).catch(() => undefined),
+          // SDD-015: 全局 store 消息读取
+          messagesBySessionId: props.messagesBySessionId,
+          ensureSessionLoaded: props.ensureSessionLoaded,
         }
       : undefined
   );

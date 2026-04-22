@@ -1,5 +1,6 @@
 import { createStore } from 'solid-js/store';
 import { createContext, useContext, ParentComponent, createEffect, createSignal, onMount } from 'solid-js';
+import type { MessageWithParts } from '../../types';
 import { PRD, prdList as initialPrds } from '../mock/prd';
 import { Task, taskList as initialTasks } from '../mock/tasks';
 import { BacklogItem, backlogItems as initialBacklog } from '../mock/sprint';
@@ -112,6 +113,14 @@ export interface XingjingOpenworkContext {
   // ── 新增：Scheduler API（定时任务）──
   listScheduledJobs?: (workspaceId: string) => Promise<any[]>;
   deleteScheduledJob?: (workspaceId: string, name: string) => Promise<any>;
+  // ── SDD-015：OpenWork 全局 session store 消息读取 ──
+  /** 从全局 store 获取指定 session 的消息列表（Part-based，响应式） */
+  messagesBySessionId?: (sessionId: string | null) => MessageWithParts[];
+  /**
+   * 确保指定 session 的消息已加载到全局 store（仅加载，不切换 selectedSessionId）。
+   * 幂等：已加载时立即返回，未加载时发起 HTTP 加载。
+   */
+  ensureSessionLoaded?: (sessionId: string) => Promise<void>;
 }
 
 interface AppState {

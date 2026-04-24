@@ -15,7 +15,7 @@ import {
   type KnowledgeEntry,
   type PrivateKnowledgeMeta,
 } from './knowledge-index';
-import { fileRead, fileList } from './opencode-client';
+import { fileRead, fileList } from './file-ops';
 
 // ─── 配置 ─────────────────────────────────────────────────────────────────────
 

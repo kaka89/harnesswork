@@ -505,7 +505,7 @@ export async function runAutopilotWithNativeAgents(
 ): Promise<void> {
   // 尝试使用原生 orchestrator agent
   try {
-    const { fileRead } = await import('./opencode-client');
+    const { fileRead } = await import('./file-ops');
     const orchestratorFile = await fileRead('.opencode/agents/orchestrator.md', opts.workDir);
     if (orchestratorFile) {
       // orchestrator.md 存在，直接用原生 agent

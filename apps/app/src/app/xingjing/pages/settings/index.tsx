@@ -1,16 +1,21 @@
 import { Component, createSignal, For, Show, createEffect, onMount } from 'solid-js';
 import { useSearchParams } from '@solidjs/router';
-import { Palette, Bot, Github, Clock, ShieldCheck, Sun, Moon, Save, FlaskConical, Zap, CheckCircle, AlertCircle, MessageSquare, X, Send, Loader, Package, Trash2, ChevronDown, ChevronUp, FolderOpen, User, Lock, AlertTriangle, Eye, EyeOff, Pencil, Wrench, RefreshCw, PlugZap, Plus, Download, Play } from 'lucide-solid';
+import { Palette, Bot, Github, Clock, ShieldCheck, Sun, Moon, Save, FlaskConical, Zap, CheckCircle, AlertCircle, MessageSquare, X, Send, Loader, Package, Trash2, ChevronDown, ChevronUp, FolderOpen, User, Lock, AlertTriangle, Eye, EyeOff, Pencil, Wrench, RefreshCw, PlugZap, Plus, Download, Play, Puzzle, Radio, FolderSearch, Folder, FileText, ArrowLeft } from 'lucide-solid';
+import { browseDir } from '../../services/xingjing-bridge';
+import PluginsView from '../../../pages/plugins';
+import AutomationsView from '../../../pages/automations';
+import IdentitiesView from '../../../pages/identities';
 import { useAppStore } from '../../stores/app-store';
 import { themeColors, chartColors } from '../../utils/colors';
 import { callAgent, setProviderAuth, gitSync, syncGitTokensToMcpConfig, type GitSyncOptions } from '../../services/opencode-client';
 import { saveGlobalSettings, loadGlobalSettings, saveProjectSettings, loadProjectSettings } from '../../services/file-store';
 import {
-  defaultLLMConfig, modelOptions, LLMConfig, ModelOption,
-  defaultGateNodes, GateNode,
-  builtinTools, type BuiltinToolDef,
-} from '../../mock/settings';
-import { MCP_QUICK_CONNECT, CHROME_DEVTOOLS_MCP_ID, GITHUB_MCP_ID, GITLAB_MCP_ID, type McpDirectoryInfo } from '../../../constants';
+  defaultLLMConfig, modelOptions,
+  defaultGateNodes,
+  builtinTools,
+} from '../../utils/defaults';
+import type { LLMConfig, ModelOption, GateNode, BuiltinToolDef } from '../../types/settings';
+import { MCP_QUICK_CONNECT, CHROME_DEVTOOLS_MCP_ID, GITHUB_MCP_ID, GITLAB_MCP_ID, SUGGESTED_PLUGINS, type McpDirectoryInfo } from '../../../constants';
 import { getAllGitTokens, setGitToken, clearGitToken, type XingjingProduct } from '../../services/product-store';
 import { deleteProductDir } from '../../../lib/tauri';
 import { isTauriRuntime } from '../../../utils';
@@ -3062,9 +3067,203 @@ const SkillsTab: Component = () => {
   );
 };
 
+// ── 内嵌 OpenWork 原生视图组件 ──
+
+const PluginsTab: Component = () => {
+  const { productStore } = useAppStore();
+  return (
+    <PluginsView
+      busy={false}
+      selectedWorkspaceRoot={productStore.activeProduct()?.workDir ?? ''}
+      canEditPlugins={true}
+      canUseGlobalScope={true}
+      suggestedPlugins={SUGGESTED_PLUGINS}
+    />
+  );
+};
+
+const AutomationsTab: Component = () => {
+  const { productStore, actions, openworkCtx } = useAppStore();
+  return (
+    <AutomationsView
+      busy={false}
+      selectedWorkspaceRoot={productStore.activeProduct()?.workDir ?? ''}
+      createSessionAndOpen={async (prompt?: string): Promise<string | undefined> => {
+        await actions.callAgent({ userPrompt: prompt ?? '' });
+        return undefined;
+      }}
+      newTaskDisabled={false}
+      schedulerInstalled={true}
+      canEditPlugins={true}
+      addPlugin={() => {}}
+      reloadWorkspaceEngine={openworkCtx?.reloadWorkspaceEngine ?? (async () => {})}
+      reloadBusy={openworkCtx?.reloadBusy ?? false}
+      canReloadWorkspace={openworkCtx?.canReloadWorkspace ?? false}
+      showHeader={false}
+    />
+  );
+};
+
+const IdentitiesTab: Component = () => {
+  const { openworkCtx, resolvedWorkspaceId, productStore } = useAppStore();
+  return (
+    <IdentitiesView
+      busy={false}
+      openworkServerStatus={openworkCtx?.serverStatus?.() === 'connected' ? 'connected' : 'disconnected'}
+      openworkServerUrl={openworkCtx?.openworkServerUrl ?? ''}
+      openworkServerClient={openworkCtx ? ({
+        // IdentitiesView 需要原始 OpenworkServerClient 实例。
+        // 通过 Bridge 的 listDir / readWorkspaceFile 等方法代理。
+        // 但 IdentitiesView 主要调用 readWorkspaceFile / writeWorkspaceFile / listIdentities。
+        // 这里传 null 作为降级，IdentitiesView 会在无 client 时显示"未连接"状态。
+      } as any) : null}
+      openworkReconnectBusy={openworkCtx?.openworkReconnectBusy ?? false}
+      reconnectOpenworkServer={openworkCtx?.reconnect ?? (async () => false)}
+      restartLocalServer={openworkCtx?.restartLocalServer ?? (async () => false)}
+      runtimeWorkspaceId={openworkCtx?.openworkRuntimeWorkspaceId ?? resolvedWorkspaceId()}
+      selectedWorkspaceRoot={productStore.activeProduct()?.workDir ?? ''}
+      developerMode={openworkCtx?.developerMode ?? false}
+      showHeader={false}
+    />
+  );
+};
+
+const FileBrowserTab: Component = () => {
+  const { productStore } = useAppStore();
+  const [entries, setEntries] = createSignal<Array<{ name: string; path: string; type: 'dir' | 'file'; ext?: string }>>([]);
+  const [currentPath, setCurrentPath] = createSignal('');
+  const [loading, setLoading] = createSignal(false);
+  const [error, setError] = createSignal<string | null>(null);
+
+  const loadDir = async (absPath: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await browseDir(absPath);
+      setEntries(result);
+      setCurrentPath(absPath);
+    } catch (e: any) {
+      setError(e?.message ?? '加载失败');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  onMount(() => {
+    const workDir = productStore.activeProduct()?.workDir;
+    if (workDir) loadDir(workDir);
+  });
+
+  const breadcrumbs = () => {
+    const p = currentPath();
+    if (!p) return [];
+    const parts = p.split('/').filter(Boolean);
+    return parts.map((part, i) => ({
+      label: part,
+      path: '/' + parts.slice(0, i + 1).join('/'),
+    }));
+  };
+
+  return (
+    <div class="space-y-3">
+      {/* 面包屑导航 */}
+      <div class="flex items-center gap-1 text-xs" style={{ color: themeColors.textMuted }}>
+        <button
+          class="hover:underline"
+          style={{ color: chartColors.primary }}
+          onClick={() => {
+            const workDir = productStore.activeProduct()?.workDir;
+            if (workDir) loadDir(workDir);
+          }}
+        >
+          根目录
+        </button>
+        <For each={breadcrumbs()}>
+          {(crumb) => (
+            <>
+              <span>/</span>
+              <button
+                class="hover:underline"
+                style={{ color: chartColors.primary }}
+                onClick={() => loadDir(crumb.path)}
+              >
+                {crumb.label}
+              </button>
+            </>
+          )}
+        </For>
+      </div>
+
+      {/* 加载状态 */}
+      <Show when={loading()}>
+        <div class="flex items-center gap-2 py-4 text-sm" style={{ color: themeColors.textMuted }}>
+          <Loader size={14} class="animate-spin" />
+          加载中...
+        </div>
+      </Show>
+
+      {/* 错误状态 */}
+      <Show when={error()}>
+        <div class="rounded-lg p-3 text-sm" style={{ color: chartColors.error, background: themeColors.surface }}>
+          {error()}
+        </div>
+      </Show>
+
+      {/* 文件列表 */}
+      <Show when={!loading() && !error()}>
+        <Show when={currentPath() !== (productStore.activeProduct()?.workDir ?? '')}>
+          <button
+            class="flex items-center gap-2 w-full text-left px-3 py-2 rounded-lg text-sm transition-colors hover:bg-gray-4/40"
+            style={{ color: themeColors.text }}
+            onClick={() => {
+              const parent = currentPath().replace(/\/[^\/]+$/, '') || '/';
+              loadDir(parent);
+            }}
+          >
+            <ArrowLeft size={14} style={{ color: themeColors.textMuted }} />
+            ..
+          </button>
+        </Show>
+        <div class="divide-y" style={{ 'border-color': themeColors.border }}>
+          <For each={entries().sort((a, b) => {
+            if (a.type === 'dir' && b.type !== 'dir') return -1;
+            if (a.type !== 'dir' && b.type === 'dir') return 1;
+            return a.name.localeCompare(b.name);
+          })}>
+            {(entry) => (
+              <button
+                class="flex items-center gap-2 w-full text-left px-3 py-2 text-sm transition-colors hover:bg-gray-4/40"
+                style={{ color: themeColors.text }}
+                onClick={() => { if (entry.type === 'dir') loadDir(entry.path); }}
+                disabled={entry.type !== 'dir'}
+              >
+                {entry.type === 'dir'
+                  ? <Folder size={14} style={{ color: chartColors.primary }} />
+                  : <FileText size={14} style={{ color: themeColors.textMuted }} />
+                }
+                <span class={entry.type === 'dir' ? 'font-medium' : ''}>{entry.name}</span>
+                <Show when={entry.ext}>
+                  <span class="text-xs ml-auto" style={{ color: themeColors.textMuted }}>{entry.ext}</span>
+                </Show>
+              </button>
+            )}
+          </For>
+        </div>
+        <Show when={entries().length === 0}>
+          <div class="text-center py-6 text-sm" style={{ color: themeColors.textMuted }}>
+            空目录
+          </div>
+        </Show>
+      </Show>
+    </div>
+  );
+};
+
 const renderTabIcon = (key: string) => {
   const map: Record<string, any> = {
-    theme: Palette, llm: Bot, git: Github, cron: Clock, gate: ShieldCheck, products: Package, profile: User, tools: Wrench, skills: Zap,
+    theme: Palette, llm: Bot, git: Github, cron: Clock, gate: ShieldCheck,
+    products: Package, profile: User, tools: Wrench, skills: Zap,
+    plugins: Puzzle, automations: Clock, identities: Radio, files: FolderSearch,
   };
   const I = map[key];
   return I ? <I size={14} class="inline mr-1" /> : null;
@@ -3074,6 +3273,10 @@ const TABS = [
   { key: 'llm',   label: '大模型配置' },
   { key: 'tools',  label: 'MCP 工具' },
   { key: 'skills', label: 'Skills' },
+  { key: 'plugins', label: '插件' },
+  { key: 'automations', label: '自动化' },
+  { key: 'identities', label: '消息通道' },
+  { key: 'files', label: '文件浏览' },
   { key: 'git',   label: 'Git 仓库' },
   { key: 'cron',  label: '定时任务' },
   { key: 'gate',  label: '节点门控' },
@@ -3117,6 +3320,10 @@ const Settings: Component = () => {
       <Show when={activeTab() === 'llm'}><LLMTab /></Show>
       <Show when={activeTab() === 'tools'}><McpToolsTab /></Show>
       <Show when={activeTab() === 'skills'}><SkillsTab /></Show>
+      <Show when={activeTab() === 'plugins'}><PluginsTab /></Show>
+      <Show when={activeTab() === 'automations'}><AutomationsTab /></Show>
+      <Show when={activeTab() === 'identities'}><IdentitiesTab /></Show>
+      <Show when={activeTab() === 'files'}><FileBrowserTab /></Show>
       <Show when={activeTab() === 'git'}><GitTab /></Show>
       <Show when={activeTab() === 'cron'}><CronTab /></Show>
       <Show when={activeTab() === 'gate'}><GateTab /></Show>

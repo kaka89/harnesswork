@@ -2255,7 +2255,7 @@ export default function App() {
       return;
     }
 
-    // F003: /mode-select、/xingjing-solid 是合法路由，不拦截
+    // F003: /mode-select、/xingjing 是合法路由，不拦截
     if (path === "/mode-select" || path.startsWith("/xingjing")) {
       return;
     }
@@ -2341,10 +2341,13 @@ export default function App() {
 
   return (
     <Switch>
-      <Match when={location.pathname === "/mode-select"}>
+      <Match when={location.pathname === "/mode-select" || location.pathname === "/" || location.pathname === ""}>
         <ModeSelectPage />
       </Match>
-      <Match when={location.pathname.startsWith("/xingjing-solid")}>
+      <Match when={location.pathname.startsWith("/xingjing")}>
+        <ExtensionsProvider store={extensionsStore}>
+          <AutomationsProvider store={automationsStore}>
+            <StatusToastsProvider store={statusToastsStore}>
         <XingjingNativePage
           openworkServerClient={openworkServerClient()}
           openworkServerStatus={() => {
@@ -2366,7 +2369,53 @@ export default function App() {
           submitProviderApiKey={submitProviderApiKey}
           messagesBySessionId={messagesBySessionId}
           ensureSessionLoaded={ensureSessionLoaded}
+          navigateTo={(target) => {
+            // 将星静 NavigationTarget 映射到 OpenWork 路由
+            if (typeof target === 'string') {
+              if (target.startsWith('settings/')) {
+                // 'settings/model' → goToSettings('model')
+                const tab = target.replace('settings/', '') as import('./types').SettingsTab;
+                goToSettings(tab);
+              } else {
+                // 'plugins'/'mcp' → extensions, 'identities' → messaging, etc.
+                const tabMap: Record<string, import('./types').SettingsTab> = {
+                  plugins: 'extensions',
+                  mcp: 'extensions',
+                  skills: 'skills',
+                  automations: 'automations',
+                  identities: 'messaging',
+                  extensions: 'extensions',
+                };
+                const tab = tabMap[target];
+                if (tab) goToSettings(tab);
+              }
+            } else if ('session' in target) {
+              goToSession(target.session);
+            } else if ('settings' in target) {
+              goToSettings(target.settings as import('./types').SettingsTab);
+            }
+          }}
+          xingjingUrl={() => {
+            if (typeof window === 'undefined') return null;
+            return window.location.origin + '/xingjing';
+          }}
+          reconnectOpenworkServer={reconnectOpenworkServer}
+          openworkServerBaseUrl={openworkServerBaseUrl}
+          updateOpenworkServerSettings={updateOpenworkServerSettings}
+          currentOpenworkToken={() => openworkServerSettings().token ?? null}
+          // ── 内嵌 OpenWork 原生视图所需字段 ──
+          openworkServerUrl={openworkServerUrl()}
+          openworkReconnectBusy={openworkReconnectBusy()}
+          restartLocalServer={restartLocalServer}
+          runtimeWorkspaceId={runtimeWorkspaceId()}
+          developerMode={developerMode()}
+          reloadWorkspaceEngine={reloadWorkspaceEngineAndResume}
+          reloadBusy={reloadBusy()}
+          canReloadWorkspace={canReloadWorkspace()}
         />
+            </StatusToastsProvider>
+          </AutomationsProvider>
+        </ExtensionsProvider>
       </Match>
       <Match when={true}>
     <OpenworkServerProvider store={openworkServerStore}>

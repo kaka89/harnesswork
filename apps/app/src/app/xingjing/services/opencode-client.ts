@@ -2,669 +2,65 @@
  * 星静 OpenCode 客户端封装
  *
  * 复用 OpenWork 主应用已有的 @opencode-ai/sdk 连接，
- * 为星静各功能模块提供统一的 AI 能力 + 本地文件读写能力。
+ * 为星静各功能模块提供统一的 AI 能力。
  *
  * HeyAPI SDK 参数传递约定：query/path 参数均展平到顶层 options 对象，
  * 例如：client.file.list({ path: '/foo', directory: '/bar' })
  */
 
 import { createClient, waitForHealthy } from '../../lib/opencode';
-import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 import { isTauriRuntime } from '../../utils';
-import type { ComposerAttachment } from '../../types';
+import type { ComposerAttachment, MessageWithParts } from '../../types';
 
-/** 解析不受 CORS 限制的 fetch（Tauri 环境用 tauriFetch，否则用浏览器 fetch） */
-const safeFetch = (): typeof globalThis.fetch =>
-  isTauriRuntime() ? (tauriFetch as unknown as typeof globalThis.fetch) : globalThis.fetch;
-
-/** 缓存的用户主目录路径（Tauri 环境下惰性加载） */
-let _cachedHomeDir: string | null = null;
-
-/**
- * 展开路径中的 ~ 符号为实际用户主目录。
- * Tauri 的 @tauri-apps/plugin-fs 不支持 ~ 自动展开，
- * 若直接传入会在当前工作目录下创建名为 "~" 的字面量目录。
- */
-async function expandTildePath(p: string): Promise<string> {
-  if (!p.startsWith('~')) return p;
-  if (!_cachedHomeDir) {
-    try {
-      const { homeDir } = await import('@tauri-apps/api/path');
-      _cachedHomeDir = (await homeDir()).replace(/\/+$/, '');
-    } catch {
-      // 非 Tauri 环境或 API 不可用，原样返回
-      return p;
-    }
-  }
-  // ~/foo → /Users/xxx/foo  |  ~ → /Users/xxx
-  return p === '~' ? _cachedHomeDir : `${_cachedHomeDir}${p.slice(1)}`;
-}
 
 // ─── Client 管理（OpenWork 注入）────────────────────────────────────────────
 
 let _sharedClient: ReturnType<typeof createClient> | null = null;
-let _localClient: ReturnType<typeof createClient> | null = null;
-let _baseUrl = 'http://127.0.0.1:4096';
 let _directory = '';
-let _username = '';
-let _password = '';
-
-// ─── OpenWork 文件操作注入 ─────────────────────────────────────────
-
-let _owFileOps: {
-  read: (wsId: string, path: string) => Promise<{ content: string } | null>;
-  write: (wsId: string, payload: { path: string; content: string; force?: boolean }) => Promise<boolean>;
-  /** 目录列表（OpenWork Server readdir），接受绝对路径 */
-  list?: (absPath: string) => Promise<Array<{ name: string; path: string; type: 'dir' | 'file'; ext?: string }> | null>;
-} | null = null;
-let _workspaceId: string | null = null;
 
 /**
  * 由 app-store 在初始化后注入 shared client。
- * 优先使用 OpenWork 注入的 client，未注入时自动降级到本地 OpenCode 服务。
  */
 export function setSharedClient(client: ReturnType<typeof createClient> | null) {
   _sharedClient = client;
-  // 注入新 client 时清除本地兜底实例，避免后续误用
-  if (client) _localClient = null;
-}
-
-/**
- * 注入 OpenWork 文件操作能力。
- * 由 AppStoreProvider 在 OpenWork 上下文和 workspace 解析完成后调用。
- */
-export function setOpenworkFileOps(
-  ops: typeof _owFileOps,
-  workspaceId: string | null,
-) {
-  _owFileOps = ops;
-  _workspaceId = workspaceId;
-  // 文件操作能力变更时重置通道偏好，确保新环境下重新探测最优通道
-  _preferredReadLevel = 0;
-  _preferredListLevel = 0;
 }
 
 /** 断线重试退避时间（ms）：1s / 2s / 5s */
 const RETRY_DELAYS = [1000, 2000, 5000] as const;
-
-/** SSE 事件流无活动超时（ms）：连接存活检测——包括心跳在内的所有事件均证明连接正常。
- *  若此时间内无任何 SSE 事件（含心跳），视为连接已断，触发 sse-fail 重试。
- *  内容进度由独立的 contentIdleTimer 检测。 */
-const SSE_INACTIVITY_TIMEOUT_MS = 120_000;
-
-/** 首事件等待超时（ms）：prompt 发送后若 60 秒内未收到任何 SSE 事件，
- *  高概率为 API Key 未配置 / 模型不可用等配置问题，提前报错 */
-const SSE_FIRST_EVENT_TIMEOUT_MS = 60_000;
-
-/** 内容空闲超时（ms）：已有累积内容后，若指定时间内无新内容增长，
- *  视为模型已完成输出但 OpenCode 未发 completion 信号，直接判定完成。
- *  此值为兼容模型 “思考后追加内容” 场景，设置较长以避免误判完成。
- *  正常情况下 owSessionStatusById 会更早检测到完成。 */
-const CONTENT_IDLE_TIMEOUT_MS = 15_000;
-
-/** 首次内容到达后延迟多久开始检柡（ms）：避免模型还在生成时过早检测 */
-const SESSION_POLL_START_DELAY_MS = 1_000;
 
 /** 异步等待指定毫秒 */
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /**
  * 设置当前工作目录（产品切换时调用）。
- * @param baseUrl 可选，同时更新 baseUrl（用于 SSE EventSource 和裸 fetch 兜底）
  */
-export function setWorkingDirectory(directory: string, baseUrl?: string, auth?: { username?: string; password?: string }) {
+export function setWorkingDirectory(directory: string): void {
   _directory = directory;
-  if (baseUrl) _baseUrl = baseUrl;
-  if (auth) {
-    _username = auth.username ?? '';
-    _password = auth.password ?? '';
-  }
-  // 工作目录变更时重置通道偏好，确保新工作区从最优通道探测开始
-  _preferredReadLevel = 0;
-  _preferredListLevel = 0;
-  // auth 变更后需重建 client
-  _localClient = null;
-}
-
-/**
- * 重置文件操作通道偏好到 Level 0，使下一轮文件操作重新从最优通道开始探测。
- * 用于页面刷新等场景：初始加载期间各并发调用可能将 Level 提升到 1/2/3，
- * 刷新时需要重置以确保 Level 0（OpenWork readdir）被优先尝试。
- */
-export function resetChannelPreferences(): void {
-  _preferredReadLevel = 0;
-  _preferredListLevel = 0;
 }
 
 /**
  * 获取 OpenCode Client。
- * 优先返回 OpenWork 注入的 shared client；
- * 若未注入，自动降级到本地 OpenCode 服务（localhost:4096）。
+ * 返回 OpenWork 注入的 shared client，未注入时抛异常。
  */
 export function getXingjingClient(): ReturnType<typeof createClient> {
-  if (_sharedClient) {
-    console.debug('[xingjing] 使用 OpenWork 注入的 shared client');
-    return _sharedClient;
+  if (!_sharedClient) {
+    throw new Error('[xingjing] OpenWork Client 未注入，无法使用 AI 能力');
   }
-  // 降级：本地 OpenCode 服务（lazy 创建）
-  if (!_localClient) {
-    const auth = _username && _password ? { username: _username, password: _password } : undefined;
-    console.warn('[xingjing] OpenWork Client 未注入，降级到本地 OpenCode:', _baseUrl, auth ? '(带 auth)' : '(无 auth)');
-    _localClient = createClient(_baseUrl, _directory || undefined, auth);
-  }
-  return _localClient;
-}
-
-/**
- * 获取 Basic Auth 头（供外部诊断/直接调用使用）
- */
-export function getAuthHeader(): string | null {
-  if (!_username || !_password) return null;
-  try {
-    return `Basic ${btoa(`${_username}:${_password}`)}`;
-  } catch {
-    return null;
-  }
+  return _sharedClient;
 }
 
 /**
  * 检查 client 是否已就绪（用于 UI 条件渲染）
  */
 export function isClientReady(): boolean {
-  return _sharedClient !== null || _localClient !== null;
+  return _sharedClient !== null;
 }
 
-/**
- * 重置本地 OpenCode 客户端实例。
- * 用于自动重连：清空 _localClient 后下次 getXingjingClient() 会以最新 _baseUrl 重建实例。
- * Tauri 环境下可配合 engineInfo 先更新 _baseUrl，再调用此函数。
- */
-export async function refreshLocalClient(): Promise<void> {
-  // OpenWork shared client 模式无需重置
-  if (_sharedClient) return;
-  // Tauri 运行时：尝试从 engineInfo 获取最新端口/认证信息
-  if (isTauriRuntime()) {
-    try {
-      const { engineInfo } = await import('../../lib/tauri');
-      const info = await engineInfo();
-      if (info.running && info.baseUrl) {
-        _baseUrl = info.baseUrl.replace(/\/$/, '');
-        _username = info.opencodeUsername?.trim() ?? '';
-        _password = info.opencodePassword?.trim() ?? '';
-      }
-    } catch {
-      // 降级：保持当前 _baseUrl 和 auth
-    }
-  }
-  // 清空本地实例，下次调用 getXingjingClient() 时以新 _baseUrl 重建
-  _localClient = null;
-}
 
-// ─── 文件 API ───────────────────────────────────────────────
-
-// ─── 文件通道自适应优化 ─────────────────────────────────────────
-// 记录本次运行中已知最优通道级别，后续调用直接从该级别开始，
-// 跳过已知失败的高层级，大幅减少每个文件操作的等待时间。
-// 工作目录切换时自动重置（setWorkingDirectory / setOpenworkFileOps）。
-
-/** fileRead 最优通道（0=OpenWork API, 1=SDK, 2=tauriFetch, 3=Tauri native） */
-let _preferredReadLevel: 0 | 1 | 2 | 3 = 0;
-/** fileList 最优通道（0=OpenWork readdir, 1=SDK, 2=tauriFetch, 3=Tauri native） */
-let _preferredListLevel: 0 | 1 | 2 | 3 = 0;
-
-/** 网络层文件操作超时（ms）：Level 0-2 最多等待此时间才降级，避免 TCP 连接超时阻塞扫描 */
-const FILE_OP_NETWORK_TIMEOUT_MS = 2000;
-
-/** 包裹 Promise，超时后自动 reject */
-function withFileTimeout<T>(p: Promise<T>): Promise<T> {
-  return Promise.race([
-    p,
-    new Promise<T>((_, rej) =>
-      setTimeout(() => rej(new Error('file op timeout')), FILE_OP_NETWORK_TIMEOUT_MS),
-    ),
-  ]);
-}
-
-export interface FileNode {
-  name: string;
-  path: string;
-  absolute: string;
-  type: 'file' | 'directory';
-  ignored: boolean;
-}
-
-export interface FileContent {
-  type: 'text';
-  content: string;
-}
-
-/**
- * 列出目录下的文件和子目录
- * 注意：HeyAPI SDK 将 query 参数展平到 options 顶层
- */
-export async function fileList(
-  path: string,
-  directory?: string,
-): Promise<FileNode[]> {
-  // ~ 路径直达 Tauri native fs（Levels 0-2 不支持 ~ 展开）
-  if (path.startsWith('~')) {
-    const nativeResult = await tauriNativeFileList(path, directory);
-    return nativeResult ?? [];
-  }
-
-  // Level 0: OpenWork Server readdir API
-  if (_preferredListLevel <= 0 && _owFileOps?.list) {
-    try {
-      const dir = directory ?? (_directory || '');
-      // Fix: 当 path 已经是绝对路径时，用 toWorkspaceRelativePath 先转为相对路径，
-      // 再与 dir 拼接，避免 workDir 被重复拼接（如 /solo007//solo007/iterations）。
-      const relPath = dir ? toWorkspaceRelativePath(path) : path;
-      const absPath = dir ? `${dir.replace(/\/$/, '')}/${relPath.replace(/^\//, '')}` : path;
-      const entries = await withFileTimeout(_owFileOps.list(absPath));
-      if (entries !== null && entries !== undefined) {
-        // entries 为合法数组（包括空数组 = 目录为空），直接返回
-        console.debug('[xingjing] fileList 通过 OpenWork readdir 成功, path:', path, 'count:', entries.length);
-        return entries.map(entry => ({
-          name: entry.name,
-          path: `${path.replace(/\/$/, '')}/${entry.name}`,
-          absolute: entry.path,
-          type: (entry.type === 'dir' ? 'directory' : 'file') as 'file' | 'directory',
-          ignored: entry.name.startsWith('.'),
-        }));
-      }
-      // entries 为 null: readdir 内部异常被 .catch(() => null) 吞掉，降级到下一通道
-      console.warn('[xingjing] fileList OpenWork readdir 返回 null, 降级到 Level 1, path:', path);
-      if (_preferredListLevel === 0) _preferredListLevel = 1;
-    } catch (e) {
-      console.warn('[xingjing] fileList OpenWork readdir 失败:', (e as Error)?.message ?? e);
-      if (_preferredListLevel === 0) _preferredListLevel = 1;
-    }
-  }
-
-  // Level 1: OpenCode SDK 客户端
-  if (_preferredListLevel <= 1) {
-    try {
-      const client = getXingjingClient();
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      // Fix: 当 path 已是绝对路径时，不附加 _directory，避免后端收到双重路径
-      const listDir = directory ?? (path.startsWith('/') ? undefined : (_directory || undefined));
-      const result = await withFileTimeout((client.file.list as any)({
-        path,
-        directory: listDir,
-      })) as any;
-      if (result.data) {
-        _preferredListLevel = 1;
-        return result.data as FileNode[];
-      }
-      // SDK 正常响应但无数据（如目录不存在）→ 通道正常，不提升级别
-      // 仅 catch 中的超时/网络错误才代表通道故障
-      _preferredListLevel = 1;
-      console.debug('[xingjing] fileList SDK: no data for path:', path, 'error:', (result as any)?.error?.name);
-    } catch (e) {
-      console.warn('[xingjing] fileList SDK failed:', (e as Error)?.message ?? e);
-      if (_preferredListLevel <= 1) _preferredListLevel = 2;
-    }
-  }
-
-  // Level 2: tauriFetch 直连 OpenCode（绕过 CORS）
-  if (_preferredListLevel <= 2) {
-    try {
-      const url = new URL('/file', _baseUrl);
-      url.searchParams.set('path', path);
-      // Fix: 当 path 已是绝对路径时，不附加 _directory，避免后端收到双重路径
-      const dir = directory ?? (path.startsWith('/') ? '' : (_directory || ''));
-      if (dir) url.searchParams.set('directory', dir);
-      const listHeaders: Record<string, string> = {};
-      const listAuth = getAuthHeader();
-      if (listAuth) listHeaders['Authorization'] = listAuth;
-      const resp = await withFileTimeout(safeFetch()(url.toString(), { headers: listHeaders }));
-      if (resp.ok) {
-        _preferredListLevel = 2;
-        return (await resp.json()) as FileNode[];
-      }
-      // HTTP 错误响应（如 404）→ 通道正常，不提升级别
-      _preferredListLevel = 2;
-      console.debug('[xingjing] fileList tauriFetch: HTTP', resp.status, 'for path:', path);
-    } catch (e) {
-      console.warn('[xingjing] fileList tauriFetch 异常:', (e as Error)?.message ?? e);
-      if (_preferredListLevel <= 2) _preferredListLevel = 3;
-    }
-  }
-
-  // Level 3: Tauri 原生文件系统（终极兜底）
-  const nativeResult = await tauriNativeFileList(path, directory);
-  if (nativeResult !== null) {
-    console.debug('[xingjing] fileList 通过 Tauri native fs 成功, path:', path, 'count:', nativeResult.length);
-    _preferredListLevel = 3;
-    return nativeResult;
-  }
-
-  console.warn('[xingjing] fileList 所有通道均失败, path:', path);
-  return [];
-}
-
-/**
- * 将绝对路径转换为相对于工作目录的相对路径。
- * 如果 path 以 _directory + '/' 开头，则去掉前缀；否则原样返回。
- * 用于修正向 OpenWork Server API 传递绝对路径导致的路径重复 Bug。
- */
-function toWorkspaceRelativePath(path: string): string {
-  if (_directory && path.startsWith(_directory + '/')) {
-    return path.slice(_directory.length + 1);
-  }
-  return path;
-}
-
-// ─── SDD-008: 文件类型智能路由 + Tauri native fs 兜底 ─────────────────────────
-
-/** 服务端当前支持的文件扩展名（与 server.ts SUPPORTED_TEXT_EXTENSIONS 保持同步） */
-const SERVER_SUPPORTED_EXTENSIONS = new Set([
-  '.md', '.mdx', '.markdown', '.yaml', '.yml', '.json',
-]);
-
-/**
- * 判断文件路径是否为 Server API 支持的类型。
- * 用于 fileRead/fileWrite 智能路由：不支持的类型直接跳过 Level 1，避免无意义的 400 错误。
- */
-function isServerSupportedFile(path: string): boolean {
-  const dotIdx = path.lastIndexOf('.');
-  if (dotIdx < 0) return false;
-  return SERVER_SUPPORTED_EXTENSIONS.has(path.slice(dotIdx).toLowerCase());
-}
-
-/**
- * 判断路径是否为 workspace 相对路径（非全局/绝对路径）。
- * SDD-011：OpenWork Server API 只能读写 workspace 内的相对路径。
- * 以 ~ 或 / 开头的路径（全局配置文件、绝对路径）必须绕过 Level 0，
- * 否则会在 workspace 目录下创建字面量 "~/" 脏目录，并触发 _preferredReadLevel 被 bump。
- */
-function isWorkspaceRelativePath(path: string): boolean {
-  return !path.startsWith('~') && !path.startsWith('/');
-}
-
-/**
- * Level 4 兜底：通过 Tauri 原生文件系统 API 直接读取本地文件。
- * 无网络依赖，Tauri 环境下始终可用。
- * 非 Tauri 环境（浏览器）跳过此层。
- */
-async function tauriNativeFileRead(
-  path: string,
-  directory?: string,
-): Promise<string | null> {
-  if (!isTauriRuntime()) return null;
-  try {
-    const { readTextFile } = await import('@tauri-apps/plugin-fs');
-    const raw = directory ? `${directory}/${path}` : path;
-    const fullPath = await expandTildePath(raw);
-    const content = await readTextFile(fullPath);
-    return content || null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Level 3 兜底（fileList）：通过 Tauri 原生文件系统列举目录内容。
- * 将 Tauri readDir 结果适配为 FileNode[] 格式。
- * SDD-009 新增。
- */
-async function tauriNativeFileList(
-  path: string,
-  directory?: string,
-): Promise<FileNode[] | null> {
-  if (!isTauriRuntime()) return null;
-  try {
-    const { readDir } = await import('@tauri-apps/plugin-fs');
-    const raw = directory ? `${directory}/${path}` : path;
-    const fullPath = await expandTildePath(raw);
-    const entries = await readDir(fullPath);
-    return entries
-      .filter(e => e.name != null)
-      .map(entry => ({
-        name: entry.name!,
-        path: `${path.replace(/\/$/, '')}/${entry.name}`,
-        absolute: `${fullPath.replace(/\/$/, '')}/${entry.name}`,
-        type: (entry.isDirectory ? 'directory' : 'file') as 'file' | 'directory',
-        ignored: entry.name!.startsWith('.'),
-      }));
-  } catch (e) {
-    console.warn('[xingjing] tauriNativeFileList 失败, path:', path, 'error:', (e as Error)?.message ?? e);
-    return null;
-  }
-}
-
-/**
- * Level 3（fileWrite 兜底）：通过 Tauri 原生文件系统写入本地文件。
- */
-async function tauriNativeFileWrite(
-  path: string,
-  content: string,
-  directory?: string,
-): Promise<boolean> {
-  if (!isTauriRuntime()) return false;
-  try {
-    const { writeTextFile, mkdir } = await import('@tauri-apps/plugin-fs');
-    const raw = directory ? `${directory}/${path}` : path;
-    const fullPath = await expandTildePath(raw);
-    // 确保父目录存在
-    const lastSlash = fullPath.lastIndexOf('/');
-    if (lastSlash > 0) {
-      await mkdir(fullPath.slice(0, lastSlash), { recursive: true }).catch(() => {/* 目录已存在 */});
-    }
-    await writeTextFile(fullPath, content);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * 读取文件内容（文本）
- * 优先使用 OpenWork Server API，回退到 OpenCode file API，终极兜底 Tauri native fs。
- * SDD-008: 增加智能路由（非支持类型跳过 Level 1）+ Level 4 Tauri 原生文件系统。
- */
-export async function fileRead(
-  path: string,
-  directory?: string,
-): Promise<string | null> {
-  // ~ 路径直达 Tauri native fs（Levels 0-2 不支持 ~ 展开）
-  // 与 fileList 保持一致：提前返回，不修改 _preferredReadLevel，
-  // 避免并发 ~ 路径读取将全局通道偏好提升到 Level 3，
-  // 导致 workspace 相对路径的 fileRead 跳过 Levels 0-2 而全部失败。
-  if (path.startsWith('~')) {
-    return tauriNativeFileRead(path, directory);
-  }
-
-  // 1. 优先：OpenWork 文件 API（仅当 workspace 与目标目录匹配时使用）
-  // 当调用方显式指定了 directory 且与当前 workspace 不一致时，
-  // OpenWork API 会从错误的 workspace 读取，必须跳过
-  const owApiAvailable = _owFileOps && _workspaceId
-    && isWorkspaceRelativePath(path)
-    && isServerSupportedFile(path)
-    && (!directory || !_directory || directory === _directory);
-
-  if (_preferredReadLevel <= 0 && owApiAvailable) {
-    try {
-      const relativePath = directory ? path : toWorkspaceRelativePath(path);
-      console.debug('[xingjing] fileRead 尝试 OpenWork API, path:', relativePath);
-      const result = await withFileTimeout(_owFileOps!.read(_workspaceId!, relativePath));
-      if (result?.content !== undefined) return result.content;
-      console.warn('[xingjing] fileRead OpenWork API 返回空内容, path:', relativePath);
-    } catch (e) {
-      console.warn('[xingjing] fileRead OpenWork API 失败:', (e as Error)?.message ?? e);
-      if (_preferredReadLevel === 0) _preferredReadLevel = 1;
-    }
-  } else if (owApiAvailable && _preferredReadLevel > 0) {
-    console.debug('[xingjing] fileRead 跳过 OpenWork API（已知更优通道 Level', _preferredReadLevel, '）, path:', path);
-  } else if (_owFileOps && _workspaceId && !owApiAvailable) {
-    console.debug('[xingjing] fileRead 跳过 OpenWork API（文件类型不支持或 workspace 不匹配）, path:', path);
-  }
-
-  // 2. OpenCode SDK 客户端
-  if (_preferredReadLevel <= 1) {
-    try {
-      const client = getXingjingClient();
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      // Fix: 当 path 已是绝对路径时，不附加 _directory，避免后端收到双重路径
-      const readDir = directory ?? (path.startsWith('/') ? undefined : (_directory || undefined));
-      const result = await withFileTimeout((client.file.read as any)({
-        path,
-        directory: readDir,
-      })) as any;
-      if (result.data) {
-        _preferredReadLevel = 1;
-        return (result.data as FileContent).content;
-      }
-      // SDK 正常响应但无数据（如文件不存在）→ 通道正常，不提升级别
-      // 仅 catch 中的超时/网络错误才代表通道故障
-      _preferredReadLevel = 1;
-      console.debug('[xingjing] fileRead SDK: no content for path:', path, 'error:', (result as any)?.error?.name);
-    } catch (e) {
-      console.warn('[xingjing] fileRead SDK failed:', (e as Error)?.message ?? e);
-      if (_preferredReadLevel <= 1) _preferredReadLevel = 2;
-    }
-  }
-
-  // 3. 兜底：通过 tauriFetch 直连 OpenCode（绕过 CORS）
-  if (_preferredReadLevel <= 2) {
-    try {
-      const url = new URL('/file/content', _baseUrl);
-      url.searchParams.set('path', path);
-      // Fix: 当 path 已是绝对路径时，不附加 _directory，避免后端收到双重路径
-      const dir = directory ?? (path.startsWith('/') ? '' : (_directory || ''));
-      if (dir) url.searchParams.set('directory', dir);
-      const readHeaders: Record<string, string> = {};
-      const readAuth = getAuthHeader();
-      if (readAuth) readHeaders['Authorization'] = readAuth;
-      const resp = await withFileTimeout(safeFetch()(url.toString(), { headers: readHeaders }));
-      if (resp.ok) {
-        const data = await resp.json();
-        _preferredReadLevel = 2;
-        return (data as FileContent).content ?? null;
-      }
-      // HTTP 错误响应（如 404）→ 通道正常，不提升级别
-      _preferredReadLevel = 2;
-      console.debug('[xingjing] fileRead tauriFetch: HTTP', resp.status, 'for path:', path);
-    } catch (e) {
-      console.warn('[xingjing] fileRead tauriFetch 异常:', (e as Error)?.message ?? e);
-      if (_preferredReadLevel <= 2) _preferredReadLevel = 3;
-    }
-  }
-
-  // 4. 终极兜底：Tauri 原生文件系统（SDD-008 Level 4）
-  const nativeResult = await tauriNativeFileRead(path, directory);
-  if (nativeResult !== null) {
-    console.debug('[xingjing] fileRead 通过 Tauri native fs 成功, path:', path);
-    _preferredReadLevel = 3;
-    return nativeResult;
-  }
-
-  console.warn('[xingjing] fileRead 所有通道均失败, path:', path);
-  return null;
-}
-
-/**
- * 写入文件内容
- * 优先使用 OpenWork Server API，回退到裸 fetch，终极兜底 Tauri native fs。
- * SDD-008: 增加智能路由 + Level 3 Tauri 原生文件系统兜底。
- */
-export async function fileWrite(
-  path: string,
-  content: string,
-  directory?: string,
-): Promise<boolean> {
-  // 1. 优先使用 OpenWork Server API（仅当 workspace 与目标目录匹配时）
-  const owWriteAvailable = _owFileOps && _workspaceId
-    && isWorkspaceRelativePath(path)
-    && isServerSupportedFile(path)
-    && (!directory || !_directory || directory === _directory);
-  if (owWriteAvailable) {
-    try {
-      return await _owFileOps!.write(_workspaceId!, { path: toWorkspaceRelativePath(path), content });
-    } catch (e) {
-      console.warn('[xingjing] fileWrite OpenWork API 失败:', (e as Error)?.message ?? e);
-    }
-  }
-  // 2. 回退：通过 tauriFetch 直连 OpenCode（绕过 CORS）
-  // SDD-011 补充：~ 开头的用户主目录路径跳过 OpenCode（Go 不展开 ~），直达 Tauri native fs
-  if (!path.startsWith('~')) {
-    const dir = directory ?? _directory;
-    try {
-      const url = `${_baseUrl}/file/content`;
-      const body = { path, content, ...(dir ? { directory: dir } : {}) };
-      const writeHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
-      const writeAuth = getAuthHeader();
-      if (writeAuth) writeHeaders['Authorization'] = writeAuth;
-      const resp = await safeFetch()(url, {
-        method: 'POST',
-        headers: writeHeaders,
-        body: JSON.stringify(body),
-      });
-      if (resp.ok) return true;
-      console.warn('[xingjing] fileWrite tauriFetch 失败, status:', resp.status);
-    } catch (e) {
-      console.warn('[xingjing] fileWrite tauriFetch 异常:', (e as Error)?.message ?? e);
-    }
-  }
-  // 3. 终极兜底：Tauri 原生文件系统（SDD-008）
-  const nativeOk = await tauriNativeFileWrite(path, content, directory);
-  if (nativeOk) {
-    console.debug('[xingjing] fileWrite 通过 Tauri native fs 成功, path:', path);
-    return true;
-  }
-  console.warn('[xingjing] fileWrite 所有通道均失败, path:', path);
-  return false;
-}
-
-/**
- * 删除文件（通过 DELETE /file/content 或降级）
- */
-export async function fileDelete(
-  path: string,
-  directory?: string,
-): Promise<boolean> {
-  // ~ 路径跳过 OpenCode，直达 Tauri native fs
-  if (!path.startsWith('~')) {
-    const dir = directory ?? _directory;
-    try {
-      const url = `${_baseUrl}/file/content`;
-      const delHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
-      const delAuth = getAuthHeader();
-      if (delAuth) delHeaders['Authorization'] = delAuth;
-      const resp = await safeFetch()(url, {
-        method: 'DELETE',
-        headers: delHeaders,
-        body: JSON.stringify({ path, ...(dir ? { directory: dir } : {}) }),
-      });
-      if (resp.ok) return true;
-      console.warn('[xingjing] fileDelete OpenCode DELETE 失败, status:', resp.status);
-    } catch {
-      console.warn('[xingjing] fileDelete OpenCode DELETE 异常');
-    }
-  }
-  // Tauri native fallback
-  return tauriNativeFileDelete(path, directory);
-}
-
-/**
- * Tauri 原生文件删除（~ 路径降级兜底）
- */
-async function tauriNativeFileDelete(
-  path: string,
-  directory?: string,
-): Promise<boolean> {
-  if (!isTauriRuntime()) return false;
-  try {
-    const { remove } = await import('@tauri-apps/plugin-fs');
-    const raw = directory ? `${directory}/${path}` : path;
-    const fullPath = await expandTildePath(raw);
-    await remove(fullPath);
-    return true;
-  } catch (e) {
-    console.warn('[xingjing] tauriNativeFileDelete 失败, path:', path, 'error:', (e as Error)?.message ?? e);
-    return false;
-  }
-}
+// ─── 文件操作已迁移到 file-ops.ts ──────────────────────────────────────────────
+// 文件操作（fileList/fileRead/fileWrite/fileDelete）已由 file-ops.ts + xingjing-bridge.ts 替代。
+// discoverAllSkills 等函数仍需文件操作，从 file-ops.ts 导入。
+import { fileList, fileRead } from './file-ops';
 
 // ─── Session API ─────────────────────────────────────────────────────────────
 
@@ -997,12 +393,6 @@ export async function discoverAllSkills(workDir: string): Promise<{
 
 // ─── 高阶 Agent 调用 ──────────────────────────────────────────────────────────
 
-/**
- * 获取当前 OpenCode 服务器地址（用于 SSE 订阅）
- */
-export function getBaseUrl(): string {
-  return _baseUrl;
-}
 
 // ─── 附件工具函数（对齐 OpenWork actions-store.ts fileToDataUrl）────────────────
 
@@ -1043,7 +433,7 @@ export interface CallAgentOptions {
   recallContext?: string;
   /** 工具权限请求回调（用户决定是否授权）。
    *  不提供时沿用自动拒绝兜底行为。
-   *  提供时 SSE 循环将暂停等待 resolve 后继续。*/
+   *  提供时将在 store 轮询中检测 pending permissions 并触发回调。*/
   onPermissionAsked?: (params: {
     permissionId: string;
     sessionId: string;
@@ -1053,11 +443,20 @@ export interface CallAgentOptions {
     resolve: (action: 'once' | 'always' | 'reject') => void;
   }) => void;
   /**
-   * OpenWork 全局 SSE 维护的 session 状态映射（可选）。
-   * 提供时用于 L2 完成检测：监听 status[sessionId] 变为 'idle'，
-   * 替代原来的 REST 轮询机制，零延迟、零网络请求。
+   * OpenWork 全局 SSE 维护的 session 状态映射（必需）。
+   * 用于完成检测：监听 status[sessionId] 变为 'idle'，零网络请求。
    */
   owSessionStatusById?: () => Record<string, string>;
+  /**
+   * 从 OpenWork 全局 store 获取指定 session 的消息列表（必需）。
+   * 替代独立 SSE 事件流，由 OpenWork 全局 SSE 维护。
+   */
+  owMessagesBySessionId?: (sid: string | null) => MessageWithParts[];
+  /**
+   * 确保指定 session 的消息已加载到 OpenWork 全局 store。
+   * 幂等调用，未加载时发起 HTTP 加载。
+   */
+  owEnsureSessionLoaded?: (sid: string) => Promise<void>;
   /**
    * Session 清理回调（可选）。
    * 会话完成后调用，通过 OpenWork deleteSession API 清理已结束的 session，
@@ -1087,6 +486,7 @@ export interface CallAgentOptions {
 /**
  * 将 SDK event.subscribe() 返回的原始事件解析为 { type, props } 格式。
  * 兼容两种包装：直接 { type, properties } 或嵌套 { payload: { type, properties } }.
+ * @deprecated 仅 Team Edition 的 message-accumulator.ts 使用，Solo 已切换为 store 轮询。
  */
 export function normalizeRawEvent(raw: unknown): { type: string; props: Record<string, unknown> } | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -1104,48 +504,114 @@ export function normalizeRawEvent(raw: unknown): { type: string; props: Record<s
 }
 
 /**
- * 执行一次 Agent 会话生命周期：订阅 SSE 事件流 → 可选发送 prompt → 等待完成。
+ * 从 OpenWork store 的 MessageWithParts[] 中提取全部 AI 文本内容。
+ * 跳过 role='user' 的消息，将所有 assistant text parts 拼接。
+ */
+function extractTextFromStoreMessages(messages: MessageWithParts[]): string {
+  const textParts: string[] = [];
+  for (const msg of messages) {
+    const info = msg.info as Record<string, unknown>;
+    if (info.role === 'user') continue;
+    for (const part of msg.parts) {
+      const p = part as Record<string, unknown>;
+      if (p.type === 'text' && typeof p.text === 'string') {
+        textParts.push(p.text as string);
+      }
+    }
+  }
+  return textParts.join('');
+}
+
+/**
+ * 从 OpenWork store 的 MessageWithParts[] 中提取工具调用/结果事件。
+ * 返回当前所有 tool-use 和 tool-result parts 的 ID 集合，
+ * 供调用方对比上一次轮询结果以触发增量回调。
+ */
+function extractToolPartsFromMessages(messages: MessageWithParts[]): Array<{
+  partId: string;
+  type: 'tool-use' | 'tool-result';
+  name: string;
+  input?: Record<string, unknown>;
+  resultText?: string;
+}> {
+  const results: Array<{
+    partId: string;
+    type: 'tool-use' | 'tool-result';
+    name: string;
+    input?: Record<string, unknown>;
+    resultText?: string;
+  }> = [];
+  for (const msg of messages) {
+    const info = msg.info as Record<string, unknown>;
+    if (info.role === 'user') continue;
+    for (const part of msg.parts) {
+      const p = part as Record<string, unknown>;
+      const partId = String(p.id ?? '');
+      if (!partId) continue;
+      if (p.type === 'tool-use' || p.type === 'tool_use') {
+        const name = String(p.name ?? p.tool ?? '');
+        let input: Record<string, unknown> = {};
+        const inputRaw = p.input ?? p.arguments ?? p.parameters;
+        if (typeof inputRaw === 'object' && inputRaw !== null) {
+          input = inputRaw as Record<string, unknown>;
+        } else if (typeof inputRaw === 'string') {
+          try { input = JSON.parse(inputRaw) as Record<string, unknown>; } catch { /* partial */ }
+        }
+        results.push({ partId, type: 'tool-use', name, input });
+      } else if (p.type === 'tool-result' || p.type === 'tool_result') {
+        const name = String(p.name ?? p.tool ?? '');
+        const content = p.content;
+        let resultText = '';
+        if (typeof content === 'string') {
+          resultText = content.slice(0, 500);
+        } else if (Array.isArray(content)) {
+          resultText = (content as Array<Record<string, unknown>>)
+            .filter(c => c.type === 'text')
+            .map(c => String(c.text ?? ''))
+            .join('\n')
+            .slice(0, 500);
+        }
+        results.push({ partId, type: 'tool-result', name, resultText });
+      }
+    }
+  }
+  return results;
+}
+
+/**
+ * 执行一次 Agent 会话初始化：创建 session → 发送 prompt → 立即返回。
+ *
+ * 对齐 OpenWork 原生方案（actions-store.ts createReadySession + sendPrompt）：
+ * - session.create 传 directory（对齐 OpenWork L342-344）
+ * - promptAsync 不传 directory（对齐 OpenWork L533-540，directory 已在创建时设置）
+ * - 完成检测由调用方通过 SolidJS reactive effect 监听 sessionStatusById 实现
+ * - 不再自建 polling 机制
  *
  * @param getClient   返回 OpenCode client 的工厂函数
- * @param sessionId   已有 session ID（Layer 1 重连复用）；为 null 时新建 session
- * @param accumulated 已累积的文本（Layer 1 重连时保留；Layer 2 重试时传 ''）
- * @param sendPrompt  是否发送 prompt（Layer 1 重连不重发；Layer 2 全新调用发送）
+ * @param sessionId   已有 session ID（多轮对话复用）；为 null 时新建 session
+ * @param sendPrompt  是否发送 prompt
  * @param opts        原始 CallAgentOptions
  * @returns
- *   - { status: 'done', accumulated, sessionId }     — 正常完成
- *   - { status: 'sse-fail', accumulated, sessionId } — SSE 网络断开，可重试
- *   - { status: 'hard-error', accumulated, sessionId, error } — 不可重试错误
+ *   - { status: 'prompt-sent', sessionId }              — prompt 已发送，等待 UI reactive 完成检测
+ *   - { status: 'hard-error', sessionId, error }         — 不可重试错误
  */
 async function runAgentSession(
   getClient: () => ReturnType<typeof createClient>,
   sessionId: string | null,
-  accumulated: string,
   sendPrompt: boolean,
   opts: CallAgentOptions,
 ): Promise<{
-  status: 'done' | 'sse-fail' | 'hard-error';
-  accumulated: string;
+  status: 'prompt-sent' | 'hard-error';
   sessionId: string | null;
   error?: string;
 }> {
-  let client = getClient();
+  const client = getClient();
   let sid = sessionId;
-  const sessionMsgIds = new Set<string>();
-  let acc = accumulated;
-  let userMsgId: string | null = null;  // 追踪用户 prompt 消息 ID，用于过滤 SSE 回显
 
-  // 新建 session（Layer 2 或首次调用）
+  // 新建 session（首次调用或重试时）
   if (!sid) {
-    // ▸ 强制刷新端口：Tauri 环境下 OpenCode 可能已换端口，确保 _baseUrl 为最新值
-    if (!_sharedClient) {
-      console.log('[xingjing-diag] session.create 前刷新端口, 当前 _baseUrl:', _baseUrl);
-      await refreshLocalClient();
-      client = getClient();  // 端口/auth 已更新，重新获取 client
-      console.log('[xingjing-diag] 端口刷新后 _baseUrl:', _baseUrl);
-    }
 
     // ▸ 连接状态前置探测（对齐 OpenWork 原生 session/actions-store.ts 模式）
-    // client.global.health() 自动通过 SDK client 走正确网络路径，无需区分 shared/local
     let pingOk = false;
     try {
       await Promise.race([
@@ -1158,12 +624,9 @@ async function runAgentSession(
       console.warn('[xingjing] session.create 前置探测：OpenCode 不可达', healthErr);
     }
 
-    // ▸ Ping 失败 → 跳过 session.create，返回 sse-fail 让重试架构处理
-    // 不返回 hard-error（会短路整个重试链），sse-fail + sid=null 会自然进入 Layer 2 重试，
-    // Layer 2 每次重试会 refreshLocalClient 获取最新端口后重新 ping。
     if (!pingOk) {
-      console.warn('[xingjing] OpenCode 不可达，跳过 session.create（避免 10s 超时浪费），由重试层处理恢复');
-      return { status: 'sse-fail' as const, accumulated: acc, sessionId: null, error: 'OpenCode 服务不可达，正在重试...' };
+      console.warn('[xingjing] OpenCode 不可达，跳过 session.create，由重试层处理恢复');
+      return { status: 'hard-error' as const, sessionId: null, error: 'OpenCode 服务不可达，正在重试...' };
     }
 
     let lastErrName: string | undefined;
@@ -1225,7 +688,7 @@ async function runAgentSession(
         // 网络层错误诊断：当 name/message 均 undefined 时，说明非 API 响应，可能是端口不匹配或连接被拒
         if (!errName && !err?.message) {
           console.error('[xingjing] session.create 疑似网络错误（非 API 响应），error 原始值:', String(err), '| typeof:', typeof err);
-          console.error('[xingjing] 当前 _baseUrl:', _baseUrl, '| response.url:', (result as any)?.response?.url, '| response.status:', (result as any)?.response?.status);
+          console.error('[xingjing] response.url:', (result as any)?.response?.url, '| response.status:', (result as any)?.response?.status);
         }
       }
     } catch (e) {
@@ -1237,528 +700,120 @@ async function runAgentSession(
       const msg = lastErrName === 'ConfigInvalidError'
         ? '大模型未配置，请在设置页配置 API Key 后重试'
         : '无法创建 AI 会话，请检查 OpenCode 服务是否已启动';
-      return { status: 'hard-error', accumulated: acc, sessionId: null, error: msg };
+      return { status: 'hard-error', sessionId: null, error: msg };
     }
   }
 
   const finalSid = sid;
 
-  // ── 提前触发 onSessionCreated（在 SSE 订阅和 promptAsync 启动前）──
-  // 让调用方（如 chatAccumulator）在事件流开始前完成 SSE 订阅准备，
-  // 避免 accumulator 错过流式 message.part.delta 事件。
+  // ── 触发 onSessionCreated（在 promptAsync 启动前）──
   opts.onSessionCreated?.(finalSid);
-  // 让出一个微任务 tick，使 SolidJS 响应式系统运行 accumulator 的 createEffect
+
+  // ── 确保 OpenWork 全局 store 加载该 session 的消息 ──
+  if (opts.owEnsureSessionLoaded) {
+    try {
+      await opts.owEnsureSessionLoaded(finalSid);
+    } catch { /* 非致命，store 可能稍后同步 */ }
+  }
+
+  // 让出一个微任务 tick，使 SolidJS 响应式系统处理 store 更新
   await Promise.resolve();
 
-  // ── 工具调用追踪（用于 onToolUse / onToolResult 回调）──
-  // key: toolUseId (part.id) → { name, inputJson }
-  const pendingToolUses = new Map<string, { name: string; inputJson: string }>();
+  // ── 发送 prompt（首次调用或重试时）──
+  if (sendPrompt) {
+    const promptParts: string[] = [];
+    if (opts.systemPrompt) promptParts.push(opts.systemPrompt);
+    const now = new Date();
+    const timeStr = now.toLocaleString('zh-CN', {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      weekday: 'long', hour12: false,
+    });
+    promptParts.push(`## 当前系统时间\n${timeStr}`);
+    if (opts.knowledgeContext) promptParts.push(`## 相关知识上下文\n${opts.knowledgeContext}`);
+    if (opts.recallContext) promptParts.push(`## 相关历史上下文\n${opts.recallContext}`);
+    promptParts.push(opts.userPrompt);
+    const fullPrompt = promptParts.join('\n\n---\n\n');
 
-  // Promise 封装整个 SSE 生命周期
-  return new Promise<{ status: 'done' | 'sse-fail' | 'hard-error'; accumulated: string; sessionId: string | null; error?: string }>((resolve) => {
-    let done = false;
-    const controller = new AbortController();
-
-    // 无活动超时：若 SSE 流长时间无新事件（连接挂起），自动 abort 并触发 sse-fail 重试
-    let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
-    let firstEventReceived = false;
-    const resetInactivityTimer = () => {
-      if (inactivityTimer) clearTimeout(inactivityTimer);
-      if (done) return;
-      const isFirst = !firstEventReceived;
-      if (isFirst) firstEventReceived = true; // 标记已收到首事件
-      const timeout = isFirst ? SSE_FIRST_EVENT_TIMEOUT_MS : SSE_INACTIVITY_TIMEOUT_MS;
-      console.log(`[xingjing-diag] resetInactivityTimer: isFirst=${isFirst}, timeout=${timeout / 1000}s, sid=${finalSid}`);
-      inactivityTimer = setTimeout(() => {
-        if (!done) {
-          done = true;
-          controller.abort();
-          const errMsg = isFirst
-            ? `SSE 超时：${SSE_FIRST_EVENT_TIMEOUT_MS / 1000}s 内未收到任何事件，请检查大模型 API Key 是否已配置且有效`
-            : `SSE 超时：${SSE_INACTIVITY_TIMEOUT_MS / 1000}s 内无新事件，已触发重试`;
-          console.warn(`[xingjing-diag] SSE inactivity timeout fired: isFirst=${isFirst}, accLen=${acc.length}, sid=${finalSid}`);
-          resolve({ status: 'sse-fail', accumulated: acc, sessionId: finalSid, error: errMsg });
-        }
-      }, timeout);
-    };
-
-    // 内容空闲超时：有累积内容后若 CONTENT_IDLE_TIMEOUT_MS 内无新内容，判定为完成
-    // 注意：clearTimeout 必须在内容变化检查之后，否则 heartbeat/工具事件会不断清除定时器
-    let contentIdleTimer: ReturnType<typeof setTimeout> | null = null;
-    let lastAccLen = 0;
-    const resetContentIdleTimer = () => {
-      if (done) return;
-      if (acc.length === 0) return; // 无内容时不启动
-      if (acc.length === lastAccLen) return; // 内容未变化，保留现有定时器继续倒计时
-      // 内容增长了 → 清除旧定时器，重新开始倒计时
-      if (contentIdleTimer) clearTimeout(contentIdleTimer);
-      lastAccLen = acc.length;
-      contentIdleTimer = setTimeout(() => {
-        if (!done && acc.length > 0) {
-          console.warn(`[xingjing-diag] Content idle timeout: ${CONTENT_IDLE_TIMEOUT_MS / 1000}s no new content, accLen=${acc.length}, treating as done, sid=${finalSid}`);
-          finishSession('content-idle-timeout');
-        }
-      }, CONTENT_IDLE_TIMEOUT_MS);
-    };
-
-    // ── L2 Session 完成检测 ──
-    // 复用 OpenWork 全局 SSE 维护的 sessionStatusById 状态，
-    // 无需独立 REST 轮询。当 status[sid] 变为 'idle' 时表示完成。
-    // 未提供 owSessionStatusById 时，依赖 SSE 事件和 L3 内容空闲超时。
-    let owStatusWatchTimer: ReturnType<typeof setInterval> | null = null;
-    let sessionPollDelayTimer: ReturnType<typeof setTimeout> | null = null;
-    let pollStarted = false;
-
-    const startSessionPoll = () => {
-      if (pollStarted || done) return;
-      pollStarted = true;
-
-      if (opts.owSessionStatusById) {
-        // ── 复用 OpenWork 状态：定期检查 store 值（非网络请求，极低开销） ──
-        sessionPollDelayTimer = setTimeout(() => {
-          if (done) return;
-          sessionPollDelayTimer = null;
-          console.log(`[xingjing-diag] L2 status watch started (owSessionStatusById), sid=${finalSid}`);
-          owStatusWatchTimer = setInterval(() => {
-            if (done) { stopSessionPoll(); return; }
-            const statuses = opts.owSessionStatusById!();
-            const status = statuses[finalSid];
-            if (status === 'idle') {
-              console.log(`[xingjing-diag] L2 owSessionStatusById detected idle, accLen=${acc.length}, sid=${finalSid}`);
-              finishSession('ow-status-idle');
-            }
-          }, 500); // 每 500ms 读一次 store，零网络开销
-        }, SESSION_POLL_START_DELAY_MS);
-      }
-      // 无 owSessionStatusById 时不启动轮询，依赖 SSE 事件和 L3 内容空闲超时
-    };
-    const stopSessionPoll = () => {
-      if (sessionPollDelayTimer) { clearTimeout(sessionPollDelayTimer); sessionPollDelayTimer = null; }
-      if (owStatusWatchTimer) { clearInterval(owStatusWatchTimer); owStatusWatchTimer = null; }
-    };
-
-    /** 统一完成处理：清理所有计时器并 resolve */
-    const finishSession = (reason: string) => {
-      if (done) return;
-      console.log(`[xingjing-diag] finishSession: reason=${reason}, accLen=${acc.length}, sid=${finalSid}`);
-      cleanup();
-      resolve({ status: 'done', accumulated: acc, sessionId: finalSid });
-    };
-
-    const cleanup = () => {
-      if (!done) {
-        done = true;
-        controller.abort();
-        if (inactivityTimer) { clearTimeout(inactivityTimer); inactivityTimer = null; }
-        if (contentIdleTimer) { clearTimeout(contentIdleTimer); contentIdleTimer = null; }
-        stopSessionPoll();
-      }
-    };
-
-    // ── SSE 订阅（fire-and-resolve 模式）──
-    // 使用 directory scope 订阅：星静和 OpenWork 共用同一个 OpenCode 客户端，
-    // 若都用全局 undefined 订阅会导致 SSE 连接互斥，事件流被截断。
-    // directory scope 下内容事件（message.part.*）正常接收，
-    // session 完成检测由 L2 REST 轮询 + L3 内容空闲超时兜底。
-    void (async () => {
-      try {
-        const eventDir = opts.directory ?? (_directory || undefined);
-        const sub = await client.event.subscribe(
-          eventDir ? { directory: eventDir } : undefined,
-          { signal: controller.signal },
-        );
-
-        resetInactivityTimer(); // 启动首次无活动计时器
-
-        for await (const raw of sub.stream as AsyncIterable<unknown>) {
-          if (done) break;
-          firstEventReceived = true; // 标记已收到首事件
-          const evt = normalizeRawEvent(raw);
-          if (!evt) continue;
-
-          // 所有 SSE 事件（含心跳）均重置无活动计时器 — 证明连接存活
-          // 内容进度由独立的 contentIdleTimer 检测
-          resetInactivityTimer();
-
-          const p = evt.props;
-          // [诊断日志] 打印每个SSE事件类型和sessionID，用于排查完成信号丢失
-          const evtSidForLog = typeof p.sessionID === 'string' ? p.sessionID : (typeof (p.part as Record<string, unknown> | undefined)?.sessionID === 'string' ? String((p.part as Record<string, unknown>).sessionID) : 'N/A');
-          if (evt.type !== 'message.part.updated' && evt.type !== 'message.part.delta' && evt.type !== 'message.part') {
-            console.log(`[xingjing-diag] SSE event: type=${evt.type}, evtSid=${evtSidForLog}, ourSid=${finalSid}, accLen=${acc.length}`);
-          }
-
-          // ── message.updated（追踪用户消息 ID，role 在 message 级别最可靠）──
-          if (evt.type === 'message.updated') {
-            const msg = (p.message ?? p) as Record<string, unknown>;
-            if (String(msg.sessionID ?? '') !== finalSid) continue;
-            const msgId = String(msg.id ?? '');
-            const msgRole = typeof msg.role === 'string' ? msg.role : null;
-            if (msgRole === 'user' && msgId) {
-              userMsgId = msgId;
-            } else if (msgId) {
-              sessionMsgIds.add(msgId);
-            }
-            continue; // message.updated 只含 metadata，不含文本
-          }
-
-          // ── message.part.updated ──
-          if (evt.type === 'message.part.updated') {
-            const part = p.part as Record<string, unknown> | undefined;
-            if (!part || String(part.sessionID ?? '') !== finalSid) continue;
-
-            const partMsgId = part.messageID ? String(part.messageID) : null;
-
-            // 检测并跳过用户 prompt 消息回显
-            // 1. part 级别有 role: 'user' → 明确是用户消息
-            const partRole = typeof part.role === 'string' ? part.role : null;
-            if (partRole === 'user') {
-              if (partMsgId) userMsgId = partMsgId;
-              continue;
-            }
-            // 2. 已通过 message.updated 确认的用户消息 → 跳过
-            if (partMsgId && partMsgId === userMsgId) {
-              continue;
-            }
-
-            if (partMsgId) sessionMsgIds.add(partMsgId);
-
-            // ── 工具调用（tool-use）部分 ──
-            if (part.type === 'tool-use' || part.type === 'tool_use') {
-              const toolId = String(part.id ?? partMsgId ?? '');
-              const toolName = String(part.name ?? part.tool ?? '');
-              if (toolId && toolName && opts.onToolUse) {
-                // 积累 input JSON（可能分多个事件到达）
-                const existingJson = pendingToolUses.get(toolId)?.inputJson ?? '';
-                const inputRaw = part.input ?? part.arguments ?? part.parameters;
-                const newJson = typeof inputRaw === 'string'
-                  ? inputRaw
-                  : (typeof inputRaw === 'object' ? JSON.stringify(inputRaw) : existingJson);
-                pendingToolUses.set(toolId, { name: toolName, inputJson: newJson });
-                // 尝试解析输入参数
-                let parsedInput: Record<string, unknown> = {};
-                try { parsedInput = JSON.parse(newJson) as Record<string, unknown>; } catch { /* partial */ }
-                opts.onToolUse(toolName, parsedInput);
-              }
-              resetContentIdleTimer();
-              startSessionPoll();
-              continue;
-            }
-
-            // ── 工具结果（tool-result）部分 ──
-            if (part.type === 'tool-result' || part.type === 'tool_result') {
-              const toolUseId = String(part.toolUseID ?? part.tool_use_id ?? part.id ?? '');
-              const pending = pendingToolUses.get(toolUseId);
-              const toolName = pending?.name ?? String(part.name ?? part.tool ?? '');
-              if (toolName && opts.onToolResult) {
-                const content = part.content;
-                let resultText = '';
-                if (typeof content === 'string') {
-                  resultText = content.slice(0, 500);
-                } else if (Array.isArray(content)) {
-                  resultText = (content as Array<Record<string, unknown>>)
-                    .filter(c => c.type === 'text')
-                    .map(c => String(c.text ?? ''))
-                    .join('\n')
-                    .slice(0, 500);
-                }
-                if (toolUseId) pendingToolUses.delete(toolUseId);
-                opts.onToolResult(toolName, resultText);
-              }
-              resetContentIdleTimer();
-              startSessionPoll();
-              continue;
-            }
-
-            if (part.type === 'text') {
-              const fullText = String(part.text ?? '');
-              if (fullText.length >= acc.length) {
-                acc = fullText;
-                opts.onText?.(acc);
-              } else if (typeof p.delta === 'string' && p.delta) {
-                acc += p.delta;
-                opts.onText?.(acc);
-              }
-            }
-            resetContentIdleTimer(); // 内容变化，重置内容空闲计时器
-            startSessionPoll(); // 首次内容到达后启动 session 状态轮询
-            continue;
-          }
-
-          // ── message.part.delta ──
-          if (evt.type === 'message.part.delta') {
-            const msgId = typeof p.messageID === 'string' ? p.messageID : null;
-            if (msgId && msgId === userMsgId) { resetContentIdleTimer(); continue; } // 跳过用户消息 delta
-            // 放宽条件：只要 msgId 不是用户消息，就处理 delta（不再严格要求 sessionMsgIds 预注册）
-            // 这修复了 delta 事件先于 message.part.updated 到达的竞态问题
-            if (msgId && msgId !== userMsgId) {
-              sessionMsgIds.add(msgId); // 自动注册
-              const delta = typeof p.delta === 'string' ? p.delta : '';
-              const field = typeof p.field === 'string' ? p.field : '';
-              if (delta && field === 'text') {
-                acc += delta;
-                opts.onText?.(acc);
-              }
-            }
-            resetContentIdleTimer(); // 内容变化，重置内容空闲计时器
-            startSessionPoll(); // 确保 session 状态轮询已启动
-            continue;
-          }
-
-          // ── message.part (旧格式) ──
-          if (evt.type === 'message.part') {
-            if (String(p.sessionID ?? '') !== finalSid) continue;
-            const part = p.part as Record<string, unknown> | undefined;
-            // 跳过用户消息
-            const partMsgId2 = part?.messageID ? String(part.messageID) : null;
-            if (partMsgId2 && partMsgId2 === userMsgId) { resetContentIdleTimer(); continue; }
-            if (part?.type === 'text') {
-              const text = String(part.text ?? part.content ?? '');
-              acc += text;
-              opts.onText?.(acc);
-            }
-            resetContentIdleTimer(); // 内容变化，重置内容空闲计时器
-            startSessionPoll(); // 确保 session 状态轮询已启动
-            continue;
-          }
-
-          // ── session.error（服务端硬错误，不重试）──
-          if (evt.type === 'session.error') {
-            const evtSid = typeof p.sessionID === 'string' ? p.sessionID : null;
-            if (evtSid && evtSid !== finalSid) continue;
-            cleanup();
-            const errObj = p.error as Record<string, unknown> | undefined;
-            const errMsg = errObj
-              ? String(errObj.message ?? errObj.name ?? '未知错误')
-              : String(p.message ?? '未知错误');
-            resolve({ status: 'hard-error', accumulated: acc, sessionId: finalSid, error: errMsg });
-            return;
-          }
-
-          // ── session.completed ──
-          if (evt.type === 'session.completed') {
-            const evtSid = typeof p.sessionID === 'string' ? p.sessionID : null;
-            if (evtSid && evtSid !== finalSid) continue;
-            finishSession('session.completed');
-            return;
-          }
-
-          // ── session.idle ──
-          if (evt.type === 'session.idle') {
-            const evtSid = typeof p.sessionID === 'string' ? p.sessionID : null;
-            if (evtSid && evtSid !== finalSid) continue; // null-safe：与 session.completed 保持一致
-            finishSession('session.idle');
-            return;
-          }
-
-          // ── session.status ──
-          if (evt.type === 'session.status') {
-            const evtSid = typeof p.sessionID === 'string' ? p.sessionID : null;
-            if (evtSid && evtSid !== finalSid) continue; // null-safe
-            const statusObj = p.status;
-            const statusType = typeof statusObj === 'object' && statusObj !== null
-              ? String((statusObj as Record<string, unknown>).type ?? '')
-              : String(statusObj ?? '');
-            console.log(`[xingjing-diag] session.status: statusType="${statusType}", accLen=${acc.length}, sid=${finalSid}`);
-            if (statusType === 'idle' || statusType === 'completed') {
-              finishSession(`session.status:${statusType}`);
-              return;
-            }
-          }
-
-          // ── 工具权限请求 ──
-          if (evt.type === 'permission.asked') {
-            const evtSid = typeof p.sessionID === 'string' ? p.sessionID : null;
-            if (evtSid && evtSid !== finalSid) continue;
-            const permId = typeof p.id === 'string' ? p.id : null;
-            const toolName = typeof p.tool === 'string' ? p.tool : '';
-            console.warn(`[xingjing-diag] permission.asked: permId=${permId}, tool=${String(p.tool ?? 'N/A')}, desc=${String(p.description ?? 'N/A')}, hasCallback=${!!opts.onPermissionAsked}, sid=${finalSid}`);
-          
-            // 自动授权：工具名在白名单中 → 静默 reply 'always'
-            if (permId && opts.autoApproveTools?.length) {
-              const approved = opts.autoApproveTools.includes(toolName);
-              if (approved) {
-                console.log(`[xingjing-diag] permission.asked auto-approved: tool=${toolName}, sid=${finalSid}`);
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                void (getClient().permission as any).reply({ requestID: permId, reply: 'always' }).catch(() => {});
-                continue;
-              }
-              // 不在白名单：自动拒绝
-              console.log(`[xingjing-diag] permission.asked auto-rejected: tool=${toolName}, sid=${finalSid}`);
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              void (getClient().permission as any).reply({ requestID: permId, reply: 'reject' }).catch(() => {});
-              continue;
-            }
-
-            if (permId && opts.onPermissionAsked) {
-              // 有回调：暂停 SSE 循环，等待用户在 UI 上做决策
-              const action = await new Promise<'once' | 'always' | 'reject'>((res) => {
-                opts.onPermissionAsked!({
-                  permissionId: permId,
-                  sessionId: finalSid,
-                  tool: typeof p.tool === 'string' ? p.tool : undefined,
-                  description: typeof p.description === 'string' ? p.description : undefined,
-                  input: typeof p.input === 'string' ? p.input : (typeof p.path === 'string' ? p.path : undefined),
-                  resolve: res,
-                });
-              });
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              void (getClient().permission as any).reply({ requestID: permId, reply: action }).catch(() => {});
-            } else if (permId) {
-              // 无回调兜底：自动拒绝，model 继续以纯文本生成响应
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              void (getClient().permission as any).reply({ requestID: permId, reply: 'reject' }).catch(() => {});
-            }
-            continue; // 继续等待 session 完成
-          }
-
-          // ── 澄清问题请求：自动拒绝并继续 ──
-          if (evt.type === 'question.asked') {
-            const evtSid = typeof p.sessionID === 'string' ? p.sessionID : null;
-            if (evtSid && evtSid !== finalSid) continue;
-            const reqId = typeof p.id === 'string' ? p.id : (typeof p.requestID === 'string' ? p.requestID : null);
-            if (reqId) {
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              void (getClient().question as any).reject({ requestID: reqId }).catch(() => {});
-            }
-            continue; // 继续等待 session 完成
-          }
-        }
-
-        // 事件流结束但未收到完成信号
-        if (!done) {
-          console.warn(`[xingjing-diag] SSE stream ended without completion signal: accLen=${acc.length}, resolvingAs=${acc ? 'done' : 'sse-fail'}, sid=${finalSid}`);
-          cleanup();
-          resolve({
-            status: acc ? 'done' : 'sse-fail',
-            accumulated: acc,
-            sessionId: finalSid,
-            error: 'SSE 事件流意外结束',
+    try {
+      console.log('[xingjing-diag] promptAsync 发送', { sessionId: finalSid, hasModel: !!opts.model, modelID: opts.model?.modelID, attachmentCount: opts.attachments?.length ?? 0 });
+      const parts: Array<{ type: string; [key: string]: unknown }> = [
+        { type: 'text', text: fullPrompt },
+      ];
+      if (opts.attachments?.length) {
+        for (const att of opts.attachments) {
+          parts.push({
+            type: 'file',
+            url: await fileToDataUrl(att.file),
+            filename: att.name,
+            mime: att.mimeType,
           });
         }
-      } catch (e) {
-        if (done) return;
-        const msg = e instanceof Error ? e.message : String(e);
-        if (msg.toLowerCase().includes('abort')) return;
-        cleanup();
-        resolve({ status: 'sse-fail', accumulated: acc, sessionId: finalSid, error: `SSE 连接失败: ${msg}` });
       }
-    })();
-
-    // ── 发送 prompt（仅首次调用或 Layer 2 重试时）──
-    if (sendPrompt) {
-      // 合成 prompt：system + 当前时间 + 知识上下文 + 回忆上下文 + 用户输入
-      const promptParts: string[] = [];
-      if (opts.systemPrompt) promptParts.push(opts.systemPrompt);
-      // 注入当前精确时间，使 LLM 能回答时间相关问题
-      const now = new Date();
-      const timeStr = now.toLocaleString('zh-CN', {
-        year: 'numeric', month: '2-digit', day: '2-digit',
-        hour: '2-digit', minute: '2-digit', second: '2-digit',
-        weekday: 'long', hour12: false,
+      // 对齐 OpenWork sendPrompt：不传 directory（directory 已在 session.create 时设置）
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (client.session as any).promptAsync({
+        sessionID: finalSid,
+        ...(opts.model ? { model: opts.model } : {}),
+        parts,
       });
-      promptParts.push(`## 当前系统时间\n${timeStr}`);
-      if (opts.knowledgeContext) promptParts.push(`## 相关知识上下文\n${opts.knowledgeContext}`);
-      if (opts.recallContext) promptParts.push(`## 相关历史上下文\n${opts.recallContext}`);
-      promptParts.push(opts.userPrompt);
-      const fullPrompt = promptParts.join('\n\n---\n\n');
-
-      void (async () => {
-        try {
-          console.log('[xingjing-diag] promptAsync 发送', { sessionId: finalSid, hasModel: !!opts.model, modelID: opts.model?.modelID, attachmentCount: opts.attachments?.length ?? 0 });
-          // 构建 parts 数组（对齐 OpenWork actions-store.buildPromptParts）
-          const parts: Array<{ type: string; [key: string]: unknown }> = [
-            { type: 'text', text: fullPrompt },
-          ];
-          if (opts.attachments?.length) {
-            for (const att of opts.attachments) {
-              parts.push({
-                type: 'file',
-                url: await fileToDataUrl(att.file),
-                filename: att.name,
-                mime: att.mimeType,
-              });
-            }
-          }
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          await (client.session as any).promptAsync({
-            sessionID: finalSid,
-            directory: opts.directory ?? (_directory || undefined),
-            ...(opts.model ? { model: opts.model } : {}),
-            // 不传 tools 参数：工具调用由 session 级权限规则控制。
-            // 传 tools:{} 会导致 OpenCode 状态机无法从 busy 转为 idle，session 永远不完成。
-            parts,
-          });
-          console.log('[xingjing-diag] promptAsync 已发送', { sessionId: finalSid });
-        } catch {
-          if (!done) {
-            cleanup();
-            resolve({ status: 'hard-error', accumulated: acc, sessionId: finalSid, error: '发送提示词失败' });
-          }
-        }
-      })();
+      console.log('[xingjing-diag] promptAsync 已发送', { sessionId: finalSid });
+    } catch {
+      return { status: 'hard-error', sessionId: finalSid, error: '发送提示词失败' };
     }
-  });
+  }
+
+  // 对齐 OpenWork 原生方案：prompt 发送后立即返回。
+  // 完成检测由调用方通过 SolidJS reactive effect 监听 sessionStatusById[sid] 实现，
+  // 与 OpenWork 自身的 session UI 一致（SSE → store → reactive read）。
+  console.log(`[xingjing-diag] prompt sent, returning prompt-sent, sid=${finalSid}`);
+  return { status: 'prompt-sent', sessionId: finalSid };
 }
 
 /**
- * Agent 会话执行核心：两层静默重试策略。
- * Layer 1 复用 sessionId 重连 SSE，Layer 2 全新调用。
+ * Agent 会话执行核心：创建 session + 发送 prompt + 返回。
  *
- * 采用 SDK 的 client.event.subscribe() 替代原生 EventSource，
- * 确保在 Tauri/WKWebView 环境下正确使用 tauriFetch 并携带认证头。
+ * 对齐 OpenWork 原生方案：
+ * - session.create({ directory }) — 在创建时设置工作目录
+ * - promptAsync({ sessionID, model, parts }) — 不再传 directory
+ * - 完成检测由 UI 层 SolidJS reactive effect 通过 sessionStatusById 驱动
+ * - 不再自建 polling 或 SSE 完成检测
+ * - 不自动删除 session（多轮对话需保留 session）
  */
 async function executeAgentWithRetry(
   getClient: () => ReturnType<typeof createClient>,
   opts: CallAgentOptions,
 ): Promise<void> {
   let sessionId: string | null = opts.existingSessionId ?? null;
-  let accumulated = '';
 
-  // ── Layer 1: SSE 重连（复用 sessionId，不重发 prompt）──
-  for (let sseTry = 0; sseTry <= RETRY_DELAYS.length; sseTry++) {
-    if (sseTry > 0) await sleep(RETRY_DELAYS[sseTry - 1]);
+  // ── 重试：创建 session + 发送 prompt ──
+  for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt++) {
+    if (attempt > 0) await sleep(RETRY_DELAYS[attempt - 1]);
 
-    console.log(`[xingjing-diag] executeAgent Layer1 try=${sseTry}, sessionId=${sessionId}, accLen=${accumulated.length}`);
+    console.log(`[xingjing-diag] executeAgent attempt=${attempt}, sessionId=${sessionId}`);
     const r = await runAgentSession(
       getClient,
-      sseTry === 0 ? (opts.existingSessionId ?? null) : sessionId,
-      sseTry === 0 ? '' : accumulated,
-      sseTry === 0,
+      attempt === 0 ? (opts.existingSessionId ?? null) : sessionId,
+      attempt === 0,
       opts,
     );
 
-    accumulated = r.accumulated;
     sessionId = r.sessionId;
-    // onSessionCreated 已在 runAgentSession 内部（session 建立后、SSE 启动前）调用，此处无需重复
 
-    if (r.status === 'done') {
-      opts.onDone?.(accumulated);
-      if (sessionId) opts.owDeleteSession?.(sessionId).catch(() => {});
-      return;
-    }
-    // 服务端硬错误（session.error）：不做 Layer 1 重试，直接进 Layer 2
-    if (r.status === 'hard-error' && !r.error?.includes('无法创建')) break;
-    // session 创建失败：无法 Layer 1 重连，直接进 Layer 2
-    if (!sessionId) break;
-  }
-
-  // ── Layer 2: 全新调用（新 session + 重发 prompt）──
-  for (let callTry = 0; callTry <= RETRY_DELAYS.length; callTry++) {
-    if (callTry > 0) await sleep(RETRY_DELAYS[callTry - 1]);
-
-    const r = await runAgentSession(getClient, null, '', true, opts);
-
-    accumulated = r.accumulated;
-    sessionId = r.sessionId;
-    // onSessionCreated 已在 runAgentSession 内部调用，此处无需重复
-
-    if (r.status === 'done') {
-      opts.onDone?.(accumulated);
-      if (sessionId) opts.owDeleteSession?.(sessionId).catch(() => {});
+    if (r.status === 'prompt-sent') {
+      // Prompt 已发送成功。完成检测由 UI reactive effect 管理。
+      // 不在此处调用 onDone —— 调用方（autopilot）通过 sessionStatusById 检测完成。
+      console.log(`[xingjing-diag] prompt-sent, session=${sessionId}, returning`);
       return;
     }
 
-    if (callTry === RETRY_DELAYS.length) {
+    // hard-error 且非服务不可达：不重试
+    if (r.status === 'hard-error' && !r.error?.includes('不可达')) {
+      opts.onError?.(r.error ?? '未知错误');
+      return;
+    }
+
+    if (attempt === RETRY_DELAYS.length) {
       const errMsg = r.error ?? '重试耗尽，请检查网络连接或 OpenCode 服务状态';
       opts.onError?.(errMsg);
       return;
@@ -1779,7 +834,7 @@ export async function callAgentWithClient(
 }
 
 /**
- * 调用 AI Agent：创建会话 → 发送提示词 → 流式接收结果 → 完成回调。
+ * 调用 AI Agent：创建会话 → 发送提示词 → 返回（完成检测由 UI reactive effect 驱动）。
  * 使用 OpenWork 注入的共享 client。
  */
 export async function callAgent(opts: CallAgentOptions): Promise<void> {

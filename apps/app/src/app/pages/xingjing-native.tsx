@@ -2,7 +2,7 @@
  * 星静 SolidJS 原生集成版
  *
  * 直接在 openwork 主应用内以原生 SolidJS 组件渲染星静，
- * 使用嵌套 Router (base="/xingjing-solid") 处理子路由，
+ * 使用嵌套 Router (base="/xingjing") 处理子路由，
  * 无需 iframe，实现深度融合。
  *
  * 认证守卫：onMount 时校验 xingjing-server token，
@@ -17,22 +17,23 @@ import AuthPage from '../xingjing/pages/auth';
 import type { OpenworkServerClient, OpenworkCommandItem, OpenworkAuditEntry } from '../lib/openwork-server';
 import type { createClient } from '../lib/opencode';
 import type { MessageWithParts } from '../types';
+import type { NavigationTarget } from '../xingjing/services/xingjing-bridge';
 
-// 团队版页面
-const Autopilot = lazy(() => import('../xingjing/pages/autopilot'));
-const Dashboard = lazy(() => import('../xingjing/pages/dashboard'));
-const AgentWorkshop = lazy(() => import('../xingjing/pages/agent-workshop'));
-const RequirementWorkshop = lazy(() => import('../xingjing/pages/requirements'));
-const PRDEditor = lazy(() => import('../xingjing/pages/requirements/prd-editor'));
-const ProductPlanning = lazy(() => import('../xingjing/pages/planning'));
-const DesignWorkshop = lazy(() => import('../xingjing/pages/design'));
-const DevWorkshop = lazy(() => import('../xingjing/pages/dev'));
-const PRSubmit = lazy(() => import('../xingjing/pages/dev/pr-submit'));
-const SprintCenter = lazy(() => import('../xingjing/pages/sprint'));
-const SprintPlan = lazy(() => import('../xingjing/pages/sprint/sprint-plan'));
-const QualityCenter = lazy(() => import('../xingjing/pages/quality'));
-const ReleaseOps = lazy(() => import('../xingjing/pages/release-ops'));
-const KnowledgeCenter = lazy(() => import('../xingjing/pages/knowledge'));
+// 团队版页面（已迁移至 pages/team/ 目录）
+const Autopilot = lazy(() => import('../xingjing/pages/team/autopilot'));
+const Dashboard = lazy(() => import('../xingjing/pages/team/dashboard'));
+const AgentWorkshop = lazy(() => import('../xingjing/pages/team/agent-workshop'));
+const RequirementWorkshop = lazy(() => import('../xingjing/pages/team/requirements'));
+const PRDEditor = lazy(() => import('../xingjing/pages/team/requirements/prd-editor'));
+const ProductPlanning = lazy(() => import('../xingjing/pages/team/planning'));
+const DesignWorkshop = lazy(() => import('../xingjing/pages/team/design'));
+const DevWorkshop = lazy(() => import('../xingjing/pages/team/dev'));
+const PRSubmit = lazy(() => import('../xingjing/pages/team/dev/pr-submit'));
+const SprintCenter = lazy(() => import('../xingjing/pages/team/sprint'));
+const SprintPlan = lazy(() => import('../xingjing/pages/team/sprint/sprint-plan'));
+const QualityCenter = lazy(() => import('../xingjing/pages/team/quality'));
+const ReleaseOps = lazy(() => import('../xingjing/pages/team/release-ops'));
+const KnowledgeCenter = lazy(() => import('../xingjing/pages/team/knowledge'));
 const Settings = lazy(() => import('../xingjing/pages/settings'));
 
 // 独立版 Solo 页面
@@ -69,6 +70,35 @@ interface XingjingNativePageProps {
   // ── SDD-015：OpenWork 全局 session store 消息读取 ──
   messagesBySessionId?: (id: string | null) => MessageWithParts[];
   ensureSessionLoaded?: (id: string) => Promise<void>;
+  // ── 导航回调：跳转到 OpenWork 原生页面 ──
+  navigateTo?: (target: NavigationTarget) => void;
+  /** 星静页面的完整可访问 URL（由外层 app.tsx 计算并传入） */
+  xingjingUrl?: () => string | null;
+  /** OpenWork Server 解析后的 BaseURL（响应式 accessor，随 settings 更新） */
+  openworkServerBaseUrl?: () => string | null;
+  /** 触发 OpenWork 重连 */
+  reconnectOpenworkServer?: () => Promise<boolean>;
+  /** 更新 OpenWork 连接设置 */
+  updateOpenworkServerSettings?: (next: { urlOverride?: string; portOverride?: number; token?: string; [k: string]: unknown }) => void;
+  /** 当前 OpenWork token（用于展示） */
+  currentOpenworkToken?: () => string | null;
+  // ── 内嵌 OpenWork 原生视图所需 ──
+  /** OpenWork Server URL（IdentitiesView 显示用） */
+  openworkServerUrl?: string;
+  /** OpenWork 重连中标记 */
+  openworkReconnectBusy?: boolean;
+  /** 重启本地 Server */
+  restartLocalServer?: () => Promise<boolean>;
+  /** OpenWork runtime workspace ID */
+  runtimeWorkspaceId?: string | null;
+  /** 开发者模式 */
+  developerMode?: boolean;
+  /** 重载 workspace engine */
+  reloadWorkspaceEngine?: () => Promise<void>;
+  /** 重载中标记 */
+  reloadBusy?: boolean;
+  /** 是否可重载 workspace */
+  canReloadWorkspace?: boolean;
 }
 
 export default function XingjingNativePage(props: XingjingNativePageProps) {
@@ -167,6 +197,28 @@ export default function XingjingNativePage(props: XingjingNativePageProps) {
           // SDD-015: 全局 store 消息读取
           messagesBySessionId: props.messagesBySessionId,
           ensureSessionLoaded: props.ensureSessionLoaded,
+          // 导航回调
+          navigateTo: props.navigateTo,
+          // OpenWork Server 访问地址（优先使用响应式 baseUrl accessor，fallback 到 client.baseUrl）
+          serverBaseUrl: props.openworkServerBaseUrl ?? (() => props.openworkServerClient?.baseUrl ?? null),
+          // 星静页面完整 URL
+          xingjingUrl: props.xingjingUrl ?? (() => null),
+          // 连接配置回调
+          reconnect: props.reconnectOpenworkServer,
+          updateOpenworkSettings: props.updateOpenworkServerSettings
+            ? (next: { urlOverride: string; token: string }) =>
+                props.updateOpenworkServerSettings!({ urlOverride: next.urlOverride, token: next.token })
+            : undefined,
+          currentOpenworkToken: props.currentOpenworkToken,
+          // 内嵌 OpenWork 原生视图所需
+          openworkServerUrl: props.openworkServerUrl,
+          openworkReconnectBusy: props.openworkReconnectBusy,
+          restartLocalServer: props.restartLocalServer,
+          openworkRuntimeWorkspaceId: props.runtimeWorkspaceId,
+          developerMode: props.developerMode,
+          reloadWorkspaceEngine: props.reloadWorkspaceEngine,
+          reloadBusy: props.reloadBusy,
+          canReloadWorkspace: props.canReloadWorkspace,
         }
       : undefined
   );
@@ -228,7 +280,7 @@ function XingjingApp(props: { outerNavigate: ReturnType<typeof useNavigate>; ope
                 加载中...
               </div>
             }>
-              <Router base="/xingjing-solid" root={MainLayout}>
+              <Router base="/xingjing" root={MainLayout}>
                 {/* 团队版路由 */}
                 <Route path="/" component={Autopilot} />
                 <Route path="/autopilot" component={Autopilot} />

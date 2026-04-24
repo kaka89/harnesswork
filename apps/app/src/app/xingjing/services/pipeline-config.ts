@@ -7,7 +7,7 @@
  */
 
 import yaml from 'js-yaml';
-import { fileRead } from './opencode-client';
+import { fileRead } from './file-ops';
 
 // ─── 类型定义 ─────────────────────────────────────────────────
 

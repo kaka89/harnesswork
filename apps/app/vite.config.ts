@@ -3,6 +3,7 @@ import { defineConfig } from "vitest/config";
 import tailwindcss from "@tailwindcss/vite";
 import devtools from "solid-devtools/vite";
 import solid from "vite-plugin-solid";
+import { xingjingFsPlugin } from "./vite-plugin-xingjing-fs";
 
 const portValue = Number.parseInt(process.env.PORT ?? "", 10);
 const devPort = Number.isFinite(portValue) && portValue > 0 ? portValue : 5173;
@@ -26,6 +27,7 @@ if (shortHostname && shortHostname !== hostname) {
 
 export default defineConfig({
   plugins: [
+    xingjingFsPlugin(),
     tailwindcss(),
     devtools({
       autoname: true,

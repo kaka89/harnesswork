@@ -10,7 +10,7 @@
  * 索引仅保留在内存中（由 knowledge-retrieval 管理 5 分钟 TTL），不再持久化到磁盘。
  */
 
-import { fileRead, fileWrite } from './opencode-client';
+import { fileRead, fileWrite } from './file-ops';
 import { scanWorkspaceDocs } from './knowledge-scanner';
 import { listBehaviorKnowledge, type BehaviorKnowledge, type SkillApiAdapter, type ApplicableScene } from './knowledge-behavior';
 import { extractKeywords } from './memory-store';

@@ -10,7 +10,7 @@
  *   仅 sidecar 元数据（tags/goal）通过 fileWrite 写入 .xingjing/memory/sidecar.json。
  */
 
-import { fileRead, fileWrite } from './opencode-client';
+import { fileRead, fileWrite } from './file-ops';
 import { getXingjingClient } from './opencode-client';
 
 // ─── 类型定义 ────────────────────────────────────────────────────────────────

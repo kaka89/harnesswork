@@ -4,7 +4,7 @@
  */
 import { Component, createSignal, createEffect, Show } from 'solid-js';
 import type { KnowledgeEntry } from '../../services/knowledge-index';
-import { fileRead } from '../../services/opencode-client';
+import { fileRead } from '../../services/file-ops';
 import { themeColors, chartColors } from '../../utils/colors';
 import DocMetaHeader from './doc-meta-header';
 import DocChainBreadcrumb from './doc-chain-breadcrumb';

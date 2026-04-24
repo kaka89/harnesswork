@@ -6,13 +6,12 @@
  *
  * 自动重连机制：
  * - 检测到断开时，进入 'reconnecting' 状态
- * - 调用 refreshLocalClient() 刷新 Tauri 动态端口 + 认证信息
  * - 按 2s/3s/5s/8s/10s 退避重试，共 5 次
  * - 重连成功恢复 'connected'，全部失败回到 'disconnected'
  */
 
 import { createSignal, onMount, onCleanup } from 'solid-js';
-import { getXingjingClient, refreshLocalClient } from '../services/opencode-client';
+import { getXingjingClient, isClientReady } from '../services/opencode-client';
 
 export type OpenCodeStatus = 'connected' | 'disconnected' | 'reconnecting';
 
@@ -55,8 +54,7 @@ export function useOpenCodeStatus(): () => OpenCodeStatus {
     console.log('[xingjing] OpenCode 断开，开始自动重连...');
 
     for (let i = 0; i < RECONNECT_DELAYS.length; i++) {
-      // 刷新本地客户端（Tauri 环境下可能已换端口）
-      await refreshLocalClient();
+      // 等待退避间隔后重试 ping
       if (await ping()) {
         console.log(`[xingjing] OpenCode 重连成功（第 ${i + 1} 次尝试）`);
         setStatus('connected');

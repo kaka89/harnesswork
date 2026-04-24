@@ -1,8 +1,8 @@
 /**
  * 星静前端文件服务层
  *
- * 封装 OpenCode file API，提供通用的文件 CRUD 能力。
- * 支持 YAML 和 Markdown+frontmatter 格式，降级到 mock 数据。
+ * 星静文件服务层 — 提供通用的文件 CRUD 能力。
+ * 支持 YAML 和 Markdown+frontmatter 格式。
  *
  * 文件格式约定：
  * - 文档类（PRD/SDD/Knowledge）→ Markdown（frontmatter 含结构化元数据）
@@ -11,7 +11,7 @@
  */
 
 import yaml from 'js-yaml';
-import { fileList, fileRead, fileWrite, fileDelete, FileNode } from './opencode-client';
+import { fileList, fileRead, fileWrite, fileDelete, type FileNode } from './file-ops';
 
 export type { FileNode };
 
@@ -1549,12 +1549,11 @@ const ESSENTIAL_PRODUCT_FILES: Array<{ path: string; defaultContent: string }> =
 export async function ensureProductFiles(workDir: string): Promise<number> {
   let created = 0;
   for (const file of ESSENTIAL_PRODUCT_FILES) {
-    const fullPath = `${workDir}/${file.path}`;
     try {
-      const content = await fileRead(fullPath);
+      const content = await fileRead(file.path, workDir);
       if (content === null || content === undefined) {
         // 文件不存在，创建它
-        const ok = await fileWrite(fullPath, file.defaultContent);
+        const ok = await fileWrite(file.path, file.defaultContent, workDir);
         if (ok) {
           created++;
           console.info(`[xingjing] 自动创建缺失文件: ${file.path}`);
@@ -1563,7 +1562,7 @@ export async function ensureProductFiles(workDir: string): Promise<number> {
     } catch {
       // 读取失败（文件不存在），尝试创建
       try {
-        const ok = await fileWrite(fullPath, file.defaultContent);
+        const ok = await fileWrite(file.path, file.defaultContent, workDir);
         if (ok) {
           created++;
           console.info(`[xingjing] 自动创建缺失文件: ${file.path}`);

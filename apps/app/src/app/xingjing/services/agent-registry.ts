@@ -9,7 +9,7 @@
  */
 
 import { type AutopilotAgent, SOLO_AGENTS, TEAM_AGENTS, buildOrchestratorSystemPrompt } from './autopilot-executor';
-import { fileRead, fileWrite, fileList, fileDelete } from './opencode-client';
+import { fileRead, fileWrite, fileList, fileDelete } from './file-ops';
 import { parseFrontmatter, extractBody } from '../utils/frontmatter';
 
 // ─── 类型定义 ─────────────────────────────────────────────────

@@ -11,7 +11,7 @@
 
 import { SOLO_SKILL_DEFS } from '../skills/solo-skill-defs';
 import { teamSkillPool, type SkillDef } from '../mock/agentWorkshop';
-import { fileRead, fileWrite, fileList, fileDelete } from './opencode-client';
+import { fileRead, fileWrite, fileList, fileDelete } from './file-ops';
 
 // ─── 全局存储路径 ─────────────────────────────────────
 

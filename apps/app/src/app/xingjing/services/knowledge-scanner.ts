@@ -10,8 +10,8 @@
  * 3. 差异化提取（按文档类型差异化解析内容）
  */
 
-import { fileRead, fileList } from './opencode-client';
-import type { FileNode } from './opencode-client';
+import { fileRead, fileList } from './file-ops';
+import type { FileNode } from './file-ops';
 
 // ─── 会话级 fileList 缓存 ────────────────────────────────────────────────────
 // 单次扫描过程中缓存 fileList 结果，避免对同一目录重复列举（并发展开时尤为明显）。

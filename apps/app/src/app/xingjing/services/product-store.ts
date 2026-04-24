@@ -4,40 +4,15 @@
  * 产品信息存储在本地全局配置 ~/.xingjing/products.yaml
  * 当前模式偏好存储在 ~/.xingjing/preferences.yaml
  *
- * 通过 OpenCode file API 读写，降级到 localStorage 兜底。
+ * 通过 file-ops 层读写，产品切换 = OpenWork Workspace 切换。
  */
 
 import { createSignal, createEffect } from 'solid-js';
 import { readYaml, writeYaml } from './file-store';
 import { buildProductFileList, buildTeamProductLineFiles, buildTeamDomainFiles, buildTeamAppFiles, buildTeamRootConfig } from './product-dir-structure';
-import { initProductDir, runGitInit, engineInfo } from '../../lib/tauri';
-import { setWorkingDirectory } from './opencode-client';
-import { isTauriRuntime } from '../../utils';
+import { initProductDir, runGitInit } from '../../lib/tauri';
+import { setWorkingDirectory } from './file-ops';
 import type { XingjingOpenworkContext } from '../stores/app-store';
-
-// 动态获取 OpenCode 真实 baseUrl：Tauri 运行时从 engine_info 读取，浏览器内降级到默认端口
-async function resolveOpenCodeInfo(): Promise<{ baseUrl: string; username: string; password: string }> {
-  if (isTauriRuntime()) {
-    try {
-      const info = await engineInfo();
-      if (info.running && info.baseUrl) {
-        return {
-          baseUrl: info.baseUrl.replace(/\/$/, ''),
-          username: info.opencodeUsername?.trim() ?? '',
-          password: info.opencodePassword?.trim() ?? '',
-        };
-      }
-    } catch {
-      // Tauri invoke 失败，降级
-    }
-  }
-  return { baseUrl: 'http://127.0.0.1:4096', username: '', password: '' };
-}
-
-// 兼容旧用法
-async function resolveOpenCodeBaseUrl(): Promise<string> {
-  return (await resolveOpenCodeInfo()).baseUrl;
-}
 
 // ─── 类型定义 ────────────────────────────────────────────────────────────────
 
@@ -108,48 +83,11 @@ const PRODUCTS_FILE = '~/.xingjing/products.yaml';
 const PREFERENCES_FILE = '~/.xingjing/preferences.yaml';
 const XINGJING_DIR_STRUCTURE: string[] = []; // 动态生成，保留接口兼容
 
-// ─── localStorage 兜底 ───────────────────────────────────────────────────────
-
-const LS_PRODUCTS_KEY = 'xingjing:products';
-const LS_PREFS_KEY = 'xingjing:preferences';
-
-function lsGetProducts(): XingjingProduct[] {
-  try {
-    const raw = localStorage.getItem(LS_PRODUCTS_KEY);
-    if (!raw) return [];
-    return JSON.parse(raw) as XingjingProduct[];
-  } catch {
-    return [];
-  }
-}
-
-function lsSetProducts(products: XingjingProduct[]) {
-  try {
-    localStorage.setItem(LS_PRODUCTS_KEY, JSON.stringify(products));
-  } catch { /* ignore */ }
-}
-
-function lsGetPrefs(): XingjingPreferences {
-  try {
-    const raw = localStorage.getItem(LS_PREFS_KEY);
-    if (!raw) return { activeProductId: null, viewMode: 'team' };
-    return JSON.parse(raw) as XingjingPreferences;
-  } catch {
-    return { activeProductId: null, viewMode: 'team' };
-  }
-}
-
-function lsSetPrefs(prefs: XingjingPreferences) {
-  try {
-    localStorage.setItem(LS_PREFS_KEY, JSON.stringify(prefs));
-  } catch { /* ignore */ }
-}
-
 // ─── 产品注册表 Store ─────────────────────────────────────────────────────────
 
 export function createProductStore() {
-  const [products, setProducts] = createSignal<XingjingProduct[]>(lsGetProducts());
-  const [preferences, setPreferences] = createSignal<XingjingPreferences>(lsGetPrefs());
+  const [products, setProducts] = createSignal<XingjingProduct[]>([]);
+  const [preferences, setPreferences] = createSignal<XingjingPreferences>({ activeProductId: null, viewMode: 'solo' });
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
 
@@ -179,10 +117,8 @@ export function createProductStore() {
 
       if (loadedProducts.length > 0) {
         setProducts(loadedProducts);
-        lsSetProducts(loadedProducts);
       }
       setPreferences(loadedPrefs);
-      lsSetPrefs(loadedPrefs);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load products');
     } finally {
@@ -194,19 +130,17 @@ export function createProductStore() {
   async function loadFromOpenWork(openworkCtx: XingjingOpenworkContext) {
     setLoading(true);
     try {
-      // 从本地 localStorage 读取现有产品（包含 name、description 等元数据）
-      const existingProducts = lsGetProducts();
+      // 从当前已加载的产品列表中逐一验证 OpenWork workspace 映射
+      const currentProducts = products();
       const synced: XingjingProduct[] = [];
 
-      // 逐一验证每个已知产品是否在 OpenWork 中注册
-      for (const p of existingProducts) {
+      for (const p of currentProducts) {
         const wsId = await openworkCtx.resolveWorkspaceByDir(p.workDir);
         synced.push({ ...p, _workspaceId: wsId ?? undefined });
       }
 
       if (synced.length > 0) {
         setProducts(synced);
-        lsSetProducts(synced);
       }
     } catch (e) {
       console.warn('[product-store] loadFromOpenWork failed, fallback to file', e);
@@ -217,12 +151,10 @@ export function createProductStore() {
 
   // ── Save to file ──
   async function saveProducts(updatedProducts: XingjingProduct[]) {
-    lsSetProducts(updatedProducts);
     await writeYaml(PRODUCTS_FILE, { products: updatedProducts } as unknown as Record<string, unknown>);
   }
 
   async function savePreferences(updatedPrefs: XingjingPreferences) {
-    lsSetPrefs(updatedPrefs);
     await writeYaml(PREFERENCES_FILE, updatedPrefs as unknown as Record<string, unknown>);
   }
 
@@ -345,9 +277,8 @@ ${product.description ? `\n## 描述\n${product.description}` : ''}
     setPreferences(updatedPrefs);
     await savePreferences(updatedPrefs);
 
-    // Re-initialize OpenCode client with the new product's workDir
-    const { baseUrl, username, password } = await resolveOpenCodeInfo();
-    setWorkingDirectory(product.workDir, baseUrl, { username, password });
+    // 通知 file-ops 层切换工作目录
+    setWorkingDirectory(product.workDir);
   }
 
   async function setViewMode(mode: 'team' | 'solo') {
@@ -575,13 +506,11 @@ ${product.description ? `\n## 描述\n${product.description}` : ''}
   }
 
   // ── Side effects ──
-  // When active product changes, update the OpenCode client
+  // 活跃产品变化时同步 file-ops 工作目录
   createEffect(() => {
     const product = activeProduct();
     if (product) {
-      resolveOpenCodeInfo().then(({ baseUrl, username, password }) => {
-        setWorkingDirectory(product.workDir, baseUrl, { username, password });
-      });
+      setWorkingDirectory(product.workDir);
     }
   });
 

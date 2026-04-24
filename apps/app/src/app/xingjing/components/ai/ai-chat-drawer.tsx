@@ -20,9 +20,8 @@ import {
   loadSessions as loadLegacySessions,
   appendSession as appendLegacySession,
   saveSessions,
-  nowTimeStr,
-  nowDateTimeStr,
 } from '../../services/chat-session-store';
+import { nowTimeStr, nowDateTimeStr } from '../../utils/time';
 import {
   type MemorySession,
   type MemoryMessage,

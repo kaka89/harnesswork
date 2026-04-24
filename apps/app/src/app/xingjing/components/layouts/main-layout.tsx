@@ -28,6 +28,8 @@ import {
 } from 'lucide-solid';
 import { themeColors } from '../../utils/colors';
 import { useOpenCodeStatus } from '../../hooks/use-opencode-status';
+import { engineInfo } from '../../../lib/tauri';
+import { isTauriRuntime } from '../../../utils';
 
 const roleOptions: { value: Role; label: string }[] = [
   { value: 'pm', label: '产品经理' },
@@ -95,7 +97,7 @@ const [aiDrawerOpen, setAiDrawerOpen] = createSignal(false);
 const MainLayout: ParentComponent = (props) => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { state, actions, openworkStatus } = useAppStore();
+  const { state, actions, openworkStatus, openworkCtx } = useAppStore();
   const opencodeStatus = useOpenCodeStatus();
 
   const [openKeys, setOpenKeys] = createSignal<string[]>([]);
@@ -104,6 +106,40 @@ const MainLayout: ParentComponent = (props) => {
   );
   const [energyMode, setEnergyMode] = createSignal<'deep' | 'light'>('deep');
   const [sidebarCollapsed, setSidebarCollapsed] = createSignal(false);
+  const [opencodeBaseUrl, setOpencodeBaseUrl] = createSignal<string | null>(null);
+  // OpenWork URL 直接从 openworkCtx.serverBaseUrl 读取（响应式）
+  const openworkBaseUrl = () => openworkCtx?.serverBaseUrl?.() ?? null;
+  // 星静页面完整可访问 URL（纯前端计算，不依赖 context）
+  const xingjingUrl = () => {
+    if (typeof window === 'undefined') return null;
+    return window.location.origin + '/xingjing';
+  };
+
+  // 连接配置 Popover 状态
+  const [showConnectPopover, setShowConnectPopover] = createSignal(false);
+  const [connectFormUrl, setConnectFormUrl] = createSignal('');
+  const [connectFormToken, setConnectFormToken] = createSignal('');
+  const [connectFormBusy, setConnectFormBusy] = createSignal(false);
+  const [connectFormError, setConnectFormError] = createSignal('');
+  // token 复制反馈
+  const [tokenCopied, setTokenCopied] = createSignal(false);
+  // 邀请链接复制反馈
+  const [inviteCopied, setInviteCopied] = createSignal(false);
+
+  // 生成带 ow_url + ow_token 的完整星静邀请链接
+  const buildInviteUrl = () => {
+    if (typeof window === 'undefined') return null;
+    const owUrl = openworkBaseUrl();
+    const owToken = openworkCtx?.currentOpenworkToken?.();
+    if (!owUrl) return null;
+    const base = window.location.origin + '/xingjing';
+    const params = new URLSearchParams();
+    params.set('ow_url', owUrl);
+    if (owToken) params.set('ow_token', owToken);
+    params.set('ow_startup', 'server');
+    params.set('ow_auto_connect', '1');
+    return `${base}?${params.toString()}`;
+  };
 
   // AI 悬浮按钮拖拽状态
   const FLOAT_BTN_SIZE = 56;
@@ -155,6 +191,16 @@ const MainLayout: ParentComponent = (props) => {
     }
   };
 
+  // 初始化服务连接地址（用于左下角连接状态显示）
+  onMount(async () => {
+    if (isTauriRuntime()) {
+      try {
+        const info = await engineInfo();
+        if (info.running && info.baseUrl) setOpencodeBaseUrl(info.baseUrl);
+      } catch { /* ignore */ }
+    }
+  });
+
   // 名言轮播
   onMount(() => {
     const timer = setInterval(() => {
@@ -180,7 +226,7 @@ const MainLayout: ParentComponent = (props) => {
   const menuItems = () => isSoloMode() ? soloMenuItems : teamMenuItems;
 
   // Router base path — must match the base prop in xingjing-native.tsx
-  const ROUTER_BASE = '/xingjing-solid';
+  const ROUTER_BASE = '/xingjing';
 
   // Strip the router base prefix so menu keys (e.g. '/autopilot') can be
   // compared against location.pathname which includes the base prefix.
@@ -474,42 +520,211 @@ const MainLayout: ParentComponent = (props) => {
               </div>
             }
           >
-            <div class="px-3 py-2">
-              <div class="flex items-center justify-between py-1">
-                <div class="flex items-center gap-1.5">
+            <div class="relative">
+              {/* 连接配置 Popover */}
+              <Show when={showConnectPopover()}>
+                <div
+                  class="absolute bottom-full left-0 right-0 mx-2 mb-1 z-50
+                         bg-[var(--dls-surface)] border border-[var(--dls-border)]
+                         rounded-xl shadow-lg p-4 text-xs"
+                >
+                  {/* 标题行 */}
+                  <div class="flex items-center justify-between mb-3">
+                    <span class="text-[var(--dls-text-primary)] font-medium text-[11px]">连接配置</span>
+                    <button
+                      class="text-[var(--dls-text-muted)] hover:text-[var(--dls-text-primary)] transition-colors p-0.5"
+                      onClick={() => setShowConnectPopover(false)}
+                    >✕</button>
+                  </div>
+
+                  {/* OpenWork URL */}
+                  <div class="mb-2">
+                    <label class="block text-[10px] text-[var(--dls-text-muted)] mb-1">OpenWork 地址</label>
+                    <input
+                      type="text"
+                      placeholder="http://127.0.0.1:3000"
+                      value={connectFormUrl()}
+                      onInput={(e) => setConnectFormUrl(e.currentTarget.value)}
+                      class="w-full bg-[var(--dls-bg-subtle)] border border-[var(--dls-border)]
+                             rounded-lg px-2.5 py-1.5 text-[11px] text-[var(--dls-text-primary)]
+                             placeholder-[var(--dls-text-muted)] outline-none
+                             focus:border-[var(--dls-accent)] transition-colors"
+                    />
+                  </div>
+
+                  {/* Token */}
+                  <div class="mb-3">
+                    <label class="block text-[10px] text-[var(--dls-text-muted)] mb-1">Token</label>
+                    <input
+                      type="password"
+                      placeholder="粘贴访问 Token"
+                      value={connectFormToken()}
+                      onInput={(e) => setConnectFormToken(e.currentTarget.value)}
+                      class="w-full bg-[var(--dls-bg-subtle)] border border-[var(--dls-border)]
+                             rounded-lg px-2.5 py-1.5 text-[11px] text-[var(--dls-text-primary)]
+                             placeholder-[var(--dls-text-muted)] outline-none
+                             focus:border-[var(--dls-accent)] transition-colors"
+                    />
+                  </div>
+
+                  {/* 错误提示 */}
+                  <Show when={connectFormError()}>
+                    <p class="text-[10px] text-red-400 mb-2">{connectFormError()}</p>
+                  </Show>
+
+                  {/* 操作按钮 */}
+                  <div class="flex gap-2">
+                    <button
+                      disabled={connectFormBusy()}
+                      onClick={async () => {
+                        const url = connectFormUrl().trim();
+                        const token = connectFormToken().trim();
+                        if (!url) { setConnectFormError('请填写 OpenWork 地址'); return; }
+                        setConnectFormBusy(true);
+                        setConnectFormError('');
+                        try {
+                          openworkCtx?.updateOpenworkSettings?.({ urlOverride: url, token });
+                          if (!openworkCtx?.reconnect) {
+                            setShowConnectPopover(false);
+                            return;
+                          }
+                          const ok = await openworkCtx.reconnect();
+                          if (ok === true) {
+                            setShowConnectPopover(false);
+                          } else {
+                            setConnectFormError('连接失败，请检查 OpenWork 地址和 Token 是否正确');
+                          }
+                        } catch (_e) {
+                          setConnectFormError('连接出错，请稍后重试');
+                        } finally {
+                          setConnectFormBusy(false);
+                        }
+                      }}
+                      class="flex-1 bg-[var(--dls-accent)] hover:opacity-90 disabled:opacity-50
+                             text-white rounded-lg py-1.5 text-[11px] font-medium transition-opacity"
+                    >
+                      {connectFormBusy() ? '连接中...' : '保存并连接'}
+                    </button>
+                    <button
+                      onClick={() => setShowConnectPopover(false)}
+                      class="px-3 bg-[var(--dls-hover)] hover:opacity-80
+                             text-[var(--dls-text-muted)] rounded-lg py-1.5 text-[11px] transition-opacity"
+                    >取消</button>
+                  </div>
+                </div>
+              </Show>
+
+              {/* 点击整个连接区域：未连接时弹出配置表单，已连接时复制邀请链接 */}
+              <div
+                class="px-3 py-2 transition-colors cursor-pointer hover:bg-[var(--dls-hover-bg,rgba(0,0,0,0.04))]"
+                onClick={() => {
+                  if (openworkStatus() === 'disconnected') {
+                    // 未连接：弹出配置框
+                    setConnectFormUrl(openworkBaseUrl() ?? '');
+                    setConnectFormToken(openworkCtx?.currentOpenworkToken?.() ?? '');
+                    setConnectFormError('');
+                    setShowConnectPopover(true);
+                  } else {
+                    // 已连接：复制完整邀请链接
+                    const url = buildInviteUrl();
+                    if (!url) return;
+                    navigator.clipboard.writeText(url).then(() => {
+                      setInviteCopied(true);
+                      setTimeout(() => setInviteCopied(false), 2000);
+                    }).catch(() => {});
+                  }
+                }}
+              >
+                {/* 邀请链接复制反馈 */}
+                <Show when={inviteCopied()}>
+                  <div class="text-[10px] text-[var(--green-9,#16a34a)] pb-1 leading-tight">
+                    ✓ 邀请链接已复制
+                  </div>
+                </Show>
+                {/* 星静访问地址 */}
+                <Show when={xingjingUrl()}>
+                  <div class="flex items-center gap-1 py-1">
+                    <span class="text-[10px] text-[var(--dls-text-muted)] flex-shrink-0">星静</span>
+                    <div class="text-[10px] text-[var(--dls-text-muted)] leading-tight select-text cursor-text truncate">
+                      {xingjingUrl()}
+                    </div>
+                  </div>
+                </Show>
+                {/* OpenWork 连接状态行 */}
+                <div class="flex items-center justify-between py-1">
+                  <div class="flex items-center gap-1.5">
+                    <span
+                      class="inline-block w-1.5 h-1.5 rounded-full flex-shrink-0"
+                      style={{
+                        background:
+                          openworkStatus() === 'connected'
+                            ? 'var(--green-9, #16a34a)'
+                            : openworkStatus() === 'limited'
+                              ? 'var(--amber-9, #d97706)'
+                              : 'var(--red-9, #dc2626)',
+                      }}
+                    />
+                    <span class="text-xs text-[var(--dls-text-secondary)]">OpenWork</span>
+                  </div>
                   <span
-                    class="inline-block w-1.5 h-1.5 rounded-full flex-shrink-0"
+                    class="text-xs"
                     style={{
-                      background:
+                      color:
                         openworkStatus() === 'connected'
                           ? 'var(--green-9, #16a34a)'
                           : openworkStatus() === 'limited'
                             ? 'var(--amber-9, #d97706)'
                             : 'var(--red-9, #dc2626)',
                     }}
-                  />
-                  <span class="text-xs text-[var(--dls-text-secondary)]">OpenWork</span>
+                  >
+                    {openworkStatus() === 'connected' ? '已连接' : openworkStatus() === 'limited' ? '受限' : '断开'}
+                  </span>
                 </div>
-                <span
-                  class="text-xs"
-                  style={{
-                    color:
-                      openworkStatus() === 'connected'
-                        ? 'var(--green-9, #16a34a)'
-                        : openworkStatus() === 'limited'
-                          ? 'var(--amber-9, #d97706)'
-                          : 'var(--red-9, #dc2626)',
-                  }}
-                >
-                  {openworkStatus() === 'connected' ? '已连接' : openworkStatus() === 'limited' ? '受限' : '断开'}
-                </span>
-              </div>
-              <div class="flex items-center justify-between py-1">
-                <div class="flex items-center gap-1.5">
+                {/* OpenWork 地址显示 */}
+                <Show when={openworkBaseUrl() && openworkStatus() !== 'disconnected'}>
+                  <div class="text-[10px] text-[var(--dls-text-muted)] pl-3 pb-0.5 leading-tight select-text cursor-text">
+                    {openworkBaseUrl()}
+                  </div>
+                  <Show when={openworkCtx?.currentOpenworkToken?.()}>
+                    <div
+                      class="text-[10px] text-[var(--dls-text-muted)] pl-3 pb-1 leading-tight cursor-pointer opacity-60 truncate hover:opacity-100 transition-opacity select-none"
+                      title="点击复制 Token"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const t = openworkCtx?.currentOpenworkToken?.();
+                        if (!t) return;
+                        navigator.clipboard.writeText(t).then(() => {
+                          setTokenCopied(true);
+                          setTimeout(() => setTokenCopied(false), 1500);
+                        }).catch(() => {});
+                      }}
+                    >
+                      {tokenCopied() ? '✓ 已复制' : `token: ${openworkCtx?.currentOpenworkToken?.()}`}
+                    </div>
+                  </Show>
+                </Show>
+                {/* OpenCode 连接状态行 */}
+                <div class="flex items-center justify-between py-1">
+                  <div class="flex items-center gap-1.5">
+                    <span
+                      class="inline-block w-1.5 h-1.5 rounded-full flex-shrink-0"
+                      style={{
+                        background:
+                          openworkStatus() !== 'disconnected'
+                            ? 'var(--green-9, #16a34a)'
+                            : opencodeStatus() === 'connected'
+                              ? 'var(--green-9, #16a34a)'
+                              : opencodeStatus() === 'reconnecting'
+                                ? 'var(--amber-9, #d97706)'
+                                : 'var(--red-9, #dc2626)',
+                      }}
+                    />
+                    <span class="text-xs text-[var(--dls-text-secondary)]">OpenCode</span>
+                  </div>
                   <span
-                    class="inline-block w-1.5 h-1.5 rounded-full flex-shrink-0"
+                    class="text-xs"
                     style={{
-                      background:
+                      color:
                         openworkStatus() !== 'disconnected'
                           ? 'var(--green-9, #16a34a)'
                           : opencodeStatus() === 'connected'
@@ -518,30 +733,23 @@ const MainLayout: ParentComponent = (props) => {
                               ? 'var(--amber-9, #d97706)'
                               : 'var(--red-9, #dc2626)',
                     }}
-                  />
-                  <span class="text-xs text-[var(--dls-text-secondary)]">OpenCode</span>
+                  >
+                    {openworkStatus() !== 'disconnected'
+                      ? '通过 OpenWork'
+                      : opencodeStatus() === 'connected'
+                        ? '已连接'
+                        : opencodeStatus() === 'reconnecting'
+                          ? '重连中...'
+                          : '断开'}
+                  </span>
                 </div>
-                <span
-                  class="text-xs"
-                  style={{
-                    color:
-                      openworkStatus() !== 'disconnected'
-                        ? 'var(--green-9, #16a34a)'
-                        : opencodeStatus() === 'connected'
-                          ? 'var(--green-9, #16a34a)'
-                          : opencodeStatus() === 'reconnecting'
-                            ? 'var(--amber-9, #d97706)'
-                            : 'var(--red-9, #dc2626)',
-                  }}
-                >
-                  {openworkStatus() !== 'disconnected'
-                    ? '通过 OpenWork'
-                    : opencodeStatus() === 'connected'
-                      ? '已连接'
-                      : opencodeStatus() === 'reconnecting'
-                        ? '重连中...'
-                        : '断开'}
-                </span>
+                {/* OpenCode 地址显示 */}
+                <Show when={opencodeBaseUrl() && (openworkStatus() !== 'disconnected' || opencodeStatus() === 'connected')}>
+                  <div class="text-[10px] text-[var(--dls-text-muted)] pl-3 pb-0.5 leading-tight select-text cursor-text">
+                    {opencodeBaseUrl()}
+                    <span class="ml-1 opacity-60">(需 Basic Auth)</span>
+                  </div>
+                </Show>
               </div>
             </div>
           </Show>

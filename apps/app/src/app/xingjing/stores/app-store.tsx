@@ -1,9 +1,9 @@
 import { createStore } from 'solid-js/store';
 import { createContext, useContext, ParentComponent, createEffect, createSignal, onMount } from 'solid-js';
 import type { MessageWithParts } from '../../types';
-import { PRD, prdList as initialPrds } from '../mock/prd';
-import { Task, taskList as initialTasks } from '../mock/tasks';
-import { BacklogItem, backlogItems as initialBacklog } from '../mock/sprint';
+import type { PRD } from '../mock/prd';
+import type { Task } from '../mock/tasks';
+import type { BacklogItem } from '../mock/sprint';
 import { createProductStore, type ProductStore } from '../services/product-store';
 import {
   loadPrds, savePrd,
@@ -13,13 +13,14 @@ import {
   loadGlobalSettings, saveGlobalSettings,
   ensureProductFiles,
 } from '../services/file-store';
-import { callAgent as _callAgent, setProviderAuth, setOpenworkFileOps, setSharedClient, type CallAgentOptions } from '../services/opencode-client';
+import { callAgent as _callAgent, setProviderAuth, setSharedClient, type CallAgentOptions } from '../services/opencode-client';
+import { initBridge, destroyBridge, type NavigationTarget, type BridgeConfig } from '../services/xingjing-bridge';
 import { setSchedulerApi } from '../services/scheduler-client';
 import { ensureAgentsRegistered } from '../services/agent-registry';
 import { ensureSkillsRegistered } from '../services/skill-registry';
 import { appendAgentLog } from '../services/agent-logger';
 import { currentUser } from '../services/auth-service';
-import { DEFAULT_ALLOWED_TOOLS } from '../mock/settings';
+import { DEFAULT_ALLOWED_TOOLS } from '../utils/defaults';
 import type { createClient } from '../../lib/opencode';
 import type { OpenworkSkillItem, OpenworkSkillContent, OpenworkCommandItem, OpenworkAuditEntry } from '../../lib/openwork-server';
 
@@ -121,6 +122,35 @@ export interface XingjingOpenworkContext {
    * 幂等：已加载时立即返回，未加载时发起 HTTP 加载。
    */
   ensureSessionLoaded?: (sessionId: string) => Promise<void>;
+  // ── 导航回调：跳转到 OpenWork 原生页面 ──
+  navigateTo?: (target: NavigationTarget) => void;
+  /** OpenWork Server 的访问地址（如 http://127.0.0.1:3000） */
+  serverBaseUrl?: () => string | null;
+  /** 星静页面的完整访问地址（OpenWork connectUrl + /xingjing） */
+  xingjingUrl?: () => string | null;
+  /** 触发 OpenWork Server 重连（同步 token/url 后重新握手） */
+  reconnect?: () => Promise<boolean>;
+  /** 更新 OpenWork Server 连接设置（urlOverride + token），立即生效 */
+  updateOpenworkSettings?: (next: { urlOverride: string; token: string }) => void;
+  /** 当前 OpenWork 连接使用的 token（用于显示） */
+  currentOpenworkToken?: () => string | null;
+  // ── 内嵌 OpenWork 原生视图所需字段 ──
+  /** OpenWork Server URL（IdentitiesView 显示用） */
+  openworkServerUrl?: string;
+  /** OpenWork 重连中标记 */
+  openworkReconnectBusy?: boolean;
+  /** 重启本地 Server */
+  restartLocalServer?: () => Promise<boolean>;
+  /** OpenWork runtime workspace ID */
+  openworkRuntimeWorkspaceId?: string | null;
+  /** 开发者模式 */
+  developerMode?: boolean;
+  /** 重载 workspace engine */
+  reloadWorkspaceEngine?: () => Promise<void>;
+  /** 重载中标记 */
+  reloadBusy?: boolean;
+  /** 是否可重载 workspace */
+  canReloadWorkspace?: boolean;
 }
 
 interface AppState {
@@ -214,9 +244,9 @@ export const AppStoreProvider: ParentComponent<{
     currentRole: 'pm',
     currentProject: '',
     currentUser: '张PM',
-    prds: [...initialPrds],
-    tasks: [...initialTasks],
-    backlog: [...initialBacklog],
+    prds: [] as PRD[],
+    tasks: [] as Task[],
+    backlog: [] as BacklogItem[],
     aiPanelOpen: false,
     appMode: (productStore.viewMode() as AppMode) ?? 'team',
     themeMode: 'light',
@@ -273,19 +303,7 @@ export const AppStoreProvider: ParentComponent<{
     }
   });
 
-  // ── 注入 OpenWork 文件操作能力 ──
-  createEffect(() => {
-    const ctx = props.openworkCtx;
-    const wsId = resolvedWorkspaceId();
-    if (ctx?.readWorkspaceFile && ctx?.writeWorkspaceFile) {
-      setOpenworkFileOps(
-        { read: ctx.readWorkspaceFile, write: ctx.writeWorkspaceFile, list: ctx.listDir ?? undefined },
-        wsId,
-      );
-    } else {
-      setOpenworkFileOps(null, null);
-    }
-  });
+  // ── 文件操作已迁移到 file-ops.ts，通过 Bridge 获取 OpenWork 能力 ──
 
   // ── 注入 OpenWork Scheduler API（定时任务）──
   createEffect(() => {
@@ -320,6 +338,50 @@ export const AppStoreProvider: ParentComponent<{
           return items.map(s => ({ name: s.name }));
         },
       );
+    }
+  });
+
+  // ── 初始化 XingjingBridge（将 OpenWork 全能力注入 Bridge 单例）──
+  createEffect(() => {
+    const ctx = props.openworkCtx;
+    const wsId = resolvedWorkspaceId();
+    if (ctx && wsId) {
+      const bridgeConfig: BridgeConfig = {
+        client: () => ctx.opencodeClient?.() ?? null,
+        fileOps: (ctx.readWorkspaceFile && ctx.writeWorkspaceFile)
+          ? { read: ctx.readWorkspaceFile, write: ctx.writeWorkspaceFile, list: ctx.listDir ?? undefined }
+          : null,
+        workspaceId: () => resolvedWorkspaceId(),
+        extensions: {
+          listSkills: () => ctx.listSkills(wsId),
+          getSkill: (_, name) => ctx.getSkill(wsId, name),
+          upsertSkill: (_, name, content, desc) => ctx.upsertSkill(wsId, name, content, desc),
+          deleteSkill: ctx.deleteSkill ? (_, name) => ctx.deleteSkill!(wsId, name) : undefined,
+          listHubSkills: ctx.listHubSkills,
+          installHubSkill: ctx.installHubSkill ? (_, name) => ctx.installHubSkill!(wsId, name) : undefined,
+          listMcp: () => ctx.listMcp(wsId),
+          addMcp: ctx.addMcp ? (_, payload) => ctx.addMcp!(wsId, payload) : undefined,
+          removeMcp: ctx.removeMcp ? (_, name) => ctx.removeMcp!(wsId, name) : undefined,
+          logoutMcpAuth: ctx.logoutMcpAuth ? (_, name) => ctx.logoutMcpAuth!(wsId, name) : undefined,
+          listCommands: () => ctx.listCommands(wsId),
+          listAudit: (_, limit) => ctx.listAudit(wsId, limit),
+          readOpencodeConfig: () => ctx.readOpencodeConfig(wsId),
+          writeOpencodeConfig: (_, content) => ctx.writeOpencodeConfig(wsId, content),
+        },
+        workspace: {
+          resolveByDir: ctx.resolveWorkspaceByDir,
+          createByDir: ctx.createWorkspaceByDir,
+        },
+        serverStatus: () => ctx.serverStatus?.() ?? 'disconnected',
+        fileBrowser: ctx.listDir ? { listDir: ctx.listDir } : undefined,
+        scheduler: (ctx.listScheduledJobs && ctx.deleteScheduledJob)
+          ? { listJobs: () => ctx.listScheduledJobs!(wsId), deleteJob: (name: string) => ctx.deleteScheduledJob!(wsId, name) }
+          : undefined,
+        navigateTo: ctx.navigateTo,
+      };
+      initBridge(bridgeConfig);
+    } else {
+      destroyBridge();
     }
   });
 
@@ -392,7 +454,8 @@ export const AppStoreProvider: ParentComponent<{
         saveGlobalSettings({ ...g, allowedTools: DEFAULT_ALLOWED_TOOLS }).catch(() => {});
       }
       // ★ 启动时一次性后台同步 API Key 到 OpenCode（对齐 OpenWork 设置页模式）
-      const llm = g.llm;
+      // 若 global-settings.yaml 无 llm 配置，回退到 DEFAULT_LLM_CONFIG（预置 DeepSeek Key）
+      const llm = g.llm ?? DEFAULT_LLM_CONFIG;
       if (llm?.providerID && llm.providerID !== 'custom' && llm?.apiKey && llm.apiKey.length > 4) {
         setProviderAuth(llm.providerID, llm.apiKey).catch(() => {/* silent */});
       }
@@ -553,13 +616,10 @@ export const AppStoreProvider: ParentComponent<{
         directory: dir,
         model,
         owSessionStatusById,
+        owMessagesBySessionId: props.openworkCtx?.messagesBySessionId ?? (() => []),
+        owEnsureSessionLoaded: props.openworkCtx?.ensureSessionLoaded,
         autoApproveTools: opts.autoApproveTools ?? (state.allowedTools.length ? state.allowedTools : undefined),
-        owDeleteSession: async (sessionId: string) => {
-          const wsId = workspaceIdSnapshot;
-          if (wsId && props.openworkCtx?.deleteSession) {
-            await props.openworkCtx.deleteSession(wsId, sessionId);
-          }
-        },
+        // 不自动删除 session：多轮对话需保留 session，清理由 UI 显式管理
         onDone: (text: string) => {
           void appendAgentLog({
             ...logBase,

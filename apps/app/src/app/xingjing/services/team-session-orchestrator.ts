@@ -1,6 +1,8 @@
 /**
  * Team Session Orchestrator
  *
+ * @deprecated Team Edition out of scope，待 Team 改造时统一处理。
+ *
  * 核心编排器：为 Orchestrator 和每个 Agent 创建真实 OpenWork Session，
  * 通过 createMessageAccumulator 订阅每个 Session 的 SSE 流，
  * 对外暴露响应式的 TeamRunState。

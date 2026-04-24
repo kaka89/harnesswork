@@ -39,7 +39,7 @@ import {
 import type { AutopilotAgent } from '../../services/autopilot-executor';
 import type { ComposerAttachment } from '../../../types';
 import { themeColors, chartColors } from '../../utils/colors';
-import { modelOptions } from '../../mock/settings';
+import { modelOptions } from '../../utils/defaults';
 
 // ─── 附件常量（对齐 OpenWork Composer）──────────────────────────────────────────
 
@@ -130,9 +130,6 @@ export interface EnhancedComposerProps {
   onStop?: () => void;
   /** 重置对话 */
   onReset?: () => void;
-  /** 当前模式：chat（普通对话）| dispatch（团队调度） */
-  mode: 'chat' | 'dispatch';
-  onModeChange: (mode: 'chat' | 'dispatch') => void;
   /** 能力概览徽标 */
   capabilities?: CapabilityBadge[];
   /** 异步获取可用命令列表（每次 "/" 弹窗打开时调用） */
@@ -143,6 +140,10 @@ export interface EnhancedComposerProps {
   knowledgeScore?: number | null;
   /** 占位提示 */
   placeholder?: string;
+  /** 最近访问文件列表（用于 @file mention） */
+  recentFiles?: string[];
+  /** 异步文件搜索（@file mention 输入时触发） */
+  searchFiles?: (query: string) => Promise<string[]>;
 }
 
 // ─── 斜杠命令面板 ──────────────────────────────────────────────────────────────
@@ -260,30 +261,54 @@ const SlashCommandPanel = (props: {
 
 // ─── @Mention 面板 ─────────────────────────────────────────────────────────────
 
+/** @mention 统一项（Agent 或 File） */
+type MentionItem = {
+  kind: 'agent' | 'file';
+  id: string;
+  label: string;
+  value: string;
+  /** 仅 agent */
+  agent?: AutopilotAgent;
+  /** 文件分组标签 */
+  group?: 'agent' | 'recent' | 'file';
+};
+
 const MentionPanel = (props: {
-  agents: AutopilotAgent[];
-  query: string;
+  items: MentionItem[];
   anchorRect: DOMRect | null;
-  onSelect: (agent: AutopilotAgent) => void;
+  onSelect: (item: MentionItem) => void;
   activeIndex?: number;
   onHover?: (index: number) => void;
 }) => {
-  const filtered = () => {
-    const q = props.query.toLowerCase();
-    return props.agents.filter(
-      (a) => a.id.toLowerCase().includes(q) || a.name.toLowerCase().includes(q),
-    );
+  // 按 group 分组
+  const groups = () => {
+    const map = new Map<string, MentionItem[]>();
+    for (const item of props.items) {
+      const g = item.group ?? item.kind;
+      const arr = map.get(g);
+      if (arr) arr.push(item);
+      else map.set(g, [item]);
+    }
+    return map;
+  };
+
+  const groupLabels: Record<string, string> = {
+    agent: 'Agent',
+    recent: '\u6700\u8fd1\u6587\u4ef6',
+    file: '\u641c\u7d22\u7ed3\u679c',
   };
 
   return (
-    <Show when={props.anchorRect && filtered().length > 0}>
+    <Show when={props.anchorRect && props.items.length > 0}>
       <Portal>
         <div
           style={{
             position: 'fixed',
             left: `${props.anchorRect!.left}px`,
             bottom: `${window.innerHeight - props.anchorRect!.top + 6}px`,
-            width: `${Math.min(props.anchorRect!.width, 280)}px`,
+            width: `${Math.min(props.anchorRect!.width, 320)}px`,
+            'max-height': '300px',
+            'overflow-y': 'auto',
             'z-index': '500',
             background: themeColors.surface,
             border: `1px solid ${themeColors.border}`,
@@ -292,53 +317,86 @@ const MentionPanel = (props: {
             overflow: 'hidden',
           }}
         >
-          <div style={{
-            padding: '6px 10px 4px',
-            'font-size': '10px',
-            'font-weight': '600',
-            color: themeColors.textMuted,
-            'letter-spacing': '0.5px',
-            'text-transform': 'uppercase',
-            'border-bottom': `1px solid ${themeColors.border}`,
-          }}>
-            选择 Agent
-          </div>
-          <For each={filtered()}>
-            {(agent, index) => {
-              const isActive = () => props.activeIndex === index();
-              return (
-                <button
-                  onClick={() => props.onSelect(agent)}
-                  style={{
-                    display: 'flex',
-                    'align-items': 'center',
-                    gap: '8px',
-                    width: '100%',
-                    padding: '8px 12px',
-                    background: isActive() ? themeColors.bgSubtle : 'none',
-                    border: 'none',
-                    cursor: 'pointer',
-                    'text-align': 'left',
-                    transition: 'background 0.15s',
-                  }}
-                  onMouseEnter={() => props.onHover?.(index())}
-                  onMouseLeave={(e) => { if (!isActive()) (e.currentTarget as HTMLElement).style.background = 'none'; }}
-                >
-                  <div style={{
-                    width: '28px', height: '28px', 'border-radius': '8px',
-                    background: agent.bgColor, display: 'flex',
-                    'align-items': 'center', 'justify-content': 'center', 'font-size': '14px', 'flex-shrink': '0',
-                  }}>
-                    {agent.emoji}
-                  </div>
-                  <div>
-                    <div style={{ 'font-size': '13px', 'font-weight': '500', color: themeColors.text }}>{agent.name}</div>
-                    <div style={{ 'font-size': '11px', color: themeColors.textMuted }}>{agent.description.slice(0, 32)}…</div>
-                  </div>
-                </button>
-              );
-            }}
-          </For>
+          {(() => {
+            let flatIdx = 0;
+            return (
+              <For each={Array.from(groups().entries())}>
+                {([groupKey, items]) => (
+                  <>
+                    <div style={{
+                      padding: '6px 10px 4px',
+                      'font-size': '10px',
+                      'font-weight': '600',
+                      color: themeColors.textMuted,
+                      'letter-spacing': '0.5px',
+                      'text-transform': 'uppercase',
+                      'border-bottom': `1px solid ${themeColors.border}`,
+                    }}>
+                      {groupLabels[groupKey] ?? groupKey}
+                    </div>
+                    <For each={items}>
+                      {(item) => {
+                        const myIdx = flatIdx++;
+                        const isActive = () => props.activeIndex === myIdx;
+                        return (
+                          <button
+                            onClick={() => props.onSelect(item)}
+                            style={{
+                              display: 'flex',
+                              'align-items': 'center',
+                              gap: '8px',
+                              width: '100%',
+                              padding: '8px 12px',
+                              background: isActive() ? themeColors.bgSubtle : 'none',
+                              border: 'none',
+                              cursor: 'pointer',
+                              'text-align': 'left',
+                              transition: 'background 0.15s',
+                            }}
+                            onMouseEnter={() => props.onHover?.(myIdx)}
+                            onMouseLeave={(e) => { if (!isActive()) (e.currentTarget as HTMLElement).style.background = 'none'; }}
+                          >
+                            <Show when={item.kind === 'agent' && item.agent} fallback={
+                              <div style={{
+                                width: '28px', height: '28px', 'border-radius': '8px',
+                                background: 'rgba(59,130,246,0.1)', display: 'flex',
+                                'align-items': 'center', 'justify-content': 'center', 'font-size': '13px', 'flex-shrink': '0',
+                                color: '#3b82f6',
+                              }}>
+                                {"\ud83d\udcc4"}
+                              </div>
+                            }>
+                              <div style={{
+                                width: '28px', height: '28px', 'border-radius': '8px',
+                                background: item.agent!.bgColor, display: 'flex',
+                                'align-items': 'center', 'justify-content': 'center', 'font-size': '14px', 'flex-shrink': '0',
+                              }}>
+                                {item.agent!.emoji}
+                              </div>
+                            </Show>
+                            <div style={{ flex: '1', 'min-width': '0' }}>
+                              <div style={{
+                                'font-size': '13px', 'font-weight': '500', color: themeColors.text,
+                                overflow: 'hidden', 'text-overflow': 'ellipsis', 'white-space': 'nowrap',
+                              }}>
+                                {item.kind === 'agent' ? item.agent?.name ?? item.label : item.label.split('/').pop()}
+                              </div>
+                              <Show when={item.kind === 'agent' && item.agent?.description}>
+                                <div style={{ 'font-size': '11px', color: themeColors.textMuted }}>{item.agent!.description.slice(0, 32)}\u2026</div>
+                              </Show>
+                              <Show when={item.kind === 'file' && item.label.includes('/')}>
+                                <div style={{ 'font-size': '10px', color: themeColors.textMuted, overflow: 'hidden', 'text-overflow': 'ellipsis', 'white-space': 'nowrap' }}>{item.label}</div>
+                              </Show>
+                            </div>
+                          </button>
+                        );
+                      }}
+                    </For>
+                  </>
+                )}
+              </For>
+            );
+          })()}
         </div>
       </Portal>
     </Show>
@@ -386,39 +444,6 @@ const CapabilityChip = (props: { badge: CapabilityBadge }) => {
     </div>
   );
 };
-
-// ─── 模式切换按钮 ──────────────────────────────────────────────────────────────
-
-const ModeToggle = (props: {
-  mode: 'chat' | 'dispatch';
-  onChange: (m: 'chat' | 'dispatch') => void;
-}) => (
-  <div style={{
-    display: 'inline-flex',
-    border: `1px solid ${themeColors.border}`,
-    'border-radius': '7px',
-    overflow: 'hidden',
-    'flex-shrink': '0',
-  }}>
-    {(['chat', 'dispatch'] as const).map((m) => (
-      <button
-        onClick={() => props.onChange(m)}
-        style={{
-          padding: '3px 10px',
-          'font-size': '11px',
-          'font-weight': props.mode === m ? '600' : '400',
-          border: 'none',
-          cursor: 'pointer',
-          background: props.mode === m ? chartColors.success : 'transparent',
-          color: props.mode === m ? 'white' : themeColors.textMuted,
-          transition: 'all 0.15s',
-        }}
-      >
-        {m === 'chat' ? '💬 对话' : '🚀 团队'}
-      </button>
-    ))}
-  </div>
-);
 
 // ─── 主组件 ───────────────────────────────────────────────────────────────────
 
@@ -534,11 +559,55 @@ export default function EnhancedComposer(props: EnhancedComposerProps) {
     if (files.length) void addAttachments(files);
   };
 
-  // ─── 过滤列表（供键盘导航用）──────────────────────────────────
-  const filteredAgents = createMemo(() => {
-    const q = mentionQuery().toLowerCase();
-    return props.agents.filter(a => a.id.toLowerCase().includes(q) || a.name.toLowerCase().includes(q));
+  // ─── 文件搜索（@file mention debounce）──────────────────────────
+  const [fileSearchResults, setFileSearchResults] = createSignal<string[]>([]);
+  let fileSearchRun = 0;
+  createEffect(() => {
+    if (!showMention()) { setFileSearchResults([]); return; }
+    const q = mentionQuery().trim();
+    if (!q || !props.searchFiles) { setFileSearchResults([]); return; }
+    const runId = ++fileSearchRun;
+    const timer = window.setTimeout(() => {
+      props.searchFiles!(q)
+        .then(results => { if (runId === fileSearchRun) setFileSearchResults(results); })
+        .catch(() => { if (runId === fileSearchRun) setFileSearchResults([]); });
+    }, 150);
+    onCleanup(() => window.clearTimeout(timer));
   });
+
+  // ─── 统一 mention 列表（Agent + File 分组）──────────────────────────
+  const mentionItems = createMemo((): MentionItem[] => {
+    const q = mentionQuery().toLowerCase();
+    const items: MentionItem[] = [];
+
+    // Agents
+    const agents = props.agents.filter(a => a.id.toLowerCase().includes(q) || a.name.toLowerCase().includes(q));
+    for (const a of agents) {
+      items.push({ kind: 'agent', id: `agent:${a.id}`, label: a.id, value: a.id, agent: a, group: 'agent' });
+    }
+
+    // Recent files
+    const seen = new Set<string>();
+    for (const f of (props.recentFiles ?? [])) {
+      if (!f || seen.has(f)) continue;
+      seen.add(f);
+      const name = f.split('/').pop() ?? f;
+      if (q && !name.toLowerCase().includes(q) && !f.toLowerCase().includes(q)) continue;
+      items.push({ kind: 'file', id: `recent:${f}`, label: f, value: f, group: 'recent' });
+    }
+
+    // Search results
+    for (const f of fileSearchResults()) {
+      if (!f || seen.has(f)) continue;
+      seen.add(f);
+      items.push({ kind: 'file', id: `file:${f}`, label: f, value: f, group: 'file' });
+    }
+
+    return items;
+  });
+
+  // ─── 过滤列表（供键盘导航用）──────────────────────────────────
+  const filteredAgents = () => mentionItems();
 
   const filteredSlashCmds = createMemo(() => {
     const q = slashQuery().toLowerCase();
@@ -643,7 +712,7 @@ export default function EnhancedComposer(props: EnhancedComposerProps) {
       if (e.key === 'Tab' || e.key === 'Enter') {
         e.preventDefault();
         if (list[idx]) {
-          isM ? selectAgent(list[idx] as AutopilotAgent) : selectSlashCommand(list[idx] as SlashCommand);
+          isM ? selectMentionItem(list[idx] as MentionItem) : selectSlashCommand(list[idx] as SlashCommand);
         }
         return;
       }
@@ -666,11 +735,18 @@ export default function EnhancedComposer(props: EnhancedComposerProps) {
   };
 
   const selectAgent = (agent: AutopilotAgent) => {
+    selectMentionItem({ kind: 'agent', id: agent.id, label: agent.id, value: agent.id, agent });
+  };
+
+  /** 统一 mention 选择（Agent 或 File） */
+  const selectMentionItem = (item: MentionItem) => {
     const val = props.value;
     const lastAt = val.lastIndexOf('@');
-    const newVal = lastAt >= 0 ? val.slice(0, lastAt) + `@${agent.id} ` : val;
+    const insertText = item.kind === 'agent' ? `@${item.value} ` : `@${item.value} `;
+    const newVal = lastAt >= 0 ? val.slice(0, lastAt) + insertText : val;
     props.onChange(newVal);
     setShowMention(false);
+    setFileSearchResults([]);
     textareaRef?.focus();
   };
 
@@ -686,11 +762,7 @@ export default function EnhancedComposer(props: EnhancedComposerProps) {
     props.onCommandSelect?.(cmd, beforeSlash);
   };
 
-  const placeholder = () => props.placeholder ?? (
-    props.mode === 'dispatch'
-      ? '描述你的目标，AI 虚拟团队并行执行... (Enter 发送，Shift+Enter 换行)'
-      : '问我任何问题，或输入 @ 召唤 Agent... (Enter 发送，Shift+Enter 换行)'
-  );
+  const placeholder = () => props.placeholder ?? '问我任何问题，@ 召唤 Agent，/ 触发命令... (Enter 发送，Shift+Enter 换行)';
 
   const canSend = () => !props.isRunning && (props.value.trim().length > 0 || attachments().length > 0);
 
@@ -830,9 +902,6 @@ export default function EnhancedComposer(props: EnhancedComposerProps) {
       }}>
         {/* 左侧工具 */}
         <div style={{ display: 'flex', 'align-items': 'center', gap: '6px' }}>
-          {/* 模式切换 */}
-          <ModeToggle mode={props.mode} onChange={props.onModeChange} />
-
           {/* @mention 提示按钮 */}
           <button
             title="@mention Agent"
@@ -984,7 +1053,7 @@ export default function EnhancedComposer(props: EnhancedComposerProps) {
               }}
             >
               <Send size={12} />
-              {props.hasSession ? '发送' : (props.mode === 'dispatch' ? '启动团队' : '发送')}
+              发送
             </button>
           </Show>
         </div>
@@ -992,10 +1061,9 @@ export default function EnhancedComposer(props: EnhancedComposerProps) {
 
       {/* ── 弹出面板 ── */}
       <MentionPanel
-        agents={props.agents}
-        query={mentionQuery()}
+        items={mentionItems()}
         anchorRect={showMention() ? anchorRect() : null}
-        onSelect={selectAgent}
+        onSelect={selectMentionItem}
         activeIndex={mentionIdx()}
         onHover={setMentionIdx}
       />

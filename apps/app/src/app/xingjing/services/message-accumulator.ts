@@ -1,6 +1,9 @@
 /**
  * Message Accumulator
  *
+ * @deprecated Solo 模式已使用 OpenWork 全局 messagesBySessionId，此文件仅保留供 Team 编排器使用。
+ * Team Edition 改造时统一处理。
+ *
  * 从 context/session.ts 提取的 SSE 消息累积逻辑，支持多 Session 并发订阅。
  * 每个 Agent Session 可以独立订阅，不干扰全局 Session 状态。
  */

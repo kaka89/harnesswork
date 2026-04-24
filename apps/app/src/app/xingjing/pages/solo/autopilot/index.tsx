@@ -1,13 +1,11 @@
 /**
- * SoloAutopilot — 独立版 AI 虚拟团队主界面（升级版）
+ * SoloAutopilot — 独立版 AI 会话主界面
  *
- * 对标 Claude Cowork，提供完备的 AI 会话能力：
- * 1. 双模式切换：💬 普通对话（单 Agent Q&A）| 🚀 团队调度（多 Agent 并行）
- * 2. EnhancedComposer：自动高度、@mention、/slash 命令、模型选择器
- * 3. OpenWork 能力集成：MCP 工具、Skills、Knowledge、Commands 实时展示
- * 4. 会话历史侧边栏：基于 OpenCode Session API 的持久化多轮记忆
- * 5. 产出物工作区：可 resize / 悬浮，支持保存到产品目录
- * 6. Agent 面板：可折叠侧边栏，显示各角色实时状态
+ * 提供完备的 AI 会话能力：
+ * 1. EnhancedComposer：自动高度、@agent/@file mention、/slash 命令、模型选择器
+ * 2. OpenWork 能力集成：MCP 工具、Skills、Knowledge、Commands 实时展示
+ * 3. 会话历史侧边栏：基于 OpenCode Session API 的持久化多轮记忆
+ * 4. 产出物自动保存：检测到文档级内容后自动保存到产品目录
  */
 import {
   createSignal,
@@ -18,60 +16,44 @@ import {
   onMount,
   createEffect,
 } from 'solid-js';
-import { useNavigate } from '@solidjs/router';
 import {
   FileText,
   Loader2,
-  ChevronLeft,
-  ChevronRight,
   History,
   X,
   AlertCircle,
   Plus,
+  Minimize2,
 } from 'lucide-solid';
 import CreateProductModal from '../../../components/product/new-product-modal';
 import { useAppStore } from '../../../stores/app-store';
 import { themeColors, chartColors } from '../../../utils/colors';
-import { soloSampleGoals } from '../../../mock/autopilot';
-import { modelOptions } from '../../../mock/settings';
+import { modelOptions } from '../../../utils/defaults';
 import { loadProjectSettings, readYaml } from '../../../services/file-store';
 import { initProductDir } from '../../../../lib/tauri';
 import { getHealthScore } from '../../../services/knowledge-health';
 import { buildKnowledgeIndex } from '../../../services/knowledge-index';
 import { loadSession as loadMemorySession, loadMemoryIndex, saveMemoryMeta } from '../../../services/memory-store';
 import {
-  parseMention,
   type AutopilotAgent,
-  type AgentExecutionStatus,
 } from '../../../services/autopilot-executor';
 import { listAllAgents, getBuiltinAgents } from '../../../services/agent-registry';
-import { callAgent, isClientReady, setProviderAuth, buildGitSystemContext } from '../../../services/opencode-client';
-import ArtifactWorkspace, {
-  type ArtifactItem,
-  detectArtifactFormat,
-} from '../../../components/autopilot/artifact-workspace';
+import { isClientReady, buildGitSystemContext } from '../../../services/opencode-client';
+import SavedFileList, { type SavedFileItem } from '../../../components/autopilot/saved-file-list';
 import PermissionDialog, {
   type PermissionRequest,
 } from '../../../components/autopilot/permission-dialog';
-import { createTeamSessionOrchestrator } from '../../../services/team-session-orchestrator';
-import AgentSessionView from '../../../components/autopilot/agent-session-view';
-import SessionTabBar from '../../../components/autopilot/session-tab-bar';
 import MessageList from '../../../../components/session/message-list';
 import type { MessageWithParts, ComposerAttachment } from '../../../../types';
 import EnhancedComposer, {
   type CapabilityBadge,
   type SlashCommand,
 } from '../../../components/autopilot/enhanced-composer';
-import { listCommands as listCommandsTyped } from '../../../../lib/opencode-session';
+import { listCommands as listCommandsTyped, compactSession, abortSessionSafe } from '../../../../lib/opencode-session';
 
 // ─── 类型 ─────────────────────────────────────────────────────────────────────
 
-interface AgentStatus { [key: string]: 'idle' | 'thinking' | 'working' | 'done' | 'waiting'; }
-interface AgentTasks { [key: string]: string; }
-interface AgentDone { [key: string]: number; }
 
-type RunState = 'idle' | 'running' | 'done';
-type ChatMode = 'chat' | 'dispatch';
 
 /** 普通对话（chat 模式）的消息气泡 */
 interface ChatMsg {
@@ -169,291 +151,18 @@ function extractDocTitle(content: string): string {
 
 // ─── 快速示例（按模式分类） ──────────────────────────────────────────────────
 
-const CHAT_SAMPLES = [
+const QUICK_SAMPLES = [
   '帮我分析一下产品的核心用户场景',
   '给当前功能写一份竞品对比',
   '如何优化我们的用户留存策略？',
   '帮我想 5 个增长实验方案',
+  '为 WriteFlow 实现「段落一键重写」功能，选中段落后 AI 重写，保留原意改写表达，MVP 版本',
+  '修复 Editor 在 iOS 上的光标偏移 bug，并上线到生产环境',
 ];
 
-const DISPATCH_SAMPLES = [
-  '实现用户一键分享功能，从 PRD 到测试全覆盖',
-  '对首页改版方案做完整技术评审',
-  '生成本周迭代的发布报告',
-  ...soloSampleGoals.slice(0, 2),
-];
 
-// ─── SoloBrainCard ────────────────────────────────────────────────────────────
 
-const SoloBrainCard = (props: {
-  agent: AutopilotAgent;
-  status: 'idle' | 'thinking' | 'working' | 'done' | 'waiting';
-  currentTask?: string;
-  doneToday: number;
-  artifactCount: number;
-  elapsedTime?: string;
-  isActive: boolean;
-  onClick?: () => void;
-}) => {
-  const isRunning = () => props.status === 'thinking' || props.status === 'working';
-  const isDone = () => props.status === 'done';
 
-  const dotColor = () => {
-    if (isRunning()) return chartColors.success;
-    if (isDone()) return chartColors.success;
-    if (props.status === 'waiting') return '#fa8c16';
-    return themeColors.border;
-  };
-
-  return (
-    <button
-      onClick={props.onClick}
-      style={{
-        display: 'flex',
-        'align-items': 'flex-start',
-        gap: '8px',
-        padding: '8px 10px',
-        'border-radius': '7px',
-        background: props.isActive
-          ? themeColors.primaryBg
-          : isRunning()
-            ? themeColors.successBg
-            : 'transparent',
-        'border-left': `3px solid ${props.isActive
-          ? chartColors.primary
-          : isRunning()
-            ? chartColors.success
-            : 'transparent'}`,
-        border: 'none',
-        cursor: props.onClick ? 'pointer' : 'default',
-        transition: 'all 0.25s ease',
-        width: '100%',
-        'text-align': 'left',
-      }}
-    >
-      <div style={{
-        width: '30px', height: '30px', 'border-radius': '8px',
-        background: props.agent.bgColor, display: 'flex',
-        'align-items': 'center', 'justify-content': 'center', 'font-size': '15px',
-        'flex-shrink': '0',
-        filter: props.status === 'idle' ? 'grayscale(80%) opacity(0.5)' : 'none',
-        'box-shadow': isRunning() ? `0 0 0 2px ${props.agent.color}40` : 'none',
-        transition: 'all 0.3s',
-      }}>
-        {props.agent.emoji}
-      </div>
-
-      <div style={{ flex: '1', 'min-width': '0' }}>
-        <div style={{ display: 'flex', 'align-items': 'center', gap: '4px', 'margin-bottom': '2px' }}>
-          <span style={{
-            'font-size': '12px', 'font-weight': '600',
-            color: isRunning() ? props.agent.color : themeColors.text,
-          }}>
-            {props.agent.name}
-          </span>
-          <span style={{
-            display: 'inline-block', width: '6px', height: '6px',
-            'border-radius': '50%', background: dotColor(), 'flex-shrink': '0',
-          }} />
-        </div>
-        <div style={{
-          'font-size': '10px', color: themeColors.textMuted,
-          overflow: 'hidden', 'text-overflow': 'ellipsis', 'white-space': 'nowrap',
-        }}>
-          {isRunning() && props.currentTask ? props.currentTask : props.agent.description}
-        </div>
-        <Show when={props.doneToday > 0 || props.artifactCount > 0}>
-          <div style={{ display: 'flex', gap: '4px', 'margin-top': '4px' }}>
-            <Show when={props.doneToday > 0}>
-              <span style={{
-                'font-size': '9px', padding: '1px 5px', 'border-radius': '4px',
-                background: chartColors.primary + '20', color: chartColors.primary, 'font-weight': '500',
-              }}>{props.doneToday} 次</span>
-            </Show>
-            <Show when={props.artifactCount > 0}>
-              <span style={{
-                'font-size': '9px', padding: '1px 5px', 'border-radius': '4px',
-                background: chartColors.success + '20', color: chartColors.success, 'font-weight': '500',
-              }}>{props.artifactCount} 产出</span>
-            </Show>
-          </div>
-        </Show>
-      </div>
-    </button>
-  );
-};
-
-// ─── AgentPanelSidebar ────────────────────────────────────────────────────────
-
-const AgentPanelSidebar = (props: {
-  agents: AutopilotAgent[];
-  agentStatuses: AgentStatus;
-  agentTasks: AgentTasks;
-  agentDone: AgentDone;
-  elapsedSec: number;
-  runState: RunState;
-  artifactCount: (id: string) => number;
-  stepTimes: Record<string, string>;
-  progress: number;
-  activeTabId: string;
-  onAgentClick: (agentId: string) => void;
-}) => {
-  const [isCollapsed, setIsCollapsed] = createSignal(true); // 默认收起
-
-  const doneCount = () => props.agents.filter((a) => props.agentStatuses[a.id] === 'done').length;
-  const runCount = () => props.agents.filter(
-    (a) => props.agentStatuses[a.id] === 'thinking' || props.agentStatuses[a.id] === 'working'
-  ).length;
-  const waitCount = () => props.agents.filter(
-    (a) => props.agentStatuses[a.id] === 'idle' || props.agentStatuses[a.id] === 'waiting'
-  ).length;
-  const progressPct = () => props.runState === 'done'
-    ? 100
-    : Math.round((doneCount() / Math.max(props.agents.length, 1)) * 100);
-  const fmtElapsed = (sec: number) =>
-    `${Math.floor(sec / 60)}m ${(sec % 60).toString().padStart(2, '0')}s`;
-
-  // 折叠态
-  return (
-    <Show
-      when={!isCollapsed()}
-      fallback={
-        <div style={{
-          width: '44px', height: '100%', display: 'flex', 'flex-direction': 'column',
-          'align-items': 'center', border: `1px solid ${themeColors.border}`,
-          'border-radius': '10px', background: themeColors.surface, overflow: 'hidden',
-          'flex-shrink': '0',
-        }}>
-          <button
-            onClick={() => setIsCollapsed(false)}
-            style={{
-              width: '100%', padding: '8px 0', background: 'none', border: 'none',
-              cursor: 'pointer', display: 'flex', 'align-items': 'center', 'justify-content': 'center',
-              color: themeColors.textMuted, 'border-bottom': `1px solid ${themeColors.border}`,
-            }}
-          ><ChevronRight size={14} /></button>
-
-          {/* 进度条 */}
-          <div style={{ width: '100%', padding: '5px 7px' }}>
-            <div style={{ width: '100%', height: '3px', background: themeColors.border, 'border-radius': '2px', overflow: 'hidden' }}>
-              <div style={{
-                height: '100%', width: `${progressPct()}%`,
-                background: chartColors.success, 'border-radius': '2px', transition: 'width 0.5s ease',
-              }} />
-            </div>
-            <div style={{ 'text-align': 'center', 'font-size': '9px', color: themeColors.textMuted, 'margin-top': '2px', 'font-weight': 500 }}>
-              {doneCount()}/{props.agents.length}
-            </div>
-          </div>
-
-          {/* Agent 图标列 */}
-          <div style={{ flex: 1, 'overflow-y': 'auto', padding: '4px 0', display: 'flex', 'flex-direction': 'column', 'align-items': 'center', gap: '5px' }}>
-            <For each={props.agents}>
-              {(agent) => {
-                const status = () => props.agentStatuses[agent.id] ?? 'idle';
-                const isRunning = () => status() === 'thinking' || status() === 'working';
-                const isDone = () => status() === 'done';
-                return (
-                  <button
-                    onClick={() => { setIsCollapsed(false); props.onAgentClick(agent.id); }}
-                    title={agent.name}
-                    style={{
-                      position: 'relative', background: 'none', border: 'none', cursor: 'pointer', padding: '0',
-                    }}
-                  >
-                    <div style={{
-                      width: '26px', height: '26px', 'border-radius': '7px',
-                      background: agent.bgColor, display: 'flex',
-                      'align-items': 'center', 'justify-content': 'center', 'font-size': '13px',
-                      filter: status() === 'idle' ? 'grayscale(80%) opacity(0.5)' : 'none',
-                      'box-shadow': isRunning() ? `0 0 0 2px ${agent.color}40` : 'none',
-                    }}>{agent.emoji}</div>
-                    <span style={{
-                      position: 'absolute', bottom: '-1px', right: '-1px',
-                      width: '6px', height: '6px', 'border-radius': '50%',
-                      background: isRunning() ? chartColors.success : isDone() ? chartColors.success : status() === 'waiting' ? '#fa8c16' : themeColors.border,
-                      border: `1px solid ${themeColors.surface}`,
-                    }} />
-                  </button>
-                );
-              }}
-            </For>
-          </div>
-        </div>
-      }
-    >
-      <div style={{
-        width: '200px', height: '100%', display: 'flex', 'flex-direction': 'column',
-        border: `1px solid ${themeColors.border}`, 'border-radius': '10px',
-        background: themeColors.surface, overflow: 'hidden', 'flex-shrink': '0',
-      }}>
-        {/* 标题栏 */}
-        <div style={{
-          display: 'flex', 'align-items': 'center', 'justify-content': 'space-between',
-          padding: '10px 12px 8px', 'border-bottom': `1px solid ${themeColors.border}`,
-          'flex-shrink': '0',
-        }}>
-          <span style={{ 'font-size': '12px', 'font-weight': '600', color: themeColors.text }}>AI 虚拟团队</span>
-          <button
-            onClick={() => setIsCollapsed(true)}
-            style={{
-              background: 'none', border: 'none', cursor: 'pointer', padding: '2px',
-              display: 'flex', 'align-items': 'center', color: themeColors.textMuted,
-            }}
-          ><ChevronLeft size={14} /></button>
-        </div>
-
-        {/* 进度区 */}
-        <Show when={props.runState !== 'idle'}>
-          <div style={{ padding: '8px 12px', 'border-bottom': `1px solid ${themeColors.border}`, 'flex-shrink': '0' }}>
-            <div style={{ display: 'flex', 'justify-content': 'space-between', 'margin-bottom': '4px' }}>
-              <span style={{ 'font-size': '10px', color: themeColors.textMuted }}>
-                {props.runState === 'done' ? '全部完成' : `执行中 ${doneCount()}/${props.agents.length}`}
-              </span>
-              <span style={{ 'font-size': '10px', color: themeColors.textMuted }}>{progressPct()}%</span>
-            </div>
-            <div style={{ background: themeColors.border, 'border-radius': '3px', height: '4px' }}>
-              <div style={{
-                background: props.runState === 'done' ? chartColors.success : chartColors.primary,
-                height: '100%', 'border-radius': '3px',
-                width: `${props.progress || progressPct()}%`, transition: 'width 0.3s ease',
-              }} />
-            </div>
-            <div style={{ display: 'flex', 'justify-content': 'space-between', 'margin-top': '4px' }}>
-              <span style={{ 'font-size': '10px', color: themeColors.textMuted }}>
-                ⏱ {fmtElapsed(props.elapsedSec)}
-              </span>
-              <div style={{ display: 'flex', gap: '6px' }}>
-                <span style={{ 'font-size': '10px', color: chartColors.success }}>{doneCount()} ✓</span>
-                <Show when={runCount() > 0}>
-                  <span style={{ 'font-size': '10px', color: '#fa8c16' }}>{runCount()} ⟳</span>
-                </Show>
-              </div>
-            </div>
-          </div>
-        </Show>
-
-        {/* Agent 列表 */}
-        <div style={{ flex: '1', 'overflow-y': 'auto', padding: '4px' }}>
-          <For each={props.agents}>
-            {(agent) => (
-              <SoloBrainCard
-                agent={agent}
-                status={props.agentStatuses[agent.id] as any ?? 'idle'}
-                currentTask={props.agentTasks[agent.id]}
-                doneToday={props.agentDone[agent.id] ?? 0}
-                artifactCount={props.artifactCount(agent.id)}
-                elapsedTime={props.stepTimes[agent.id]}
-                isActive={props.activeTabId === agent.id}
-                onClick={() => props.onAgentClick(agent.id)}
-              />
-            )}
-          </For>
-        </div>
-      </div>
-    </Show>
-  );
-};
 
 // ─── HistorySidebar ───────────────────────────────────────────────────────────
 
@@ -461,7 +170,6 @@ interface HistoryItem {
   id: string;
   title: string;
   ts: string;
-  mode: ChatMode;
 }
 
 const HistorySidebar = (props: {
@@ -536,15 +244,15 @@ const HistorySidebar = (props: {
                   overflow: 'hidden', 'text-overflow': 'ellipsis', 'white-space': 'nowrap',
                   display: 'flex', 'align-items': 'center', gap: '4px',
                 }}>
-                  {/* 模式 badge：常显且放在标题行更显眼 */}
+                  {/* 会话图标 */}
                   <span style={{
                     'flex-shrink': '0',
                     padding: '1px 5px', 'border-radius': '3px', 'font-size': '9px', 'font-weight': '600',
-                    background: item.mode === 'dispatch' ? 'rgba(168,85,247,0.15)' : 'rgba(34,197,94,0.15)',
-                    color: item.mode === 'dispatch' ? '#a855f7' : '#16a34a',
-                    border: `1px solid ${item.mode === 'dispatch' ? 'rgba(168,85,247,0.3)' : 'rgba(34,197,94,0.3)'}`,
+                    background: 'rgba(34,197,94,0.15)',
+                    color: '#16a34a',
+                    border: '1px solid rgba(34,197,94,0.3)',
                   }}>
-                    {item.mode === 'dispatch' ? '🚀团队' : '💬对话'}
+                    {'💬对话'}
                   </span>
                   <span style={{ flex: '1', overflow: 'hidden', 'text-overflow': 'ellipsis', 'white-space': 'nowrap' }}>
                     {item.title}
@@ -571,7 +279,6 @@ const HistorySidebar = (props: {
 
 const SoloAutopilot = () => {
   const { state, productStore, actions, resolvedWorkspaceId, openworkCtx } = useAppStore();
-  const navigate = useNavigate();
   const soloProducts = () => productStore.products().filter((p) => (p.productType ?? 'solo') === 'solo');
 
   // ── OpenCode Client 就绪状态（防止 client 未注入时调用 AI 功能）──────────────
@@ -581,35 +288,14 @@ const SoloAutopilot = () => {
   // ── 基础状态 ────────────────────────────────────────────────────────────────
   const [createModalOpen, setCreateModalOpen] = createSignal(false);
   const [goal, setGoal] = createSignal('');
-  const [runState, setRunState] = createSignal<RunState>('idle');
-  const [chatMode, setChatMode] = createSignal<ChatMode>('dispatch');
   // Agent 列表：同步初始值用内置常量（避免闪烁），异步更新加载自定义 Agent
   const [allAgents, setAllAgents] = createSignal<AutopilotAgent[]>(getBuiltinAgents('solo'));
-  const [agentStatuses, setAgentStatuses] = createSignal<AgentStatus>(
-    Object.fromEntries(getBuiltinAgents('solo').map((a) => [a.id, 'idle']))
-  );
-  const [agentTasks, setAgentTasks] = createSignal<AgentTasks>({});
-  const [agentDone, setAgentDone] = createSignal<AgentDone>(
-    Object.fromEntries(getBuiltinAgents('solo').map((a) => [a.id, 0]))
-  );
-  const [progress, setProgress] = createSignal(0);
   const [agentError, setAgentError] = createSignal<string | null>(null);
-  const [artifactsData, setArtifactsData] = createSignal<ArtifactItem[]>([]);
-  const [saving, setSaving] = createSignal(false);
-  const [saveMsg, setSaveMsg] = createSignal<string | null>(null);
-  const [activeArtifactId, setActiveArtifactId] = createSignal<string | null>(null);
 
   // ── UI 面板状态 ──────────────────────────────────────────────────────────────
   const [showHistory, setShowHistory] = createSignal(false);
   const [historyItems, setHistoryItems] = createSignal<HistoryItem[]>([]);
-  const [artifactWidth, setArtifactWidth] = createSignal(420);
-  const [artifactFloat, setArtifactFloat] = createSignal(false);
-  const [artifactCollapsed, setArtifactCollapsed] = createSignal(true);
-  const [artifactFloatPos, setArtifactFloatPos] = createSignal({ x: 0, y: 64 });
-  const [artifactFloatWidth, setArtifactFloatWidth] = createSignal(420);
-  const [artifactFloatHeight, setArtifactFloatHeight] = createSignal(Math.round(window.innerHeight * 0.78));
-  const [expandedSteps, setExpandedSteps] = createSignal<Record<string, boolean>>({});
-  const [stepTimes, setStepTimes] = createSignal<Record<string, string>>({});
+
 
   // ── OpenWork 能力状态 ────────────────────────────────────────────────────────
   const [capabilities, setCapabilities] = createSignal<CapabilityBadge[]>([]);
@@ -624,12 +310,7 @@ const SoloAutopilot = () => {
     if (current) { current.resolve(action); setPermissionQueue((prev) => prev.slice(1)); }
   };
 
-  // ── 计时器 ────────────────────────────────────────────────────────────────────
-  const [elapsedSec, setElapsedSec] = createSignal(0);
-  let elapsedTimerRef: ReturnType<typeof setInterval> | undefined;
 
-  const agentArtifactCount = (agentId: string) =>
-    artifactsData().filter((a) => a.agentId === agentId).length;
 
   // ── 模型选择 ──────────────────────────────────────────────────────────────────
   const [providerKeys, setProviderKeys] = createSignal<Record<string, string>>({});
@@ -749,17 +430,129 @@ const SoloAutopilot = () => {
     });
   });
 
-  // ── SDD-015: 基于 sessionStatus 的完成检测 ──────────────────────────────────
-  // OpenWork 全局 SSE 维护 sessionStatusById，当 session 进入 idle/completed 状态时释放 loading
+  // ── 从 OpenWork store 提取 assistant 文本（供产出物检测使用）──────────────────
+  const extractAssistantTextFromStore = (sid: string | null): string => {
+    if (!sid) return '';
+    const msgs = openworkCtx?.messagesBySessionId?.(sid) ?? [];
+    return msgs
+      .filter(m => (m.info as any).role === 'assistant')
+      .flatMap(m => m.parts.filter(p => p.type === 'text').map(p => (p as any).text ?? ''))
+      .join('\n');
+  };
+
+  // ── 对齐 OpenWork session.tsx startRun/runHasBegun 模式 ──────────────────────
+  // 统一完成检测（命令路径 + 普通对话路径）：
+  // 通过 SolidJS reactive effect 监听 sessionStatusById，
+  // 主路径：SSE 报告过 running/retry 状态后再转为 idle → 释放 loading。
+  // 后备路径：Tauri 客户端中 SSE 事件可能被合并（session.status:busy 与 :idle 同 key），
+  //   导致 running 状态被跳过，此时通过检查 assistant 消息数量变化来检测完成。
+  let sessionSawRunning = false;
+  /** prompt 发送前的 assistant 消息数量（用于后备完成检测） */
+  let prePromptAssistantCount = -1;
+
+  /** 定时器兜底：Tauri 环境下 reactive effect 可能不触发，每 2s 主动轮询检查 */
+  let completionTimer: ReturnType<typeof setInterval> | undefined;
+  const clearCompletionTimer = () => {
+    if (completionTimer) { clearInterval(completionTimer); completionTimer = undefined; }
+  };
+
+  /** 完成时的统一处理：释放 loading + 产出物检测 */
+  const handleSessionComplete = (sid: string, status: string, path: 'fast' | 'fallback' | 'timer') => {
+    console.log(`[solo-chat] session ${sid} completed (${status}) via ${path}`);
+    clearCompletionTimer();
+    setChatLoading(false);
+    setCommandPending(false);
+    sessionSawRunning = false;
+    prePromptAssistantCount = -1;
+    const fullText = extractAssistantTextFromStore(sid);
+    if (fullText) {
+      tryExtractArtifact('auto', fullText);
+    }
+  };
+
+  /** 启动定时器兜底检测（不依赖 SolidJS reactive） */
+  const startCompletionTimer = () => {
+    clearCompletionTimer();
+    let pollCount = 0;
+    completionTimer = setInterval(async () => {
+      const sid = currentChatSessionId();
+      if (!sid || !chatLoading()) {
+        clearCompletionTimer();
+        return;
+      }
+      pollCount++;
+      const statusMap = openworkCtx?.sessionStatusById?.() ?? {};
+      const storeStatus = statusMap[sid];
+      const msgs = openworkCtx?.messagesBySessionId?.(sid) ?? [];
+      const assistantCount = msgs.filter(m => (m.info as any).role === 'assistant').length;
+      console.log(`[solo-chat] timer-poll #${pollCount}: sid=${sid}, storeStatus=${storeStatus}, assistantCount=${assistantCount}, preCount=${prePromptAssistantCount}`);
+
+      // 路径 A：store 已显示 idle 且有新 assistant 消息 → 完成
+      if ((storeStatus === 'idle' || storeStatus === 'completed') && prePromptAssistantCount >= 0 && assistantCount > prePromptAssistantCount) {
+        handleSessionComplete(sid, storeStatus ?? 'idle', 'timer');
+        return;
+      }
+
+      // 路径 B：store 仍显示 running 但有新 assistant 消息 ——
+      // Tauri SSE 可能丢失了 session.idle 事件（连接超时重连期间错过）。
+      // 通过 REST API 主动查询真实状态。
+      if (storeStatus === 'running' && prePromptAssistantCount >= 0 && assistantCount > prePromptAssistantCount && pollCount >= 2) {
+        const client = openworkCtx?.opencodeClient?.();
+        if (client) {
+          try {
+            const result = await client.session.get({ sessionID: sid });
+            const sessionData = result.data as Record<string, unknown> | undefined;
+            // OpenCode session 返回 idle 或无 status 表示已完成
+            const restStatus = sessionData?.status;
+            const isRestIdle = !restStatus || restStatus === 'idle' || (typeof restStatus === 'object' && (restStatus as any)?.type === 'idle');
+            console.log(`[solo-chat] timer-REST: sid=${sid}, restStatus=${JSON.stringify(restStatus)}, isRestIdle=${isRestIdle}`);
+            if (isRestIdle) {
+              handleSessionComplete(sid, 'idle', 'timer');
+              return;
+            }
+          } catch (e) {
+            console.warn('[solo-chat] timer-REST 查询失败:', e);
+          }
+        }
+      }
+    }, 2000);
+  };
+
   createEffect(() => {
     const sid = currentChatSessionId();
-    if (!sid || !chatLoading()) return;
+    if (!sid || !chatLoading()) {
+      sessionSawRunning = false;
+      return;
+    }
     const statusMap = openworkCtx?.sessionStatusById?.() ?? {};
-    const status = statusMap[sid] ?? 'idle';
-    if (status === 'idle' || status === 'completed') {
-      console.log(`[solo-chat] session ${sid} status=${status}，释放 chatLoading`);
-      setChatLoading(false);
-      setCommandPending(false);
+    const status = statusMap[sid];
+    // 未被 SSE 追踪的 session（新建后首次 SSE 事件到达前）→ 等待
+    if (!status) return;
+
+    console.log(`[solo-chat] effect: sid=${sid}, status=${status}, sawRunning=${sessionSawRunning}, preCount=${prePromptAssistantCount}`);
+
+    // 标记 session 曾进入活跃状态（对齐 OpenWork runHasBegun）
+    if (status !== 'idle' && status !== 'completed') {
+      sessionSawRunning = true;
+    }
+
+    const isIdle = status === 'idle' || status === 'completed';
+
+    // 主路径：曾经活跃后回到 idle → 完成
+    if (sessionSawRunning && isIdle) {
+      handleSessionComplete(sid, status, 'fast');
+      return;
+    }
+
+    // 后备路径：从未见过 running（事件被合并），但 status 已是 idle
+    // 通过检查 assistant 消息数量增加来确认「这次 idle 是新对话完成后的 idle」
+    if (!sessionSawRunning && isIdle && prePromptAssistantCount >= 0) {
+      const msgs = openworkCtx?.messagesBySessionId?.(sid) ?? [];
+      const currentAssistantCount = msgs.filter(m => (m.info as any).role === 'assistant').length;
+      if (currentAssistantCount > prePromptAssistantCount) {
+        handleSessionComplete(sid, status, 'fallback');
+        return;
+      }
     }
   });
 
@@ -767,47 +560,63 @@ const SoloAutopilot = () => {
   const [chatExpandedStepIds, setChatExpandedStepIds] = createSignal<Set<string>>(new Set());
   let chatScrollRef: HTMLDivElement | undefined;
 
-  // 追踪最近生成的产出物
-  const latestArtifact = createMemo(() => {
-    const arts = artifactsData();
-    return arts.length > 0 ? arts[arts.length - 1] : null;
+  // ── 已保存文件列表 ──────────────────────────────────────────────────────────
+  const [savedFiles, setSavedFiles] = createSignal<SavedFileItem[]>([]);
+
+  // 追踪最近保存的文件
+  const latestSavedFile = createMemo(() => {
+    const files = savedFiles();
+    return files.length > 0 ? files[files.length - 1] : null;
   });
 
-  // ── 从 chat 回复中自动提取产出物 ─────────────────────────────────────────────
+  // ── 自动保存产出物到磁盘 ───────────────────────────────────────────────────────
+  const autoSaveArtifact = async (title: string, content: string, agentId: string, agentName: string, agentEmoji: string) => {
+    const product = productStore.activeProduct();
+    const workDir = product?.workDir;
+    if (!workDir) return;
+    try {
+      let appCode: string | undefined;
+      try {
+        const config = await readYaml<{ apps?: string[] }>('.xingjing/config.yaml', { apps: [] }, workDir);
+        appCode = config.apps?.[0];
+      } catch {}
+      if (!appCode && product?.code) appCode = product.code;
+      if (!appCode) return; // 静默失败
+
+      const dirMap: Record<string, string> = {
+        'product-brain': `apps/${appCode}/docs/product/prd`,
+        'eng-brain': `apps/${appCode}/docs/product/architecture`,
+      };
+      const subDir = dirMap[agentId] ?? `apps/${appCode}/docs/delivery`;
+      const safeName = title.replace(/[\/\\:*?"<>|]/g, '-').replace(/\s+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
+      const timestamp = new Date().toISOString().slice(0, 10);
+      const format = detectMsgFormatForArtifact(content) === 'html' ? 'html' : 'markdown';
+      const ext = format === 'html' ? '.html' : '.md';
+      const fileName = `${safeName}-${timestamp}${ext}`;
+      const relativePath = `${subDir}/${fileName}`;
+      const result = await initProductDir(workDir, [{ path: relativePath, content }]);
+      if (!result.ok) return;
+
+      setSavedFiles((prev) => [...prev, {
+        id: `saved-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        title,
+        relativePath,
+        format: format as 'markdown' | 'html',
+        agentName,
+        agentEmoji,
+        savedAt: nowTimeStr(),
+      }]);
+    } catch (e) {
+      console.error('[solo-chat] autoSaveArtifact failed:', e);
+    }
+  };
+
+  // ── 从 chat 回复中自动提取并保存产出物 ──────────────────────────────────────────
   const tryExtractArtifact = (_aiMsgId: string, fullText: string) => {
     if (!looksLikeDocument(fullText)) return;
     const title = extractDocTitle(fullText);
-    const newArtifact: ArtifactItem = {
-      id: `artifact-chat-${Date.now()}`,
-      agentId: 'chat',
-      agentName: 'AI 助手',
-      agentEmoji: '💬',
-      title,
-      content: fullText,
-      createdAt: nowTimeStr(),
-      format: detectMsgFormatForArtifact(fullText) === 'html' ? 'html' : 'markdown',
-    };
-    setArtifactsData((prev) => [...prev, newArtifact]);
-    setArtifactCollapsed(false);
-    setActiveArtifactId(newArtifact.id);
-    // 产出物面板自动展开，提示条通过 latestArtifact 信号驱动
+    void autoSaveArtifact(title, fullText, 'chat', 'AI 助手', '💬');
   };
-
-  // ── 产出物有内容时自动展开 ────────────────────────────────────────────────────
-  createEffect(() => {
-    if (artifactsData().length > 0) setArtifactCollapsed(false);
-  });
-
-  // ── 根据 runState 自动管理计时器 ───────────────────────────────────────────────
-  createEffect(() => {
-    if (runState() === 'running') {
-      if (elapsedTimerRef) clearInterval(elapsedTimerRef);
-      setElapsedSec(0);
-      elapsedTimerRef = setInterval(() => setElapsedSec((s) => s + 1), 1000);
-    } else {
-      if (elapsedTimerRef) { clearInterval(elapsedTimerRef); elapsedTimerRef = undefined; }
-    }
-  });
 
   // ── 加载 OpenWork 能力徽标 ─────────────────────────────────────────────────────
   const loadCapabilities = async (wsId: string | null) => {
@@ -846,8 +655,7 @@ const SoloAutopilot = () => {
           id: entry.id,
           title: entry.summary || entry.id.slice(0, 12),
           ts: entry.createdAt,
-          // entry.type 来自 sidecar，'dispatch' = 团队模式，其余默认对话
-          mode: entry.type === 'dispatch' ? 'dispatch' : 'chat',
+
         }));
         setHistoryItems(items);
         return;
@@ -876,8 +684,6 @@ const SoloAutopilot = () => {
         id: s.id,
         title: s.title || s.id.slice(0, 12),
         ts: toTs(s),
-        // 历史数据无 sidecar 记录，通过 title 前缀推断（默认对话模式）
-        mode: s.title?.startsWith('xingjing-orchestrator') ? 'dispatch' : 'chat',
       }));
       setHistoryItems(items);
     } catch {}
@@ -916,19 +722,13 @@ const SoloAutopilot = () => {
         });
       }
 
-      // 用历史消息替换当前 chat 消息，并按历史记录的模式切换
+      // 用历史消息替换当前 chat 消息
       setChatMessages(converted);
-      // 根据历史条目的模式切换：对话模式或团队调度模式
-      setChatMode(item.mode === 'dispatch' ? 'dispatch' : 'chat');
       // 恢复历史时，让用户可继续在同一 session 中对话
-      if (item.mode === 'chat') {
-        setCurrentChatSessionId(item.id);
-        // SDD-015: 确保全局 store 加载该 session 的消息
-        if (openworkCtx?.ensureSessionLoaded) {
-          void openworkCtx.ensureSessionLoaded(item.id);
-        }
-      } else {
-        setCurrentChatSessionId(null);
+      setCurrentChatSessionId(item.id);
+      // SDD-015: 确保全局 store 加载该 session 的消息
+      if (openworkCtx?.ensureSessionLoaded) {
+        void openworkCtx.ensureSessionLoaded(item.id);
       }
       setShowHistory(false);
     } catch (err) {
@@ -1000,71 +800,8 @@ const SoloAutopilot = () => {
     }
   });
 
-  // ── TeamSessionOrchestrator ────────────────────────────────────────────────────
-  const orchestrator = createTeamSessionOrchestrator({
-    client: () => openworkCtx?.opencodeClient?.() ?? null,
-    workspaceId: () => resolvedWorkspaceId(),
-    workDir: () => productStore.activeProduct()?.workDir ?? '',
-    availableAgents: allAgents(),
-    model: () => {
-      const m = getSessionModel();
-      if (!m) return null;
-      return { providerID: m.providerID, modelID: m.modelID };
-    },
-    // session.create 前确保 API Key 已同步到 OpenCode（防止 ConfigInvalidError）
-    ensureAuth: async () => {
-      const cfg = state.llmConfig;
-      if (cfg.providerID && cfg.providerID !== 'custom' && cfg.apiKey && cfg.apiKey.length > 4) {
-        await setProviderAuth(cfg.providerID, cfg.apiKey);
-      }
-    },
-    skillApi: null,
-    onArtifactExtracted: (artifact) => {
-      const agent = allAgents().find((a) => a.id === artifact.agentId);
-      if (!agent) return;
-
-      const newArtifact: ArtifactItem = {
-        id: `artifact-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        agentId: artifact.agentId,
-        agentName: agent.name,
-        agentEmoji: agent.emoji,
-        title: artifact.title,
-        content: artifact.content,
-        createdAt: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
-        format: detectArtifactFormat(artifact.content),
-      };
-
-      setArtifactsData((prev) => [...prev, newArtifact]);
-
-      // 向 Agent Session 追加链接消息
-      const linkMessage = `\n\n📄 **产出物已生成**：[${artifact.title}](artifact://${newArtifact.id})`;
-      orchestrator.sendTo(artifact.agentId, linkMessage).catch(() => {});
-    },
-    // 每当 orchestrator 内部成功创建任何 session 时立即写入 sidecar，
-    // await 确保落盘完成后再继续（防止 loadHistory 读到旧数据）
-    onSessionCreated: async (sessionId) => {
-      const workDir = productStore.activeProduct()?.workDir;
-      if (workDir) {
-        await saveMemoryMeta(workDir, sessionId, { tags: [], mode: 'dispatch' });
-      }
-    },
-  });
-
-  const timersRef: ReturnType<typeof setTimeout>[] = [];
-  const clearTimers = () => { timersRef.forEach(clearTimeout); timersRef.length = 0; };
-
   const reset = () => {
-    clearTimers();
-    if (elapsedTimerRef) { clearInterval(elapsedTimerRef); elapsedTimerRef = undefined; }
-    setElapsedSec(0);
-    setRunState('idle');
-    setAgentStatuses(Object.fromEntries(allAgents().map((a) => [a.id, 'idle' as const])));
-    setAgentTasks({});
-    setArtifactsData([]);
-    setArtifactCollapsed(true);
-    setProgress(0);
-    setExpandedSteps({});
-    setStepTimes({});
+    setSavedFiles([]);
     permissionQueue().forEach((req) => { try { req.resolve('reject'); } catch {} });
     setPermissionQueue([]);
   };
@@ -1147,6 +884,7 @@ const SoloAutopilot = () => {
           sid = (result.data as { id: string } | undefined)?.id ?? null;
           if (sid) {
             setCurrentChatSessionId(sid);
+            console.log('[solo-chat] 命令 session 已创建', { sid, command: commandName });
             // SDD-015: 确保全局 store 加载该 session 的消息
             if (openworkCtx?.ensureSessionLoaded) {
               void openworkCtx.ensureSessionLoaded(sid);
@@ -1168,12 +906,14 @@ const SoloAutopilot = () => {
       // 能捕获 SSE 流式在 await 期间完成的 isStreaming true→false 转换
       setCommandPending(true);
       try {
+        console.log('[solo-chat] 调用 session.command', { sid, command: commandName, model: modelStr });
         await client.session.command({
           sessionID: sid,
           command: commandName,
           arguments: commandArgs,
           model: modelStr,
         });
+        console.log('[solo-chat] session.command HTTP 已返回，等待 SSE 完成', { sid });
         // HTTP 调用返回后 SSE 异步执行，chatLoading 由 commandPending effect 管理
         // 补偿检查：如果 SSE 流在 HTTP 等待期间已完成，effect 可能已清除了 commandPending
         // 这里无需额外处理，effect 的补偿路径会在下一个 tick 自动检测
@@ -1224,41 +964,49 @@ const SoloAutopilot = () => {
     setChatLoading(true);
     setAgentError(null);
 
-    // 用于产出物提取的累积文本缓存
-    let lastAccumulatedTextRef = '';
+    // 记录 prompt 发送前的 assistant 消息数（供后备完成检测使用）
+    const existingSid = currentChatSessionId();
+    if (existingSid) {
+      const msgs = openworkCtx?.messagesBySessionId?.(existingSid) ?? [];
+      prePromptAssistantCount = msgs.filter(m => (m.info as any).role === 'assistant').length;
+    } else {
+      prePromptAssistantCount = 0;
+    }
 
     const productName = productStore.activeProduct()?.name ?? '未知产品';
     const workDir = productStore.activeProduct()?.workDir;
 
-    await callAgent({
+    // 仅当用户意图涉及 Git 操作时才注入认证上下文
+    const GIT_TRIGGER_KEYWORDS = ['保存', '保存成果', '提交', '提交git', 'commit', 'push', 'git', '推送', '同步到仓库'];
+    const needGitContext = GIT_TRIGGER_KEYWORDS.some(kw => text.toLowerCase().includes(kw));
+    const gitContext = needGitContext
+      ? buildGitSystemContext(productStore.activeProduct()?.gitUrl)
+      : '';
+
+    // 使用 actions.callAgent 创建 session + 发送 prompt，确保注入 OpenWork 上下文。
+    // callAgent 在 prompt 发送后立即返回（对齐 OpenWork 原生方案），
+    // 完成检测由上方的 reactive effect 监听 sessionStatusById 驱动。
+    actions.callAgent({
       userPrompt: text,
-      systemPrompt: `你是「${productName}」产品的 AI 助手，精通产品策略、技术架构与增长分析。请用简洁、专业的中文回答用户的问题。${buildGitSystemContext(productStore.activeProduct()?.gitUrl)}`,
+      systemPrompt: `你是「${productName}」产品的 AI 助手，精通产品策略、技术架构与增长分析。请用简洁、专业的中文回答用户的问题。${gitContext}`,
       title: currentChatSessionId()
         ? undefined
         : (text.length > 50 ? text.slice(0, 50) + '...' : text),
       model: getSessionModel(),
       directory: workDir,
       existingSessionId: currentChatSessionId() || undefined,
-      owSessionStatusById: openworkCtx?.sessionStatusById,
       attachments,
       // 关键：session 建立后确保全局 store 加载
       onSessionCreated: (sid) => {
         setCurrentChatSessionId(sid);
-        // SDD-015: 确保全局 store 加载该 session 消息（全局 SSE 已在接收事件）
+        // 确保全局 store 加载该 session 消息（全局 SSE 已在接收事件）
         if (openworkCtx?.ensureSessionLoaded) {
           void openworkCtx.ensureSessionLoaded(sid);
         }
         // 将 chat 模式记录到 sidecar，供历史列表正确判断模式
         if (workDir) void saveMemoryMeta(workDir, sid, { tags: [], mode: 'chat' });
       },
-      // 保留 onText 用于产出物提取（不再用于 UI 渲染）
-      onText: (accumulated) => {
-        lastAccumulatedTextRef = accumulated;
-      },
-      onDone: (fullText) => {
-        setChatLoading(false);
-        tryExtractArtifact('auto', fullText || lastAccumulatedTextRef);
-      },
+      // onError 仅处理创建/发送阶段的错误（完成检测由 reactive effect 管理）
       onError: (errMsg) => {
         setChatLoading(false);
         setAgentError(errMsg);
@@ -1267,173 +1015,37 @@ const SoloAutopilot = () => {
       setChatLoading(false);
       setAgentError(String(e));
     });
+
+    // 启动定时器兜底：确保 Tauri 环境下即使 reactive effect 不触发也能检测完成
+    startCompletionTimer();
   };
 
   // ── handleStart：🚀 团队调度模式 ─────────────────────────────────────────────
-  const handleStart = async (attachments?: ComposerAttachment[]) => {
-    const text = goal().trim();
-    if (!text && !(attachments?.length)) return;
-
-    console.log('[solo-chat] handleStart 入口', {
-      mode: chatMode(),
-      hasModel: !!getSessionModel(),
-      modelID: getSessionModel()?.modelID,
-      configuredModelsCount: configuredModels().length,
-      attachmentCount: attachments?.length ?? 0,
-    });
-
-    // ── chat 模式：走直接对话路径（传递附件）──
-    if (chatMode() === 'chat') {
-      await handleChatSend(attachments);
-      return;
-    }
-
-    // ── dispatch 模式：走 Orchestrator 多 Agent 路径 ──
-    if (!getSessionModel() && configuredModels().length === 0) {
-      setAgentError('尚未配置可用的大模型，请先前往「设置 → 大模型配置」填写 API Key');
-      return;
-    }
-
-    // 重置本地辅助状态（不影响 orchestrator 内部 session）
-    clearTimers();
-    setAgentError(null);
-    setRunState('running');
-    setGoal('');  // 清空输入框
-
-    const { targetAgent, cleanText } = parseMention(text, allAgents());
-
-    try {
-      if (targetAgent) {
-        await orchestrator.runDirect(targetAgent.id, cleanText);
-      } else {
-        await orchestrator.run(cleanText);
-      }
-      setRunState('done');
-
-      await loadHistory();
-    } catch (err) {
-      console.error('[solo-autopilot] handleStart error:', err);
-      clearTimers();
-      orchestrator.abort();
-      setAgentError(`执行失败：${err}`);
-      setRunState('idle');
-    }
-  };
-
-  // ── 产出物保存 ──────────────────────────────────────────────────────────────────
-  const handleSaveArtifact = async (artifact: ArtifactItem) => {
-    const product = productStore.activeProduct();
-    const workDir = product?.workDir;
-    if (!workDir) { setSaveMsg('未找到活跃产品的工作目录'); setTimeout(() => setSaveMsg(null), 3000); return; }
-    setSaving(true);
-    try {
-      let appCode: string | undefined;
-      try {
-        const config = await readYaml<{ apps?: string[] }>('.xingjing/config.yaml', { apps: [] }, workDir);
-        appCode = config.apps?.[0];
-      } catch {}
-      if (!appCode && product?.code) appCode = product.code;
-      if (!appCode) throw new Error('未找到应用编码');
-
-      const dirMap: Record<string, string> = {
-        'product-brain': `apps/${appCode}/docs/product/prd`,
-        'eng-brain': `apps/${appCode}/docs/product/architecture`,
-      };
-      const subDir = dirMap[artifact.agentId] ?? `apps/${appCode}/docs/delivery`;
-      const safeName = artifact.title.replace(/[\/\\:*?"<>|]/g, '-').replace(/\s+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
-      const timestamp = new Date().toISOString().slice(0, 10);
-      const ext = artifact.format === 'html' ? '.html' : '.md';
-      const fileName = `${safeName}-${timestamp}${ext}`;
-      const relativePath = `${subDir}/${fileName}`;
-      const result = await initProductDir(workDir, [{ path: relativePath, content: artifact.content }]);
-      if (!result.ok) throw new Error(result.error ?? '文件写入失败');
-      setSaveMsg(`已保存到 ${subDir}/${fileName}`);
-      setTimeout(() => setSaveMsg(null), 3000);
-    } catch (e) {
-      setSaveMsg(`保存失败：${e instanceof Error ? e.message : String(e)}`);
-      setTimeout(() => setSaveMsg(null), 4000);
-    } finally { setSaving(false); }
-  };
-
-  // ── 产出物区域 resize ───────────────────────────────────────────────────────────
-  let isResizing = false;
-  let resizeStartX = 0;
-  let resizeStartW = 420;
-  const handleResizeMove = (e: PointerEvent) => {
-    if (!isResizing) return;
-    const dx = resizeStartX - e.clientX;
-    setArtifactWidth(Math.max(280, Math.min(700, resizeStartW + dx)));
-  };
-  const handleResizeEnd = () => {
-    isResizing = false;
-    document.removeEventListener('pointermove', handleResizeMove);
-    document.removeEventListener('pointerup', handleResizeEnd);
-  };
-  const handleResizeStart = (e: PointerEvent) => {
-    isResizing = true; resizeStartX = e.clientX; resizeStartW = artifactWidth();
-    document.addEventListener('pointermove', handleResizeMove);
-    document.addEventListener('pointerup', handleResizeEnd);
-    e.preventDefault();
-  };
-
-  let isFloatDragging = false;
-  let floatDragStart = { x: 0, y: 0 };
-  let floatPosStart = { x: 0, y: 0 };
-  const handleFloatDragStart = (e: PointerEvent) => {
-    if ((e.target as HTMLElement).closest('button')) return;
-    isFloatDragging = true;
-    floatDragStart = { x: e.clientX, y: e.clientY };
-    floatPosStart = { ...artifactFloatPos() };
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    e.preventDefault();
-  };
-  const handleFloatDragMove = (e: PointerEvent) => {
-    if (!isFloatDragging) return;
-    setArtifactFloatPos({
-      x: Math.max(0, Math.min(floatPosStart.x + e.clientX - floatDragStart.x, window.innerWidth - artifactFloatWidth())),
-      y: Math.max(0, floatPosStart.y + e.clientY - floatDragStart.y),
-    });
-  };
-  const handleFloatDragEnd = () => { isFloatDragging = false; };
-
-  let isFloatResizing = false;
-  let floatResizeDir = '';
-  let floatResizeStart = { x: 0, y: 0, w: 0, h: 0, px: 0 };
-  const handleFloatResizeMove = (e: PointerEvent) => {
-    if (!isFloatResizing) return;
-    const dx = e.clientX - floatResizeStart.x;
-    const dy = e.clientY - floatResizeStart.y;
-    if (floatResizeDir.includes('right')) setArtifactFloatWidth(Math.max(280, Math.min(window.innerWidth - 40, floatResizeStart.w + dx)));
-    if (floatResizeDir.includes('left')) {
-      const newW = Math.max(280, Math.min(window.innerWidth - 40, floatResizeStart.w - dx));
-      setArtifactFloatWidth(newW);
-      setArtifactFloatPos((prev) => ({ ...prev, x: Math.max(0, floatResizeStart.px + floatResizeStart.w - newW) }));
-    }
-    if (floatResizeDir.includes('bottom')) setArtifactFloatHeight(Math.max(200, Math.min(window.innerHeight - 80, floatResizeStart.h + dy)));
-  };
-  const handleFloatResizeEnd = () => {
-    isFloatResizing = false;
-    document.removeEventListener('pointermove', handleFloatResizeMove);
-    document.removeEventListener('pointerup', handleFloatResizeEnd);
-  };
-  const handleFloatResizeEdge = (e: PointerEvent, dir: string) => {
-    isFloatResizing = true; floatResizeDir = dir;
-    floatResizeStart = { x: e.clientX, y: e.clientY, w: artifactFloatWidth(), h: artifactFloatHeight(), px: artifactFloatPos().x };
-    document.addEventListener('pointermove', handleFloatResizeMove);
-    document.addEventListener('pointerup', handleFloatResizeEnd);
-    e.preventDefault(); e.stopPropagation();
-  };
-
   onCleanup(() => {
     console.log('[solo-chat] onCleanup: 清理资源');
-    clearTimers();
-    orchestrator.abort();
-    if (elapsedTimerRef) { clearInterval(elapsedTimerRef); elapsedTimerRef = undefined; }
-    document.removeEventListener('pointermove', handleResizeMove);
-    document.removeEventListener('pointerup', handleResizeEnd);
-    document.removeEventListener('pointermove', handleFloatResizeMove);
-    document.removeEventListener('pointerup', handleFloatResizeEnd);
+    clearCompletionTimer();
   });
+
+  // ── 文件搜索（供 @file mention 使用）─────────────────────────────────────────
+  const searchWorkspaceFiles = async (query: string): Promise<string[]> => {
+    const trimmed = query.trim();
+    if (!trimmed) return [];
+    const client = openworkCtx?.opencodeClient?.();
+    if (!client) return [];
+    try {
+      const workDir = productStore.activeProduct()?.workDir;
+      const result = await client.find.files({
+        query: trimmed,
+        dirs: 'true',
+        limit: 50,
+        ...(workDir ? { directory: workDir } : {}),
+      } as any);
+      // unwrap: result.data 是 string[]
+      return Array.isArray(result.data) ? result.data : [];
+    } catch {
+      return [];
+    }
+  };
 
   // ── Slash 命令（动态加载）─────────────────────────────────────────────────────────
 
@@ -1459,27 +1071,40 @@ const SoloAutopilot = () => {
     setPendingCommand({ name: cmd.name });
   };
 
+  // ── Session Compact（长对话压缩摘要）─────────────────────────────────────
+  const [compacting, setCompacting] = createSignal(false);
+
+  const handleCompactSession = async () => {
+    const sid = currentChatSessionId();
+    if (!sid || compacting() || chatLoading()) return;
+    const client = openworkCtx?.opencodeClient?.();
+    if (!client) { setAgentError('OpenCode 未连接'); return; }
+    const model = getSessionModel();
+    if (!model) { setAgentError('未配置模型，无法压缩'); return; }
+    setCompacting(true);
+    try {
+      const workDir = productStore.activeProduct()?.workDir;
+      await compactSession(client, sid, model, workDir ? { directory: workDir } : undefined);
+      console.log('[solo-chat] session compacted:', sid);
+    } catch (e) {
+      console.error('[solo-chat] compact failed:', e);
+      setAgentError(`压缩失败：${e}`);
+    } finally {
+      setCompacting(false);
+    }
+  };
+
+  // 显示压缩按钮的条件：有活跃 session 且消息数 >= 10
+  const showCompactBtn = () =>
+    !!currentChatSessionId() && chatDisplayMessages().length >= 10 && !chatLoading();
+
   // ── 渲染 ────────────────────────────────────────────────────────────────────────
 
-  // chat 模式：全局 store 有消息 OR 有乐观占位消息 OR 正在加载
-  const hasChatContent = () =>
+  // 全局 store 有消息 OR 有乐观占位消息 OR 正在加载
+  const hasContent = () =>
     chatDisplayMessages().length > 0 || chatLoading();
 
-  // dispatch 模式：session 已创建 OR 正在运行（与原始实现对齐，isRunning 是关键！）
-  const hasDispatchSession = () => !!(
-    orchestrator.state().orchestratorSessionId ||
-    orchestrator.state().isRunning ||
-    orchestrator.state().agentSlots.size > 0
-  );
-
-  // 整体"是否有内容"（用于切换空状态 vs 会话状态）
-  const hasContent = () =>
-    chatMode() === 'chat' ? hasChatContent() : hasDispatchSession();
-
-  const isRunning = () =>
-    chatLoading() || runState() === 'running' || orchestrator.state().isRunning;
-
-  const quickSamples = () => chatMode() === 'chat' ? CHAT_SAMPLES : DISPATCH_SAMPLES;
+  const isRunning = () => chatLoading();
 
   return (
     <Show
@@ -1502,7 +1127,7 @@ const SoloAutopilot = () => {
       <Show when={showHistory()}>
         <HistorySidebar
           items={historyItems()}
-          activeId={orchestrator.state().orchestratorSessionId}
+          activeId={currentChatSessionId()}
           restoringId={restoringSessionId()}
           onSelect={(id) => {
             const item = historyItems().find((h) => h.id === id);
@@ -1512,10 +1137,8 @@ const SoloAutopilot = () => {
           onClose={() => setShowHistory(false)}
           onNewSession={() => {
             // 新建会话：重置所有状态，关闭历史侧边栏
-            orchestrator.resetState();
             reset();
             setChatMessages([]);
-            setChatMode('dispatch');
             setCurrentChatSessionId(null);
             setPendingUserMsg(null);
             setShowHistory(false);
@@ -1523,68 +1146,7 @@ const SoloAutopilot = () => {
         />
       </Show>
 
-      {/* ── 左侧 Agent 面板（数据从 orchestrator.state() 实时派生） ── */}
-      <div style={{ 'flex-shrink': '0', display: 'flex', 'flex-direction': 'column', overflow: 'hidden' }}>
-        <AgentPanelSidebar
-          agents={allAgents()}
-          agentStatuses={(() => {
-            // 从 orchestrator agentSlots 派生实时状态，映射 'pending' → 'waiting'
-            const result: AgentStatus = Object.fromEntries(allAgents().map((a) => [a.id, 'idle' as const]));
-            orchestrator.state().agentSlots.forEach((slot, agentId) => {
-              const s = slot.status();
-              result[agentId] = s === 'pending' ? 'waiting' : (s as any);
-            });
-            return result;
-          })()}
-          agentTasks={(() => {
-            // 从各 slot 的最后一条 assistant 消息截取摘要作为当前任务描述
-            const result: AgentTasks = {};
-            orchestrator.state().agentSlots.forEach((slot, agentId) => {
-              const msgs = slot.messages();
-              const lastAssistant = [...msgs].reverse().find((m: any) => {
-                const role = m.info?.role ?? m.role;
-                return role === 'assistant';
-              });
-              if (lastAssistant) {
-                const parts: any[] = (lastAssistant as any).parts ?? [];
-                const text = parts
-                  .filter((p: any) => p.type === 'text')
-                  .map((p: any) => p.text ?? '')
-                  .join('')
-                  .trim()
-                  .slice(0, 40);
-                if (text) result[agentId] = text + (text.length >= 40 ? '…' : '');
-              }
-            });
-            return result;
-          })()}
-          agentDone={(() => {
-            // 已完成的 agent 计 1，其余 0
-            const result: AgentDone = Object.fromEntries(allAgents().map((a) => [a.id, 0]));
-            orchestrator.state().agentSlots.forEach((slot, agentId) => {
-              if (slot.status() === 'done') result[agentId] = 1;
-            });
-            return result;
-          })()}
-          elapsedSec={elapsedSec()}
-          runState={(() => {
-            if (orchestrator.state().isRunning) return 'running';
-            const slots = orchestrator.state().agentSlots;
-            if (slots.size > 0) {
-              const allSettled = Array.from(slots.values()).every(
-                (s) => s.status() === 'done' || s.status() === 'error'
-              );
-              if (allSettled) return 'done';
-            }
-            return runState(); // fallback 保留本地状态
-          })()}
-          artifactCount={agentArtifactCount}
-          stepTimes={stepTimes()}
-          progress={progress()}
-          activeTabId={orchestrator.state().activeTabId}
-          onAgentClick={(agentId) => orchestrator.setActiveTab(agentId)}
-        />
-      </div>
+
 
       {/* ── 中间列：对话区 ── */}
       <div style={{ flex: '1', 'min-width': '0', display: 'flex', 'flex-direction': 'column', overflow: 'hidden' }}>
@@ -1610,9 +1172,7 @@ const SoloAutopilot = () => {
               </span>
             </Show>
             <span style={{ 'font-size': '11px', color: themeColors.textSecondary }}>
-              {chatMode() === 'chat'
-                ? '💬 普通对话模式：直接问 AI，快速获取答案'
-                : '🚀 团队调度模式：4 个 AI 角色并行执行，适合复杂任务'}
+              {'💬 直接问 AI，快速获取答案 · 支持 @agent / @file / /命令'}
             </span>
           </div>
           <div style={{ display: 'flex', 'align-items': 'center', gap: '6px' }}>
@@ -1620,10 +1180,8 @@ const SoloAutopilot = () => {
             <Show when={hasContent()}>
               <button
                 onClick={() => {
-                  orchestrator.resetState();
                   reset();
                   setChatMessages([]);
-                  setChatMode('dispatch');
                   setCurrentChatSessionId(null);
                   setPendingUserMsg(null);
                 }}
@@ -1646,6 +1204,39 @@ const SoloAutopilot = () => {
               >
                 <Plus size={12} />
                 新建
+              </button>
+            </Show>
+            {/* 压缩会话按钮（消息较多时显示） */}
+            <Show when={showCompactBtn()}>
+              <button
+                onClick={handleCompactSession}
+                disabled={compacting()}
+                title="压缩当前会话（减少上下文长度，提升响应速度）"
+                style={{
+                  display: 'flex', 'align-items': 'center', gap: '4px',
+                  padding: '3px 8px', 'border-radius': '6px', 'font-size': '11px',
+                  border: `1px solid ${themeColors.border}`, background: 'transparent',
+                  color: compacting() ? chartColors.primary : themeColors.textMuted,
+                  cursor: compacting() ? 'wait' : 'pointer', transition: 'all 0.15s',
+                  opacity: compacting() ? '0.7' : '1',
+                }}
+                onMouseEnter={(e) => {
+                  if (!compacting()) {
+                    (e.currentTarget as HTMLElement).style.color = chartColors.primary;
+                    (e.currentTarget as HTMLElement).style.borderColor = chartColors.primary;
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (!compacting()) {
+                    (e.currentTarget as HTMLElement).style.color = themeColors.textMuted;
+                    (e.currentTarget as HTMLElement).style.borderColor = themeColors.border;
+                  }
+                }}
+              >
+                <Show when={compacting()} fallback={<Minimize2 size={12} />}>
+                  <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} />
+                </Show>
+                {compacting() ? '压缩中...' : '压缩'}
               </button>
             </Show>
             {/* 历史按钮 */}
@@ -1701,20 +1292,16 @@ const SoloAutopilot = () => {
           }}>
             <div style={{ width: '100%', 'max-width': '600px' }}>
               <div style={{ 'text-align': 'center', 'margin-bottom': '20px' }}>
-                <div style={{ 'font-size': '36px', 'margin-bottom': '8px' }}>
-                  {chatMode() === 'chat' ? '💬' : '🚀'}
-                </div>
+                <div style={{ 'font-size': '36px', 'margin-bottom': '8px' }}>{'💬'}</div>
                 <div style={{ 'font-size': '16px', 'font-weight': '600', color: themeColors.text, 'margin-bottom': '4px' }}>
-                  {chatMode() === 'chat' ? '和 AI 直接对话' : '启动 AI 虚拟团队'}
+                  {'和 AI 直接对话'}
                 </div>
                 <div style={{ 'font-size': '13px', color: themeColors.textMuted }}>
-                  {chatMode() === 'chat'
-                    ? '提问、头脑风暴、分析——AI 随时待命'
-                    : '描述你的目标，4 个 AI 角色并行执行，给你完整的交付物'}
+                  {'提问、头脑风暴、分析——支持 @agent / @file / /命令'}
                 </div>
               </div>
               <div style={{ display: 'grid', 'grid-template-columns': '1fr 1fr', gap: '8px', 'margin-bottom': '16px' }}>
-                <For each={quickSamples()}>
+                <For each={QUICK_SAMPLES}>
                   {(sample) => (
                     <button
                       onClick={() => setGoal(sample)}
@@ -1743,8 +1330,8 @@ const SoloAutopilot = () => {
           </div>
         </Show>
 
-        {/* ── 💬 Chat 模式：MessageList 渲染 ── */}
-        <Show when={chatMode() === 'chat' && hasChatContent()}>
+        {/* ── 💬 Chat 消息列表 ── */}
+        <Show when={hasContent()}>
           <div
             ref={(el) => { chatScrollRef = el; }}
             style={{ flex: '1', 'overflow-y': 'auto', 'min-height': '0', padding: '12px 4px' }}
@@ -1758,15 +1345,11 @@ const SoloAutopilot = () => {
               setExpandedStepIds={setChatExpandedStepIds}
               scrollElement={() => chatScrollRef}
               variant="bubble"
-              onOpenArtifact={(artifactId) => {
-                setArtifactCollapsed(false);
-                setActiveArtifactId(artifactId);
-              }}
             />
           </div>
-          {/* 产出物检测提示条 */}
-          <Show when={!chatLoading() && latestArtifact()}>
-            {(art) => (
+          {/* 产出物自动保存提示条 */}
+          <Show when={!chatLoading() && latestSavedFile()}>
+            {(file) => (
               <div style={{
                 display: 'flex', 'align-items': 'center', gap: '8px',
                 padding: '8px 14px', margin: '0 4px 8px',
@@ -1776,98 +1359,22 @@ const SoloAutopilot = () => {
                 'font-size': '12px',
               }}>
                 <FileText size={14} style={{ color: chartColors.success, 'flex-shrink': '0' }} />
-                <span style={{ color: themeColors.textMuted }}>已生成产出物：</span>
-                <button
-                  onClick={() => {
-                    setArtifactCollapsed(false);
-                    setActiveArtifactId(art().id);
-                  }}
-                  style={{
-                    background: 'none', border: 'none', cursor: 'pointer',
-                    color: chartColors.primary, 'font-weight': 600,
-                    'font-size': '12px', padding: 0, 'text-decoration': 'underline',
-                  }}
-                >
-                  {art().title}
-                </button>
+                <span style={{ color: themeColors.textMuted }}>已保存产出物：</span>
+                <span style={{ color: chartColors.primary, 'font-weight': 600, 'font-size': '12px' }}>
+                  {file().title}
+                </span>
               </div>
             )}
           </Show>
         </Show>
 
-        {/* ── 🚀 Dispatch 模式：Orchestrator Session 视图 ── */}
-        <Show when={chatMode() === 'dispatch' && hasDispatchSession()}>
-          <div style={{ flex: '1', display: 'flex', 'flex-direction': 'column', 'min-height': '0', overflow: 'hidden' }}>
-            {/* Session Tab Bar */}
-            <Show when={orchestrator.state().orchestratorSessionId || orchestrator.state().agentSlots.size > 0}>
-              <div style={{ 'margin-bottom': '8px' }}>
-                <SessionTabBar
-                  orchestratorSessionId={orchestrator.state().orchestratorSessionId}
-                  slots={Array.from(orchestrator.state().agentSlots.values())}
-                  activeTabId={orchestrator.state().activeTabId}
-                  onTabChange={orchestrator.setActiveTab}
-                  dispatchPlan={orchestrator.state().dispatchPlan}
-                />
-              </div>
-            </Show>
 
-            {/* 消息区 */}
-            <div style={{ flex: '1', 'overflow-y': 'auto', 'min-height': '0' }}>
-              <Show
-                when={orchestrator.state().activeTabId !== 'orchestrator' && orchestrator.getActiveSlot()}
-                fallback={
-                  <div style={{
-                    display: 'flex', 'flex-direction': 'column', 'align-items': 'center',
-                    'justify-content': 'center', height: '100%', color: themeColors.textMuted,
-                    'text-align': 'center', padding: '40px',
-                  }}>
-                    <Show
-                      when={orchestrator.state().isRunning}
-                      fallback={
-                        <>
-                          <div style={{ 'font-size': '40px', 'margin-bottom': '12px' }}>🎯</div>
-                          <div style={{ 'font-size': '14px', 'font-weight': 500 }}>任务已分发给虚拟团队</div>
-                          <div style={{ 'font-size': '12px', 'margin-top': '8px' }}>
-                            点击上方 Tab 查看各 Agent 的执行详情与产出物
-                          </div>
-                        </>
-                      }
-                    >
-                      <Loader2 size={28} style={{ animation: 'spin 1s linear infinite', 'margin-bottom': '12px', color: chartColors.success }} />
-                      <div style={{ 'font-size': '14px', 'font-weight': 500 }}>AI 虚拟团队正在执行中…</div>
-                      <div style={{ 'font-size': '12px', 'margin-top': '8px' }}>正在创建 Agent 会话，请稍候</div>
-                    </Show>
-                  </div>
-                }
-              >
-                {(slot) => (
-                  <AgentSessionView
-                    slot={slot()}
-                    getSessionById={orchestrator.getSessionById}
-                    getMessagesBySessionId={orchestrator.getMessagesBySessionId}
-                    ensureSessionLoaded={orchestrator.ensureSessionLoaded}
-                    sessionLoadingById={orchestrator.sessionLoadingById}
-                    onPermissionReply={(permId, action) => orchestrator.replyPermission(slot().agentId, permId, action)}
-                    onQuestionReply={(reqId, answers) => orchestrator.replyQuestion(slot().agentId, reqId, answers)}
-                    onSendMessage={(text) => orchestrator.sendTo(slot().agentId, text)}
-                    developerMode={false}
-                    showThinking={false}
-                    onOpenArtifact={(artifactId) => {
-                      setArtifactCollapsed(false);
-                      setActiveArtifactId(artifactId);
-                    }}
-                  />
-                )}
-              </Show>
-            </div>
-          </div>
-        </Show>
 
         {/* ── 底部：增强输入组件 ── */}
         <div style={{
           'flex-shrink': '0',
-          'border-top': hasDispatchSession() ? `1px solid ${themeColors.border}` : 'none',
-          'padding-top': hasDispatchSession() ? '10px' : '0',
+          'border-top': hasContent() ? `1px solid ${themeColors.border}` : 'none',
+          'padding-top': hasContent() ? '10px' : '0',
           'margin-top': '6px',
         }}>
           {/* 错误提示 */}
@@ -1893,28 +1400,29 @@ const SoloAutopilot = () => {
             value={goal()}
             onChange={setGoal}
             isRunning={isRunning()}
-            hasSession={hasDispatchSession()}
+            hasSession={hasContent()}
             agents={allAgents()}
             configuredModels={configuredModels()}
             selectedModelId={sessionModelId()}
             onModelChange={setSessionModelId}
-            onSubmit={handleStart}
+            onSubmit={handleChatSend}
             onStop={() => {
-              orchestrator.abort();
-              setRunState('idle');
+              clearCompletionTimer();
+              setChatLoading(false);
+              // 同时通知 OpenCode 中止当前 session，确保状态一致
+              const sid = currentChatSessionId();
+              const client = openworkCtx?.opencodeClient?.();
+              if (sid && client) {
+                void abortSessionSafe(client, sid);
+              }
             }}
             onReset={reset}
-            mode={chatMode()}
-            onModeChange={setChatMode}
             capabilities={capabilities()}
             listCommands={listSlashCommands}
             onCommandSelect={handleCommandSelect}
             knowledgeScore={knowledgeHealthScore()}
-            placeholder={
-              chatMode() === 'chat'
-                ? '问我任何关于你产品的问题，或输入 @ 召唤特定 Agent...'
-                : '描述你的目标，AI 虚拟团队并行执行... 支持 @ 指定 Agent，/ 触发命令'
-            }
+            placeholder="问我任何关于你产品的问题，@ 召唤 Agent，/ 触发命令..."
+            searchFiles={searchWorkspaceFiles}
           />
 
           <div style={{ 'font-size': '10px', color: themeColors.textMuted, 'margin-top': '5px', 'text-align': 'center' }}>
@@ -1923,104 +1431,12 @@ const SoloAutopilot = () => {
         </div>
       </div>
 
-      {/* ── 拖拽手柄 ── */}
-      <Show when={!artifactFloat() && !artifactCollapsed()}>
-        <div
-          style={{
-            width: '5px', cursor: 'col-resize', 'flex-shrink': '0',
-            background: themeColors.border, 'border-radius': '3px', 'align-self': 'stretch',
-            transition: 'background 0.15s',
-          }}
-          onPointerDown={handleResizeStart}
-          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = chartColors.success + '80'; }}
-          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = themeColors.border; }}
+      {/* ── 已保存文件列表侧栏 ── */}
+      <Show when={savedFiles().length > 0}>
+        <SavedFileList
+          files={savedFiles()}
+          workDir={productStore.activeProduct()?.workDir ?? ''}
         />
-      </Show>
-
-      {/* ── 产出物区域（展开） ── */}
-      <Show when={!artifactFloat() && !artifactCollapsed()}>
-        <div style={{ width: `${artifactWidth()}px`, 'flex-shrink': '0', display: 'flex', 'flex-direction': 'column', overflow: 'hidden' }}>
-          <ArtifactWorkspace
-            artifacts={artifactsData()}
-            isFloating={false}
-            onSave={handleSaveArtifact}
-            saving={saving()}
-            onToggleFloat={() => {
-              setArtifactFloatWidth(artifactWidth());
-              setArtifactFloatHeight(Math.round(window.innerHeight * 0.78));
-              setArtifactFloatPos({ x: Math.max(0, window.innerWidth - artifactWidth() - 20), y: 64 });
-              setArtifactFloat(true);
-            }}
-            onCollapse={() => setArtifactCollapsed(true)}
-            activeArtifactId={activeArtifactId()}
-            onActiveArtifactIdChange={setActiveArtifactId}
-          />
-        </div>
-      </Show>
-
-      {/* ── 产出物收起态 ── */}
-      <Show when={!artifactFloat() && artifactCollapsed()}>
-        <div
-          onClick={() => setArtifactCollapsed(false)}
-          title="展开产出物面板"
-          style={{
-            width: '34px', 'flex-shrink': '0', display: 'flex', 'flex-direction': 'column',
-            'align-items': 'center', padding: '10px 0', gap: '8px', cursor: 'pointer',
-            border: `1px solid ${themeColors.border}`, 'border-radius': '10px',
-            background: themeColors.surface, 'user-select': 'none',
-          }}
-        >
-          <FileText size={14} style={{ color: themeColors.textMuted }} />
-          <span style={{ 'writing-mode': 'vertical-rl', 'font-size': '10px', color: themeColors.textMuted, 'letter-spacing': '2px' }}>
-            产出物
-          </span>
-          <Show when={artifactsData().length > 0}>
-            <span style={{
-              'font-size': '9px', background: chartColors.success, color: 'white',
-              'border-radius': '9999px', padding: '1px 4px', 'font-weight': '600',
-            }}>
-              {artifactsData().length}
-            </span>
-          </Show>
-        </div>
-      </Show>
-
-      {/* ── 产出物悬浮面板 ── */}
-      <Show when={artifactFloat()}>
-        <div style={{
-          position: 'fixed', left: `${artifactFloatPos().x}px`, top: `${artifactFloatPos().y}px`,
-          width: `${artifactFloatWidth()}px`, height: `${artifactFloatHeight()}px`,
-          'z-index': 200, 'border-radius': '12px', overflow: 'hidden',
-          'box-shadow': '0 8px 40px rgba(0,0,0,0.22)',
-        }}>
-          <ArtifactWorkspace
-            artifacts={artifactsData()}
-            isFloating={true}
-            onSave={handleSaveArtifact}
-            saving={saving()}
-            onToggleFloat={() => setArtifactFloat(false)}
-            onDragStart={handleFloatDragStart}
-            onDragMove={handleFloatDragMove}
-            onDragEnd={handleFloatDragEnd}
-            onResizeEdge={handleFloatResizeEdge}
-            activeArtifactId={activeArtifactId()}
-            onActiveArtifactIdChange={setActiveArtifactId}
-          />
-        </div>
-      </Show>
-
-      {/* ── 保存提示 ── */}
-      <Show when={saveMsg() !== null}>
-        <div style={{
-          position: 'fixed', bottom: '20px', left: '50%', transform: 'translateX(-50%)',
-          padding: '8px 18px', 'border-radius': '8px', 'font-size': '12px', 'z-index': 300,
-          background: saveMsg()?.startsWith('已保存') ? themeColors.successBg : '#fff2f0',
-          border: `1px solid ${saveMsg()?.startsWith('已保存') ? themeColors.successBorder : '#ffccc7'}`,
-          color: saveMsg()?.startsWith('已保存') ? chartColors.success : '#cf1322',
-          'box-shadow': '0 4px 16px rgba(0,0,0,0.12)',
-        }}>
-          {saveMsg()}
-        </div>
       </Show>
 
       {/* ── 权限授权 Dialog ── */}

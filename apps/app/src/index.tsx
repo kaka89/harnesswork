@@ -10,6 +10,12 @@ import { PlatformProvider, type Platform } from "./app/context/platform";
 import { nativeDeepLinkEvent, pushPendingDeepLinks } from "./app/lib/deep-link-bridge";
 import { getOpenWorkDeployment } from "./app/lib/openwork-deployment";
 import { isTauriRuntime } from "./app/utils";
+import { writeStartupPreference } from "./app/utils";
+import {
+  readOpenworkConnectInviteFromSearch,
+  writeOpenworkServerSettings,
+  stripOpenworkConnectInviteFromUrl,
+} from "./app/lib/openwork-server";
 import { initLocale } from "./i18n";
 
 bootstrapTheme();
@@ -149,6 +155,18 @@ const platform: Platform = {
   fetch,
 };
 
+// 方案C：浏览器环境下，若 URL 含 ow_url 邀请参数，提前写入 localStorage
+// 写入完成后清理 URL，App 初始化时读到 startupPref=server + urlOverride 自动发起连接
+if (!isTauriRuntime() && typeof window !== "undefined") {
+  const invite = readOpenworkConnectInviteFromSearch(window.location.search);
+  if (invite) {
+    writeOpenworkServerSettings({ urlOverride: invite.url, token: invite.token });
+    writeStartupPreference("server");
+    const cleanUrl = stripOpenworkConnectInviteFromUrl(window.location.href);
+    window.history.replaceState(null, "", cleanUrl);
+  }
+}
+
 const ModeSelectPage = lazy(() => import("./app/pages/mode-select"));
 // 星静：直接嵌入 apps/app/src/app/xingjing，无 iframe
 const XingjingNativePageLazy = lazy(() => import("./app/pages/xingjing-native"));
@@ -160,7 +178,7 @@ render(
     <PlatformProvider value={platform}>
       <RouterComponent root={AppEntry}>
         <Route path="/mode-select" component={ModeSelectPage} />
-        <Route path="/xingjing-solid" component={XingjingNativePage} />
+        <Route path="/xingjing" component={XingjingNativePage} />
         <Route path="*all" component={() => null} />
       </RouterComponent>
     </PlatformProvider>

@@ -4,8 +4,7 @@
  * 支持 @mention 直接调用，零后端存储，OpenCode 不可用时降级 mock。
  *
  * Agent 发现机制：
- * - 优先从 .opencode/agents/*.md 文件加载（文件驱动）
- * - 回退到内置 SOLO_AGENTS / TEAM_AGENTS 常量（兜底）
+ * - 统一从 ~/.xingjing/agents/ 文件加载（纯文件驱动）
  * - 通过 agent-registry.ts 统一管理
  */
 import { callAgent, type CallAgentOptions } from './opencode-client';
@@ -26,108 +25,21 @@ export interface AutopilotAgent {
   bgColor: string;
   borderColor: string;
   emoji: string;
+  /** UI 展示用标签（如 '需求分析'、'PRD 生成'） */
   skills: string[];
+  /** 实际从 .opencode/skills/ 注入的 Skill ID（如 'product-hypothesis'） */
+  injectSkills?: string[];
   description: string;
   /** 直接传给 callAgent systemPrompt 的角色设定 */
   systemPrompt: string;
-  /** Agent 来源：builtin = 内置种子, custom = 用户自定义 */
-  source?: 'builtin' | 'custom';
-  /** 是否可在 Workshop 中编辑/删除（内置 Agent 不可删除） */
+  /** Agent 模式：solo = 独立版, team = 团队版 */
+  mode?: 'solo' | 'team';
+  /** Agent 来源：seed = 内置种子, custom = 用户自定义 */
+  source?: 'seed' | 'custom';
+  /** 是否可在 Workshop 中编辑/删除（种子 Agent 不可删除） */
   editable?: boolean;
 }
 
-const OUTPUT_FORMAT: string = `
-输出格式（严格遵循 Markdown）：
-## 执行动作
-（一句话概括你的行动）
-
-## 执行结果
-（要点列表，不超过 6 条，每行以"• "开头）
-
-### 产出物：{产出物名称}
-（产出内容，不超过 10 行）`;
-
-export const TEAM_AGENTS: AutopilotAgent[] = [
-  {
-    id: 'pm-agent', name: 'AI产品搭档', role: '产品经理',
-    color: '#1264e5', bgColor: '#e6f0ff', borderColor: '#91c5ff', emoji: '📋',
-    skills: ['需求分析', 'PRD 生成', '优先级排序', '用户故事'],
-    description: '分析需求、拆解用户故事、生成 PRD 草稿',
-    systemPrompt: `你是 AI 产品搭档（PM Agent），专注于需求分析、用户故事拆解和 PRD 生成。你负责：1. 分析目标，识别核心用户故事；2. 拆解验收标准；3. 输出简洁 PRD 要点。${OUTPUT_FORMAT}`,
-  },
-  {
-    id: 'arch-agent', name: 'AI架构搭档', role: '架构师',
-    color: '#722ed1', bgColor: '#f9f0ff', borderColor: '#d3adf7', emoji: '🏗️',
-    skills: ['系统设计', 'SDD 生成', 'API 规范', 'ADR 记录'],
-    description: '评审 PRD、设计系统架构、生成 SDD 与接口契约',
-    systemPrompt: `你是 AI 架构搭档（Architect Agent），专注于系统设计和技术决策。你负责：1. 评审需求，识别架构影响；2. 设计系统结构，输出选型决策；3. 生成 SDD 要点和 API 契约。${OUTPUT_FORMAT}`,
-  },
-  {
-    id: 'dev-agent', name: 'AI开发搭档', role: '开发人员',
-    color: '#08979c', bgColor: '#e6fffb', borderColor: '#87e8de', emoji: '💻',
-    skills: ['代码生成', 'PR 提交', '单元测试', 'Code Review'],
-    description: '按 SDD 实现功能、提交 PR、生成单元测试',
-    systemPrompt: `你是 AI 开发搭档（Dev Agent），专注于功能实现和代码质量。你负责：1. 按需求设计实现方案；2. 描述具体实现步骤和涉及文件；3. 规划单元测试覆盖。${OUTPUT_FORMAT}`,
-  },
-  {
-    id: 'qa-agent', name: 'AI测试搭档', role: 'QA 工程师',
-    color: '#d46b08', bgColor: '#fff7e6', borderColor: '#ffd591', emoji: '🧪',
-    skills: ['测试用例', '自动化测试', '回归测试', '质量门控'],
-    description: '生成测试用例、执行自动化测试、输出质量报告',
-    systemPrompt: `你是 AI 测试搭档（QA Agent），专注于质量保障。你负责：1. 生成测试用例（正向+边界）；2. 设计自动化测试方案；3. 输出质量报告。${OUTPUT_FORMAT}`,
-  },
-  {
-    id: 'sre-agent', name: 'AI运维搭档', role: 'SRE',
-    color: '#389e0d', bgColor: '#f6ffed', borderColor: '#b7eb8f', emoji: '🚀',
-    skills: ['CI/CD', '发布管理', '监控告警', '回滚决策'],
-    description: '触发流水线、执行部署、配置监控告警',
-    systemPrompt: `你是 AI 运维搭档（SRE Agent），专注于部署和可靠性。你负责：1. 规划 CI/CD 流水线步骤；2. 描述部署策略和回滚方案；3. 配置监控和告警规则。${OUTPUT_FORMAT}`,
-  },
-  {
-    id: 'mgr-agent', name: 'AI管理搭档', role: '管理层',
-    color: '#cf1322', bgColor: '#fff2f0', borderColor: '#ffccc7', emoji: '📊',
-    skills: ['进度汇总', '风险预警', '迭代报告', '效能分析'],
-    description: '汇总执行结果、生成迭代报告、分析效能数据',
-    systemPrompt: `你是 AI 管理搭档（Manager Agent），专注于进度汇总和效能分析。你负责：1. 汇总各角色执行结果；2. 识别风险点和阻碍项；3. 生成简洁迭代报告。${OUTPUT_FORMAT}`,
-  },
-];
-
-export const SOLO_AGENTS: AutopilotAgent[] = [
-  {
-    id: 'product-brain', name: 'AI产品搭档', role: 'AI产品搭档',
-    color: '#1264e5', bgColor: '#e6f0ff', borderColor: '#91c5ff', emoji: '🧠',
-    skills: ['假设验证', 'product-hypothesis', '用户洞察', '功能优先级'],
-    description: '以产品经理视角分析目标，拆解为可验证的假设和功能点',
-    systemPrompt: `你是 AI 产品搭档，以 solo 创业者视角分析目标。聚焦 MVP，识别最核心的用户价值，拆解为最小可验证的功能点。保持简洁，每个决策都要理由充分。
-
-当用户输入产品突发奇想（功能点/想法片段）时，必须先输出一个 JSON 代码块（如下格式），再用 1-2 句话解释核心价值：
-\`\`\`json
-{"belief":"用一句话描述功能假设","why":"简述潜在用户痛点或驱动力","method":"最简单的验证方式","impact":"high|medium|low"}
-\`\`\`
-${OUTPUT_FORMAT}`,
-  },
-  {
-    id: 'eng-brain', name: 'AI工程搭档', role: 'AI工程搭档',
-    color: '#08979c', bgColor: '#e6fffb', borderColor: '#87e8de', emoji: '⚙️',
-    skills: ['技术方案', 'MVP 开发', 'Bug 修复', '一键部署'],
-    description: '选择最简技术方案，直接生成可运行代码，无需评审',
-    systemPrompt: `你是 AI 工程搭档，偏好最简可用方案。直接给出技术选型、具体实现步骤和代码片段。不做过度设计，优先复用已有能力。${OUTPUT_FORMAT}`,
-  },
-  {
-    id: 'growth-brain', name: 'AI增长搭档', role: 'AI增长搭档',
-    color: '#d46b08', bgColor: '#fff7e6', borderColor: '#ffd591', emoji: '📈',
-    skills: ['用户获取', '留存策略', '增长文案', '社区运营'],
-    description: '制定增长策略，生成营销文案，规划用户触达方案',
-    systemPrompt: `你是 AI 增长搭档，专注用户获取和留存。基于目标制定具体增长策略，生成可直接使用的营销文案和触达方案。${OUTPUT_FORMAT}`,
-  },
-  {
-    id: 'ops-brain', name: 'AI运营搭档', role: 'AI运营搭档',
-    color: '#389e0d', bgColor: '#f6ffed', borderColor: '#b7eb8f', emoji: '🔧',
-    skills: ['数据监控', '发布管理', '客服回复', '故障处理'],
-    description: '监控生产环境，处理用户反馈，执行日常运营任务',
-    systemPrompt: `你是 AI 运营搭档，专注生产环境稳定和用户体验。规划监控方案、发布步骤，处理用户反馈，给出可直接执行的运营行动。${OUTPUT_FORMAT}`,
-  },
-];
 
 // ─── Orchestrator Prompt Builder ────────────────────────────────
 
@@ -181,18 +93,31 @@ export function parseDispatchPlan(text: string): DispatchItem[] {
 
 export interface MentionParseResult {
   targetAgent: AutopilotAgent | null;
+  /** @skill:xxx 匹配到的 Skill 名称（绕过 Pipeline 直接注入执行） */
+  targetSkill: string | null;
   cleanText: string;
 }
 
+/**
+ * 解析 @mention 语法。支持：
+ * - @agentId / @agentName → 直接调用 Agent
+ * - @skill:skillName → 直接以 Skill 上下文执行（绕过 Pipeline）
+ */
 export function parseMention(text: string, agents: AutopilotAgent[]): MentionParseResult {
   const match = text.match(/^@(\S+)\s*([\s\S]*)$/);
-  if (!match) return { targetAgent: null, cleanText: text };
+  if (!match) return { targetAgent: null, targetSkill: null, cleanText: text };
   const ref = match[1];
+  const cleanText = (match[2] || text).trim() || text;
+
+  // @skill:xxx → 直接调用 Skill，绕过 Pipeline
+  const skillMatch = ref.match(/^skill:(.+)$/);
+  if (skillMatch) {
+    return { targetAgent: null, targetSkill: skillMatch[1], cleanText };
+  }
+
+  // @agentId / @agentName → 直接调用 Agent
   const agent = agents.find((a) => a.id === ref || a.name === ref);
-  return {
-    targetAgent: agent ?? null,
-    cleanText: (match[2] || text).trim() || text,
-  };
+  return { targetAgent: agent ?? null, targetSkill: null, cleanText };
 }
 
 // ─── Execution Types ─────────────────────────────────────────────
@@ -262,6 +187,8 @@ export async function runOrchestratedAutopilot(
   const orchestratorSystemPrompt = buildOrchestratorSystemPrompt(availableAgents);
 
   // Phase 1: Orchestrator 决定调用哪些 Agent
+  // agentId='orchestrator' → OpenCode 从 .opencode/agents/orchestrator.md 原生加载 systemPrompt
+  // 不再手动传 systemPrompt（避免双重注入）
   let orchestratorOutput = '';
   let phase1Ok = false;
 
@@ -271,7 +198,7 @@ export async function runOrchestratedAutopilot(
     invoke({
       title: `xingjing-orchestrator-${Date.now()}`,
       directory: workDir,
-      systemPrompt: orchestratorSystemPrompt,
+      // systemPrompt 由 OpenCode 从 orchestrator.md 原生加载，不重复注入
       userPrompt: goal,
       model,
       agentId: 'orchestrator',
@@ -327,9 +254,8 @@ export async function runOrchestratedAutopilot(
 
       opts.onAgentStatus?.(agentId, 'thinking');
 
-      // 动态注入 Agent 关联的 Skill 上下文
-      const skillContext = await injectSkillContext(agentDef.skills, opts.skillApi ?? null);
-      const enrichedSystemPrompt = agentDef.systemPrompt + skillContext;
+      // 动态注入 Agent 关联的 Skill 上下文（通过 system 参数独立注入）
+      const skillContext = await injectSkillContext(agentDef.injectSkills ?? [], opts.skillApi ?? null);
 
       return new Promise<void>((resolve) => {
         let resolved = false;
@@ -337,9 +263,10 @@ export async function runOrchestratedAutopilot(
         invoke({
           title: `xingjing-agent-${agentId}-${Date.now()}`,
           directory: workDir,
-          systemPrompt: enrichedSystemPrompt,
+          // systemPrompt 由 OpenCode 从 .md 原生加载，不重复注入
           userPrompt: task,
           model,
+          skillContext,
           knowledgeContext,
           // 子 Agent 不重复注入回忆上下文（已在 Orchestrator 层使用）
           // 传递 OpenCode Agent ID（若来自文件发现则有值，否则 undefined）
@@ -413,9 +340,8 @@ export async function runDirectAgent(
   const invoke = opts.callAgentFn ?? callAgent;
   opts.onStatus?.('thinking');
 
-  // 动态注入 Agent 关联的 Skill 上下文
-  const skillContext = await injectSkillContext(agent.skills, opts.skillApi ?? null);
-  const enrichedSystemPrompt = agent.systemPrompt + skillContext;
+  // 动态注入 Agent 关联的 Skill 上下文（通过 system 参数独立注入）
+  const skillContext = await injectSkillContext(agent.injectSkills ?? [], opts.skillApi ?? null);
 
   await new Promise<void>((resolve) => {
     let resolved = false;
@@ -423,11 +349,83 @@ export async function runDirectAgent(
     invoke({
       title: `xingjing-direct-${agent.id}-${Date.now()}`,
       directory: opts.workDir,
-      systemPrompt: enrichedSystemPrompt,
+      // systemPrompt 由 OpenCode 从 .md 原生加载，不重复注入
       userPrompt: prompt,
       model: opts.model,
+      skillContext,
       // 传递 OpenCode Agent ID（若来自文件发现则有值）
       agentId: (agent as RegisteredAgent).opencodeAgentId,
+      onPermissionAsked: opts.onPermissionAsked,
+      onText: (accumulated) => {
+        opts.onStatus?.('working');
+        opts.onStream?.(accumulated);
+      },
+      onDone: (fullText) => {
+        try {
+          opts.onStatus?.('done');
+          opts.onDone?.(fullText);
+        } finally {
+          safeResolve();
+        }
+      },
+      onError: (err) => {
+        try {
+          opts.onStatus?.('error');
+          opts.onError?.(err);
+        } finally {
+          safeResolve();
+        }
+      },
+    }).catch((err: unknown) => {
+      try {
+        opts.onStatus?.('error');
+        const msg = err instanceof Error ? err.message : String(err);
+        opts.onError?.(`调用异常: ${msg}`);
+      } finally {
+        safeResolve();
+      }
+    });
+  });
+}
+
+// ─── runDirectSkill ─────────────────────────────────────────────
+
+/**
+ * 直接以指定 Skill 上下文执行用户 prompt，绕过 Pipeline。
+ * Skill 内容通过 injectSkillContext 注入到 session，使用默认 Agent 执行。
+ *
+ * 使用方式：用户输入 @skill:brainstorming 帮我分析这个需求
+ */
+export async function runDirectSkill(
+  skillName: string,
+  prompt: string,
+  opts: {
+    workDir?: string;
+    model?: { providerID: string; modelID: string };
+    callAgentFn?: (options: CallAgentOptions) => Promise<void>;
+    skillApi?: SkillApiAdapter | null;
+    onPermissionAsked?: CallAgentOptions['onPermissionAsked'];
+    onStatus?: (status: AgentExecutionStatus) => void;
+    onStream?: (text: string) => void;
+    onDone?: (fullText: string) => void;
+    onError?: (err: string) => void;
+  },
+): Promise<void> {
+  const invoke = opts.callAgentFn ?? callAgent;
+  opts.onStatus?.('thinking');
+
+  // 获取 Skill 内容注入为上下文
+  const skillContext = await injectSkillContext([skillName], opts.skillApi ?? null);
+
+  await new Promise<void>((resolve) => {
+    let resolved = false;
+    const safeResolve = () => { if (!resolved) { resolved = true; resolve(); } };
+    invoke({
+      title: `xingjing-skill-${skillName}-${Date.now()}`,
+      directory: opts.workDir,
+      userPrompt: prompt,
+      model: opts.model,
+      skillContext,
       onPermissionAsked: opts.onPermissionAsked,
       onText: (accumulated) => {
         opts.onStatus?.('working');
@@ -490,133 +488,4 @@ export async function runAgentByNativeId(
     onDone: opts.onDone,
     onError: opts.onError,
   });
-}
-
-/**
- * 两阶段 Autopilot：先用 orchestrator agent 解析意图，再并发调用各专业 agent
- *
- * 如果 .opencode/agents/orchestrator.md 存在，使用原生 orchestrator agent；
- * 否则降级到内置 Orchestrator prompt（现有行为）
- */
-export async function runAutopilotWithNativeAgents(
-  goal: string,
-  isSoloMode: boolean,
-  opts: OrchestratedRunOpts,
-): Promise<void> {
-  // 尝试使用原生 orchestrator agent
-  try {
-    const { fileRead } = await import('./file-ops');
-    const orchestratorFile = await fileRead('.opencode/agents/orchestrator.md', opts.workDir);
-    if (orchestratorFile) {
-      // orchestrator.md 存在，直接用原生 agent
-      await runAgentByNativeId('orchestrator', goal, opts.workDir ?? '', {
-        onToken: (token) => opts.onOrchestrating?.(token),
-        onDone: (text) => {
-          // 解析 orchestrator 输出的调度计划
-          const plan = parseDispatchPlan(text);
-          opts.onOrchestratorDone?.(plan);
-
-          // 如果有有效的调度计划，继续并发调用各 Agent
-          if (plan.length > 0) {
-            void executeDispatchedAgents(goal, isSoloMode, plan, opts);
-          } else if (text.trim()) {
-            // orchestrator 直接回答（未生成 DISPATCH）
-            opts.onDirectAnswer?.(text);
-          } else {
-            opts.onError?.('Orchestrator 未输出有效内容');
-          }
-        },
-        onError: (err) => opts.onError?.(`Orchestrator 调用失败: ${err}`),
-      });
-      return;
-    }
-  } catch {
-    // 降级到原有两阶段编排
-  }
-
-  // 降级：使用原有的 runOrchestratedAutopilot
-  return runOrchestratedAutopilot(goal, opts);
-}
-
-/**
- * 执行已解析的调度计划（内部辅助函数）
- */
-async function executeDispatchedAgents(
-  goal: string,
-  isSoloMode: boolean,
-  plan: DispatchItem[],
-  opts: OrchestratedRunOpts,
-): Promise<void> {
-  const results: Record<string, string> = {};
-  const availableAgents = isSoloMode ? SOLO_AGENTS : TEAM_AGENTS;
-
-  await Promise.all(
-    plan.map(async ({ agentId, task }) => {
-      const agentDef = availableAgents.find((a) => a.id === agentId);
-      if (!agentDef) return;
-
-      opts.onAgentStatus?.(agentId, 'thinking');
-
-      // 动态注入 Skill 上下文
-      const skillContext = await injectSkillContext(agentDef.skills, opts.skillApi ?? null);
-      const enrichedSystemPrompt = agentDef.systemPrompt + skillContext;
-
-      return new Promise<void>((resolve) => {
-        let resolved = false;
-        const safeResolve = () => {
-          if (!resolved) {
-            resolved = true;
-            resolve();
-          }
-        };
-
-        callAgent({
-          agentId, // 若内置 Agent 需要文件支持，可设为 agent.id；否则省略
-          userPrompt: task,
-          systemPrompt: enrichedSystemPrompt,
-          directory: opts.workDir,
-          model: opts.model,
-          onText: (accumulated) => {
-            opts.onAgentStatus?.(agentId, 'working');
-            opts.onAgentStream?.(agentId, accumulated);
-          },
-          onDone: (fullText) => {
-            try {
-              results[agentId] = fullText;
-              opts.onAgentStatus?.(agentId, 'done');
-              // 异步沉淀产出
-              void sinkAgentOutput({
-                output: fullText,
-                agentId,
-                sessionId: `autopilot-${Date.now()}`,
-                workDir: opts.workDir ?? '',
-                skillApi: opts.skillApi ?? null,
-                goal,
-              });
-            } finally {
-              safeResolve();
-            }
-          },
-          onError: (err) => {
-            try {
-              results[agentId] = `执行错误: ${err}`;
-              opts.onAgentStatus?.(agentId, 'error');
-            } finally {
-              safeResolve();
-            }
-          },
-        }).catch((err: unknown) => {
-          try {
-            const msg = err instanceof Error ? err.message : String(err);
-            results[agentId] = `执行异常: ${msg}`;
-            opts.onAgentStatus?.(agentId, 'error');
-          } finally {
-            safeResolve();
-          }
-        });
-      });
-    }),
-  );
-
-  opts.onDone?.(results);
 }

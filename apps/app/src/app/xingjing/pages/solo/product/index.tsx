@@ -1,4 +1,4 @@
-import { Component, createSignal, createEffect, For, Show } from 'solid-js';
+import { Component, createSignal, createEffect, For, Show, onMount } from 'solid-js';
 import {
   reqTypeLabel,
 } from '../../../mock/solo';
@@ -31,7 +31,8 @@ import {
 } from '../../../services/file-store';
 // resetChannelPreferences 已移除：重置会导致 10 路并发全部从 Level 0 探测，
 // 若 Level 0 不可用则所有 load 函数内部 catch 静默返回空数据。
-import { SOLO_AGENTS } from '../../../services/autopilot-executor';
+import { listAllAgents } from '../../../services/agent-registry';
+import type { AutopilotAgent } from '../../../services/autopilot-executor';
 import { invalidateKnowledgeCache } from '../../../services/knowledge-retrieval';
 import { useAppStore } from '../../../stores/app-store';
 import type { SkillApiAdapter } from '../../../services/knowledge-behavior';
@@ -295,7 +296,6 @@ const HypothesisColumn: Component<{
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-const productBrainAgent = SOLO_AGENTS.find(a => a.id === 'product-brain')!;
 
 function markdownToSafeHtml(md: string): string {
   const rawHtml = marked.parse(md, { async: false }) as string;
@@ -335,6 +335,15 @@ const SoloProduct: Component = () => {
     getSkill: (name) => actions.getOpenworkSkill(name),
     upsertSkill: (name, content, desc) => actions.upsertOpenworkSkill(name, content, desc),
   };
+
+  // 异步加载 product-brain Agent
+  const [productBrainAgent, setProductBrainAgent] = createSignal<AutopilotAgent | null>(null);
+  onMount(async () => {
+    try {
+      const agents = await listAllAgents('solo');
+      setProductBrainAgent(agents.find(a => a.id === 'product-brain') ?? null);
+    } catch { /* 静默 */ }
+  });
 
   const [activeTab, setActiveTab] = createSignal<'hypotheses' | 'requirements' | 'features' | 'feedbacks' | 'insights'>('hypotheses');
   const [hypotheses, setHypotheses] = createSignal<SoloHypothesis[]>([]);
@@ -682,7 +691,7 @@ const SoloProduct: Component = () => {
     showToast();
   };
 
-  const ideaSystemPrompt = productBrainAgent.systemPrompt;
+  const ideaSystemPrompt = productBrainAgent()?.systemPrompt ?? '';
 
   const handleAgentSend = () => {
     if (!agentInput().trim() || agentLoading()) return;
@@ -704,7 +713,7 @@ const SoloProduct: Component = () => {
       .map(r => `- [${r.priority}] ${r.title}`)
       .join('\n') || '（暂无）';
     // SDD-014 Phase 1：移除 enrichedSystemPrompt 中重复拼接的假设/需求摘要，由 productContext 统一提供
-    const enrichedSystemPrompt = `${productBrainAgent.systemPrompt}
+    const enrichedSystemPrompt = `${productBrainAgent()?.systemPrompt ?? ''}
 
 注意：当前产品假设、已有需求文档等完整上下文已通过 productContext 注入，可直接引用。
 

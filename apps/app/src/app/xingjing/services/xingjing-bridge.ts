@@ -154,17 +154,26 @@ const [_ready, _setReady] = createSignal(false);
 
 /**
  * 初始化 Bridge（由 AppStoreProvider 在 OpenWork 上下文就绪后调用）
+ *
+ * 幂等：上游 createEffect 在 OpenWork 状态/重连过程中可能多次触发，
+ * 仅在「从未就绪 → 就绪」的边沿打印日志，避免日志反复刷屏。
  */
 export function initBridge(config: BridgeConfig): void {
+  const wasReady = _bridge !== null;
   _bridge = config;
   _setReady(true);
-  console.log('[xingjing-bridge] Bridge 已初始化');
+  if (!wasReady) {
+    console.log('[xingjing-bridge] Bridge 已初始化');
+  }
 }
 
 /**
  * 销毁 Bridge（应用卸载时调用）
+ *
+ * 幂等：仅在「就绪 → 未就绪」的边沿打印日志。
  */
 export function destroyBridge(): void {
+  if (_bridge === null) return;
   _bridge = null;
   _setReady(false);
   console.log('[xingjing-bridge] Bridge 已销毁');

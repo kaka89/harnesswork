@@ -9,13 +9,21 @@
  * - 运行时加载走 OpenWork 原生路径（getSkill API）
  */
 
-import { SOLO_SKILL_DEFS } from '../skills/solo-skill-defs';
-import { teamSkillPool, type SkillDef } from '../mock/agentWorkshop';
+import { SKILL_DEFS } from '../skills/skill-defs';
+import type { SkillDef } from '../types/agent-workshop';
+import { teamSkillPool } from '../mock/agentWorkshop';
+import { stringifyFrontmatter } from '../utils/frontmatter';
 import { fileRead, fileWrite, fileList, fileDelete } from './file-ops';
 
 // ─── 全局存储路径 ─────────────────────────────────────
 
 const GLOBAL_SKILLS_DIR = '~/.xingjing/skills';
+
+/**
+ * 已执行过完整注册流程的 mode 集合（进程级别）。
+ * 避免 effect 重跑时重复触发 listSkills + N×upsertSkill + listGlobalCustomSkills 扇出。
+ */
+const _registeredSkillModes = new Set<'solo' | 'team'>();
 
 /**
  * 确保内置 Skill + 全局自定义 Skill 已注册到 OpenWork workspace。
@@ -31,6 +39,11 @@ export async function ensureSkillsRegistered(
   upsertSkill: (name: string, content: string, description?: string) => Promise<boolean>,
   listSkills: () => Promise<Array<{ name: string }>>,
 ): Promise<void> {
+  // 幂等守卫：同一 mode 只需执行一次完整注册流程。
+  // 避免 effect 重跑 / 页面重进时重复触发数十次 IPC fetch。
+  if (_registeredSkillModes.has(mode)) return;
+  _registeredSkillModes.add(mode);
+
   // 发现已存在的 Skill，避免重复写入
   let existing: Set<string>;
   try {
@@ -42,8 +55,11 @@ export async function ensureSkillsRegistered(
 
   // 仅写入尚不存在的内置 Skill
   if (mode === 'solo') {
-    // solo 模式：直接使用 SKILL.md 格式定义（无需 buildSkillMarkdown 转换）
-    for (const [name, content] of Object.entries(SOLO_SKILL_DEFS)) {
+    // solo 模式：从统一 SKILL_DEFS 中过滤 mode=solo 或无 mode 的 Skill
+    for (const [name, content] of Object.entries(SKILL_DEFS)) {
+      const modeMatch = content.match(/^mode:\s*(.+)$/m);
+      const skillMode = modeMatch?.[1]?.trim();
+      if (skillMode && skillMode !== 'solo') continue;
       if (existing.has(name)) continue;
       try {
         await upsertSkill(name, content);
@@ -79,20 +95,24 @@ export async function ensureSkillsRegistered(
 
 /**
  * 将 SkillDef 序列化为 OpenWork SKILL.md 格式（YAML frontmatter + body）
+ *
+ * 使用 stringifyFrontmatter 统一序列化，自动处理 artifact 等星静扩展字段。
  */
 export function buildSkillMarkdown(skill: SkillDef): string {
-  const frontmatterLines = [
-    '---',
-    `name: ${skill.name}`,
-    `description: ${skill.description}`,
-  ];
-  if (skill.category) frontmatterLines.push(`category: ${skill.category}`);
-  if (skill.trigger) frontmatterLines.push(`trigger: ${skill.trigger}`);
-  if (skill.glob) frontmatterLines.push(`glob: ${skill.glob}`);
-  frontmatterLines.push('---');
+  const fm: Record<string, unknown> = {
+    name: skill.name,
+    description: skill.description,
+  };
+  if (skill.category) fm.category = skill.category;
+  if (skill.trigger) fm.trigger = skill.trigger;
+  if (skill.glob) fm.glob = skill.glob;
+  if (skill.mode) fm.mode = skill.mode;
+  if (skill.artifact?.enabled) {
+    fm.artifact = { ...skill.artifact };
+  }
 
   const body = skill.systemPrompt || `你是一个专业的${skill.name}执行助手。`;
-  return `${frontmatterLines.join('\n')}\n\n${body}`;
+  return stringifyFrontmatter({ frontmatter: fm, body: `\n${body}` });
 }
 
 // ─── 全局自定义 Skill 存储 ───────────────────────────────

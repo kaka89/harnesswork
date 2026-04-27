@@ -7,7 +7,7 @@ import AutomationsView from '../../../pages/automations';
 import IdentitiesView from '../../../pages/identities';
 import { useAppStore } from '../../stores/app-store';
 import { themeColors, chartColors } from '../../utils/colors';
-import { callAgent, setProviderAuth, gitSync, syncGitTokensToMcpConfig, type GitSyncOptions } from '../../services/opencode-client';
+import { callAgent, gitSync, syncGitTokensToMcpConfig, type GitSyncOptions } from '../../services/opencode-client';
 import { saveGlobalSettings, loadGlobalSettings, saveProjectSettings, loadProjectSettings } from '../../services/file-store';
 import {
   defaultLLMConfig, modelOptions,
@@ -15,6 +15,7 @@ import {
   builtinTools,
 } from '../../utils/defaults';
 import type { LLMConfig, ModelOption, GateNode, BuiltinToolDef } from '../../types/settings';
+import WorkflowEditor from '../../components/workflow-editor';
 import { MCP_QUICK_CONNECT, CHROME_DEVTOOLS_MCP_ID, GITHUB_MCP_ID, GITLAB_MCP_ID, SUGGESTED_PLUGINS, type McpDirectoryInfo } from '../../../constants';
 import { getAllGitTokens, setGitToken, clearGitToken, type XingjingProduct } from '../../services/product-store';
 import { deleteProductDir } from '../../../lib/tauri';
@@ -97,7 +98,7 @@ const ThemeTab: Component = () => {
 
 // ===================== Tab2: LLM Config =====================
 const LLMTab: Component = () => {
-  const { state, actions, productStore, openworkStatus, resolvedWorkspaceId } = useAppStore();
+  const { state, actions, productStore, openworkStatus, openworkCtx, resolvedWorkspaceId } = useAppStore();
   const [config, setConfig] = createSignal<LLMConfig>({ ...state.llmConfig });
   const [testing, setTesting] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
@@ -481,10 +482,16 @@ const LLMTab: Component = () => {
       // 1. 更新内存 store
       actions.setLlmConfig(cfg);
 
-      // 2. 同步 API Key 到 OpenCode（让 callAgent 能直接使用该 provider）
+      // 2. 同步 API Key 到 OpenCode（通过 OpenWork 原生 submitProviderApiKey）
       let openCodeSynced = false;
       if (cfg.providerID && cfg.providerID !== 'custom' && cfg.apiKey && cfg.apiKey.length > 4) {
-        openCodeSynced = await setProviderAuth(cfg.providerID, cfg.apiKey);
+        const submit = openworkCtx?.submitProviderApiKey;
+        if (submit) {
+          try {
+            await submit(cfg.providerID, cfg.apiKey);
+            openCodeSynced = true;
+          } catch { /* ignore */ }
+        }
       }
 
       // 3. 写入 OpenWork 工作区配置文件（opencode.jsonc）
@@ -1476,112 +1483,9 @@ const CronTab: Component = () => {
   );
 };
 
-// ===================== Tab5: Gate nodes =====================
-const GateTab: Component = () => {
-  const { productStore } = useAppStore();
-  const [nodes, setNodes] = createSignal<GateNode[]>([...defaultGateNodes]);
-
-  onMount(async () => {
-    const workDir = productStore.activeProduct()?.workDir;
-    if (!workDir) return;
-    try {
-      const settings = await loadProjectSettings(workDir);
-      if (settings.gates && settings.gates.length > 0) {
-        setNodes(settings.gates as GateNode[]);
-      }
-    } catch { /* keep defaults */ }
-  });
-
-  const persistGates = async (updated: GateNode[]) => {
-    const workDir = productStore.activeProduct()?.workDir;
-    if (!workDir) return;
-    try {
-      const settings = await loadProjectSettings(workDir);
-      await saveProjectSettings(workDir, { ...settings, gates: updated as unknown as typeof settings.gates });
-    } catch { /* ignore */ }
-  };
-
-  const toggleNode = (id: string) => {
-    const updated = nodes().map((n) => n.id === id ? { ...n, requireHuman: !n.requireHuman } : n);
-    setNodes(updated);
-    persistGates(updated);
-  };
-
-  const setAll = (requireHuman: boolean) => {
-    const updated = nodes().map((n) => ({ ...n, requireHuman }));
-    setNodes(updated);
-    persistGates(updated);
-  };
-
-  return (
-    <div class="space-y-4">
-      <div class="p-3 rounded-lg text-xs" style={{ background: themeColors.primaryBg, border: `1px solid ${themeColors.primaryBorder}`, color: chartColors.primary }}>
-        <strong>节点门控配置：</strong>配置 Agent 自动驾驶流程中哪些节点需要人工介入审批，哪些可以自动通过。开启表示需要人工确认，关闭表示 Agent 可自行完成。
-      </div>
-      <div class="flex items-center gap-2">
-        <button
-          class="text-xs px-3 py-1.5 rounded transition-colors"
-          style={{ border: `1px solid ${themeColors.border}`, color: themeColors.textSecondary, background: themeColors.surface }}
-          onClick={() => setAll(false)}
-        >
-          全部自动
-        </button>
-        <button
-          class="text-xs px-3 py-1.5 rounded transition-colors"
-          style={{ border: `1px solid ${themeColors.border}`, color: themeColors.textSecondary, background: themeColors.surface }}
-          onClick={() => setAll(true)}
-        >
-          全部人工
-        </button>
-        <span class="text-xs ml-2" style={{ color: themeColors.textMuted }}>
-          当前 {nodes().filter((n) => n.requireHuman).length} 个节点需人工介入，{nodes().filter((n) => !n.requireHuman).length} 个自动通过
-        </span>
-      </div>
-      <div class="space-y-2">
-        <For each={nodes()}>
-          {(node, idx) => (
-            <div
-              class="rounded-xl p-4 flex items-center justify-between"
-              style={{
-                background: themeColors.surface,
-                border: `1px solid ${themeColors.border}`,
-                'border-left': `3px solid ${node.requireHuman ? themeColors.warning : chartColors.success}`,
-              }}
-            >
-              <div class="flex-1">
-                <div class="flex items-center gap-2 mb-0.5">
-                  <span class="font-semibold text-sm" style={{ color: themeColors.text }}>{idx() + 1}. {node.name}</span>
-                  <span
-                    class="px-1.5 py-0.5 rounded text-xs"
-                    style={{
-                      color: node.requireHuman ? themeColors.warning : chartColors.success,
-                      background: node.requireHuman ? themeColors.warningBg : themeColors.successBg,
-                    }}
-                  >
-                    {node.requireHuman ? '人工介入' : '自动通过'}
-                  </span>
-                </div>
-                <div class="text-xs" style={{ color: themeColors.textMuted }}>{node.description}</div>
-              </div>
-              <button
-                class="w-10 h-5 rounded-full transition-colors relative ml-4"
-                style={{ background: node.requireHuman ? themeColors.warning : themeColors.border }}
-                onClick={() => toggleNode(node.id)}
-              >
-                <div
-                  class="w-4 h-4 rounded-full absolute top-0.5 transition-all"
-                  style={{
-                    background: themeColors.surface,
-                    left: node.requireHuman ? '21px' : '2px',
-                  }}
-                />
-              </button>
-            </div>
-          )}
-        </For>
-      </div>
-    </div>
-  );
+// ===================== Tab5: Workflow (流程编排，替代原 Gate nodes) =====================
+const WorkflowTab: Component = () => {
+  return <WorkflowEditor />;
 };
 
 // ===================== Tab6: Product List =====================
@@ -3261,7 +3165,7 @@ const FileBrowserTab: Component = () => {
 
 const renderTabIcon = (key: string) => {
   const map: Record<string, any> = {
-    theme: Palette, llm: Bot, git: Github, cron: Clock, gate: ShieldCheck,
+    theme: Palette, llm: Bot, git: Github, cron: Clock, workflow: ShieldCheck,
     products: Package, profile: User, tools: Wrench, skills: Zap,
     plugins: Puzzle, automations: Clock, identities: Radio, files: FolderSearch,
   };
@@ -3279,7 +3183,7 @@ const TABS = [
   { key: 'files', label: '文件浏览' },
   { key: 'git',   label: 'Git 仓库' },
   { key: 'cron',  label: '定时任务' },
-  { key: 'gate',  label: '节点门控' },
+  { key: 'workflow',  label: '流程编排' },
   { key: 'products', label: '产品清单' },
   { key: 'profile',  label: '个人信息' },
 ];
@@ -3292,7 +3196,7 @@ const Settings: Component = () => {
     <div>
       <div class="mb-4">
         <h2 class="text-lg font-semibold mt-0 mb-1" style={{ color: themeColors.text }}>系统设置</h2>
-        <p class="text-xs m-0" style={{ color: themeColors.textMuted }}>管理平台主题、大模型接入、代码仓库、定时任务与流程门控配置</p>
+        <p class="text-xs m-0" style={{ color: themeColors.textMuted }}>管理平台主题、大模型接入、代码仓库、定时任务与流程编排配置</p>
       </div>
 
       {/* Tab bar */}
@@ -3326,7 +3230,7 @@ const Settings: Component = () => {
       <Show when={activeTab() === 'files'}><FileBrowserTab /></Show>
       <Show when={activeTab() === 'git'}><GitTab /></Show>
       <Show when={activeTab() === 'cron'}><CronTab /></Show>
-      <Show when={activeTab() === 'gate'}><GateTab /></Show>
+      <Show when={activeTab() === 'workflow'}><WorkflowTab /></Show>
       <Show when={activeTab() === 'products'}><ProductListTab /></Show>
       <Show when={activeTab() === 'profile'}><ProfileTab /></Show>
     </div>

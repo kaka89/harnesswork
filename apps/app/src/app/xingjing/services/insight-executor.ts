@@ -287,22 +287,19 @@ export async function runInsightAgent(
 
   // ── 2. 构建 systemPrompt ──
   let systemPrompt: string;
-  let autoApproveTools: string[] | undefined;
+  let skillContext = '';
   switch (mode) {
     case 'research':
       systemPrompt = buildResearchSystemPrompt(productCtx);
-      autoApproveTools = ['web_search', 'browser', 'webSearch', 'web-search'];
       break;
     case 'record': {
-      const basePrompt = buildRecordSystemPrompt(productCtx);
-      // 动态注入 product-hypothesis Skill 内容作为假设模板和质量标准
-      const skillContext = await injectSkillContext(['product-hypothesis'], opts.skillApi ?? null);
-      systemPrompt = basePrompt + skillContext;
+      systemPrompt = buildRecordSystemPrompt(productCtx);
+      // 动态注入 product-hypothesis Skill 内容作为假设模板和质量标准（通过 system 参数独立注入）
+      skillContext = await injectSkillContext(['product-hypothesis'], opts.skillApi ?? null);
       break;
     }
     case 'generate':
       systemPrompt = buildGenerateSystemPrompt(productCtx);
-      autoApproveTools = ['web_search', 'browser', 'webSearch', 'web-search'];
       break;
     default:
       systemPrompt = buildChatSystemPrompt(productCtx);
@@ -371,8 +368,8 @@ export async function runInsightAgent(
     model: opts.model,
     title: `产品洞察-${mode}`,
     directory: opts.workDir,
-    autoApproveTools,
     knowledgeContext: opts.knowledgeContext,
+    skillContext: skillContext || undefined,
     onToolUse: handleToolUse,
     onToolResult: handleToolResult,
     onText: (text) => {

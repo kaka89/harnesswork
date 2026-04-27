@@ -36,15 +36,15 @@ import {
 } from '../../services/memory-store';
 import { recallRelevantContext } from '../../services/memory-recall';
 import {
-  SOLO_AGENTS,
-  TEAM_AGENTS,
   runOrchestratedAutopilot,
   runDirectAgent,
+  runDirectSkill,
   parseMention,
   type AutopilotAgent,
   type DispatchItem,
   type AgentExecutionStatus,
 } from '../../services/autopilot-executor';
+import { listAllAgents } from '../../services/agent-registry';
 
 // ─── 类型定义 ─────────────────────────────────────────────────────────────────
 
@@ -89,30 +89,12 @@ function genId(): string {
 
 marked.setOptions({ breaks: true, gfm: true });
 
-// ─── 思考内容解析 ─────────────────────────────────────────────────────────────
-
-interface ParsedContent {
-  thinking: string;
-  output: string;
-  thinkingComplete: boolean;
-}
-
-function parseThinkingContent(content: string): ParsedContent {
-  if (!content) return { thinking: '', output: '', thinkingComplete: false };
-  const closeIdx = content.indexOf('</think>');
-  if (content.startsWith('<think>')) {
-    if (closeIdx !== -1) {
-      return {
-        thinking: content.slice(7, closeIdx).trim(),
-        output: content.slice(closeIdx + 8).trim(),
-        thinkingComplete: true,
-      };
-    }
-    // 仍在流式输出思考中
-    return { thinking: content.slice(7).trim(), output: '', thinkingComplete: false };
-  }
-  return { thinking: '', output: content, thinkingComplete: true };
-}
+// ─── 思考内容解析（已废弃，改用 OpenWork 原生 reasoning part）─────────────
+//
+// OpenWork SDK 原生支持 ReasoningPart (type: "reasoning")，
+// MessageList 组件已内置 reasoning 展示逻辑，无需手动解析 <think> 标签。
+//
+// 保留此注释供历史参考，实际渲染逻辑已迁移到 MessageList。
 
 // ─── Markdown 渲染组件 ────────────────────────────────────────────────────────
 
@@ -566,9 +548,9 @@ const MessageBubble: Component<{
   const [hovered, setHovered] = createSignal(false);
 
   const handleCopy = () => {
-    // 复制纯文本（去掉 think 块）
-    const parsed = parseThinkingContent(props.msg.content);
-    const text = parsed.output || props.msg.content;
+    // 复制纯文本内容
+    // 注意：reasoning part 由 MessageList 单独渲染，此处的 content 已是纯文本
+    const text = props.msg.content;
     if (!text) return;
     navigator.clipboard.writeText(text).then(() => {
       setCopied(true);
@@ -577,11 +559,9 @@ const MessageBubble: Component<{
   };
 
   // AI 普通消息渲染（chat 类型）
+  // 注意：thinking 展示已由 OpenWork MessageList 原生处理（reasoning part），
+  // 此处仅渲染纯文本内容
   const AiChatBubble = () => {
-    const parsed = () => parseThinkingContent(props.msg.content);
-    const thinkingStreaming = () => isStreaming() && !parsed().thinkingComplete;
-    const outputStreaming = () => isStreaming() && parsed().thinkingComplete;
-
     return (
       <div
         class="ai-bubble px-4 py-3 text-sm bg-[var(--dls-surface)] border border-[var(--dls-border)] text-[var(--dls-text-primary)] rounded-2xl rounded-bl-sm shadow-sm"
@@ -594,26 +574,9 @@ const MessageBubble: Component<{
 
         {/* 有内容时渲染 */}
         <Show when={props.msg.content}>
-          {/* 思考块 */}
-          <Show when={parsed().thinking}>
-            <ThinkingBlock
-              content={parsed().thinking}
-              complete={parsed().thinkingComplete}
-              isStreaming={thinkingStreaming()}
-            />
-          </Show>
-
-          {/* 主要输出内容 */}
-          <Show when={parsed().output}>
-            <MarkdownContent content={parsed().output} streaming={outputStreaming()} />
-            <Show when={outputStreaming()}>
-              <span class="streaming-cursor" />
-            </Show>
-          </Show>
-
-          {/* 思考已完成但还没有 output 时，显示等待 dots */}
-          <Show when={!parsed().output && parsed().thinkingComplete && isStreaming()}>
-            <TypingDots />
+          <MarkdownContent content={props.msg.content} streaming={isStreaming()} />
+          <Show when={isStreaming()}>
+            <span class="streaming-cursor" />
           </Show>
         </Show>
       </div>
@@ -839,7 +802,16 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
     }
   };
 
-  const agents = () => props.isSoloMode ? SOLO_AGENTS : TEAM_AGENTS;
+    // 异步加载 Agent 列表（随模式切换重新加载）
+  const [agents, setAgents] = createSignal<AutopilotAgent[]>([]);
+  createEffect(async () => {
+    const mode = props.isSoloMode ? 'solo' : 'team';
+    try {
+      const loaded = await listAllAgents(mode);
+      setAgents(loaded);
+    } catch { /* 静默 */ }
+  });
+
   const accentColor = () => props.isSoloMode ? 'var(--green-9)' : 'var(--purple-9)';
   const accentBg = () => props.isSoloMode ? 'bg-[var(--green-9)] hover:bg-[var(--green-11)]' : 'bg-[var(--purple-9)] hover:bg-[var(--purple-10)]';
   const quickQuestions = () => props.isSoloMode ? QUICK_QUESTIONS_SOLO : QUICK_QUESTIONS_TEAM;
@@ -898,7 +870,9 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
       // 先存 fallback 摘要，再异步生成 AI 摘要更新
       void saveMemorySession(workDir, memSession).then(() => {
         // 异步生成 AI 摘要（不阻塞 UI）
+        // 注意：generateSessionSummary 现在立即返回 fallback，AI 摘要异步生成后自动更新
         void generateSessionSummary(
+          sessionId,  // 传入 sessionId 用于更新 OpenWork session.title
           memMessages,
           props.callAgentFn as unknown as MemoryCallAgentFn,
         ).then(result => {
@@ -1024,6 +998,39 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
       onError: (err) => {
         setMessages(prev => prev.map(m =>
           m.id === msgId ? { ...m, content: `执行失败：${err}` } : m
+        ));
+        setLoading(false);
+      },
+    }).catch(() => { setLoading(false); });
+  };
+
+  // ─── @skill:xxx 直接调用 Skill（绕过 Pipeline）───────────────────────────────
+  const sendDirectSkill = (skillName: string, prompt: string) => {
+    const msgId = genId();
+    setMessages(prev => [...prev, {
+      id: msgId,
+      role: 'assistant',
+      type: 'direct-agent',
+      content: '',
+      agentName: `🛠️ Skill: ${skillName}`,
+      ts: nowTimeStr(),
+    }]);
+
+    void runDirectSkill(skillName, prompt, {
+      workDir: props.workDir,
+      model: getModel(),
+      callAgentFn: (opts) => props.callAgentFn(opts),
+      onPermissionAsked: handlePermissionAsked,
+      onStream: (text) => {
+        setMessages(prev => prev.map(m => m.id === msgId ? { ...m, content: text } : m));
+      },
+      onDone: (fullText) => {
+        setMessages(prev => prev.map(m => m.id === msgId ? { ...m, content: fullText } : m));
+        setLoading(false);
+      },
+      onError: (err) => {
+        setMessages(prev => prev.map(m =>
+          m.id === msgId ? { ...m, content: `Skill 执行失败：${err}` } : m
         ));
         setLoading(false);
       },
@@ -1159,8 +1166,12 @@ const AiChatDrawer: Component<AiChatDrawerProps> = (props) => {
     setInput('');
     setLoading(true);
 
-    // 路由：@mention > 调度模式 > 普通对话
-    const { targetAgent, cleanText } = parseMention(q, agents());
+    // 路由：@skill:xxx > @agent > 调度模式 > 普通对话
+    const { targetAgent, targetSkill, cleanText } = parseMention(q, agents());
+    if (targetSkill) {
+      sendDirectSkill(targetSkill, cleanText);
+      return;
+    }
     if (targetAgent) {
       sendDirectAgent(targetAgent, cleanText);
       return;

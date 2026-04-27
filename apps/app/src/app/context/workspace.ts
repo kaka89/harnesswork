@@ -204,6 +204,11 @@ export function createWorkspaceStore(options: {
   };
 
   const connectInFlightByKey = new Map<string, Promise<boolean>>();
+  // 冷却窗口去重：同参 connect 在 CONNECT_COOLDOWN_MS 内直接复用上次结果，
+  // 避免 effect 反复触发导致重复 connect（日志中 13.029 / 14.714 的同参连接）。
+  // 超过冷却期仍允许真实重连。
+  const CONNECT_COOLDOWN_MS = 1500;
+  const connectCooldownByKey = new Map<string, { at: number; ok: boolean }>();
   let createRemoteInFlight: Promise<boolean> | null = null;
   const DEFAULT_CONNECT_HEALTH_TIMEOUT_MS = 12_000;
   const LOCAL_BOOT_CONNECT_HEALTH_TIMEOUT_MS = 180_000;
@@ -1878,6 +1883,21 @@ export function createWorkspaceStore(options: {
       return existing;
     }
 
+    // 冷却窗口去重：上一次同参 connect 在 CONNECT_COOLDOWN_MS 内已 resolve，复用其结果。
+    // 针对 effect 反复触发同参 connect 的场景，inflight 无法拦截。
+    const cooled = connectCooldownByKey.get(requestKey);
+    if (cooled && Date.now() - cooled.at < CONNECT_COOLDOWN_MS) {
+      wsDebug("connect:cooldown", {
+        baseUrl: nextBaseUrl,
+        directory: directory ?? null,
+        reason: context?.reason ?? null,
+        workspaceType: context?.workspaceType ?? null,
+        ageMs: Date.now() - cooled.at,
+        ok: cooled.ok,
+      });
+      return cooled.ok;
+    }
+
     const run = (async () => {
       console.log("[workspace] connect", {
         baseUrl: nextBaseUrl,
@@ -2101,7 +2121,10 @@ export function createWorkspaceStore(options: {
 
     connectInFlightByKey.set(requestKey, run);
     try {
-      return await run;
+      const ok = await run;
+      // 记录冷却：无论成功或失败，短期内同参重复请求都复用本次结果。
+      connectCooldownByKey.set(requestKey, { at: Date.now(), ok });
+      return ok;
     } finally {
       if (connectInFlightByKey.get(requestKey) === run) {
         connectInFlightByKey.delete(requestKey);

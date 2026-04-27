@@ -97,7 +97,7 @@ export const builtinTools: BuiltinToolDef[] = [
 /** 默认开启的工具和 MCP 服务器名称列表（首次启动时写入 allowedTools） */
 export const DEFAULT_ALLOWED_TOOLS: string[] = [
   // 内置工具
-  'bash', 'read', 'write', 'edit',
+  'bash', 'read', 'write', 'edit', 'webfetch',
   // 预配置 MCP 服务器
   'control-chrome',
   'github',

@@ -97,9 +97,9 @@ export async function runPipeline(opts: PipelineRunOpts): Promise<void> {
     console.warn('[pipeline-executor] knowledge/recall retrieval failed:', e);
   }
 
-  // 拓扑排序分层
-  const layers = topologicalSort(config.stages);
-  if (layers.length === 0 && config.stages.length > 0) {
+  // 拓扑排序分层（仅包含已启用的 Stage）
+  const layers = topologicalSort(config.stages, true);
+  if (layers.length === 0 && config.stages.filter((s) => s.enabled !== false).length > 0) {
     opts.onError?.('Pipeline 配置存在循环依赖，无法执行');
     return;
   }
@@ -189,9 +189,9 @@ export async function runPipelineWithSessions(opts: PipelineSessionRunOpts): Pro
     return;
   }
 
-  // 拓扑排序分层
-  const layers = topologicalSort(config.stages);
-  if (layers.length === 0 && config.stages.length > 0) {
+  // 拓扑排序分层（仅包含已启用的 Stage）
+  const layers = topologicalSort(config.stages, true);
+  if (layers.length === 0 && config.stages.filter((s) => s.enabled !== false).length > 0) {
     opts.onError?.('Pipeline 配置存在循环依赖，无法执行');
     return;
   }

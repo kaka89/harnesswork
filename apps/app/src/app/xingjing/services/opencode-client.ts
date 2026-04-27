@@ -8,7 +8,7 @@
  * 例如：client.file.list({ path: '/foo', directory: '/bar' })
  */
 
-import { createClient, waitForHealthy } from '../../lib/opencode';
+import { createClient } from '../../lib/opencode';
 import { isTauriRuntime } from '../../utils';
 import type { ComposerAttachment, MessageWithParts } from '../../types';
 
@@ -20,9 +20,14 @@ let _directory = '';
 
 /**
  * 由 app-store 在初始化后注入 shared client。
+ *
+ * 幂等：相同引用直接跳过，避免上游 createEffect 多次触发时日志/副作用反复执行。
+ * 返回值表示 client 引用是否真的发生了变化。
  */
-export function setSharedClient(client: ReturnType<typeof createClient> | null) {
+export function setSharedClient(client: ReturnType<typeof createClient> | null): boolean {
+  if (_sharedClient === client) return false;
   _sharedClient = client;
+  return true;
 }
 
 /** 断线重试退避时间（ms）：1s / 2s / 5s */
@@ -149,135 +154,8 @@ export async function configGetModels(): Promise<XingjingModelConfig[]> {
   }
 }
 
-/** 缓存已验证的 auth 标识（仅在 provider 列表确认包含目标 provider 后才缓存） */
-let _lastVerifiedAuthKey: string | null = null;
-
-/** 上次 dispose 时间戳（冷却期保护，避免短时间内重复重启 OpenCode） */
-let _lastDisposeTime = 0;
-/** dispose 冷却期（ms）：30 秒内不重复执行 dispose */
-const DISPOSE_COOLDOWN_MS = 30_000;
-
-/** 当前正在执行的 setProviderAuth Promise（并发去重） */
-let _providerAuthInflight: { key: string; promise: Promise<boolean> } | null = null;
-
-/**
- * 为指定 Provider 设置 API Key（同步到 OpenCode，使 callAgent 调用时生效）
- *
- * 对齐 OpenWork 设置页的完整流程：
- *   1. auth.set() — 将 API Key 写入磁盘
- *   2. instance.dispose() — 强制 OpenCode 重新加载配置到内存
- *   3. waitForHealthy() — 等待 OpenCode 重启完成
- *   4. provider.list() — 验证 provider 已被识别
- */
-export async function setProviderAuth(providerID: string, apiKey: string): Promise<boolean> {
-  const maskedKey = apiKey.length > 8 ? apiKey.slice(0, 4) + '...' + apiKey.slice(-4) : '***';
-  const cacheKey = `${providerID}:${apiKey.slice(-8)}`;
-
-  // 已验证相同 Provider/Key，跳过
-  if (_lastVerifiedAuthKey === cacheKey) {
-    console.log('[xingjing] setProviderAuth 跳过（已验证）', { providerID });
-    return true;
-  }
-
-  // 并发去重：相同 provider+key 已在执行中，复用该 Promise 而不是发起新调用
-  if (_providerAuthInflight && _providerAuthInflight.key === cacheKey) {
-    console.log('[xingjing] setProviderAuth 复用进行中的调用', { providerID });
-    return _providerAuthInflight.promise;
-  }
-
-  const doAuth = async (): Promise<boolean> => {
-    console.log('[xingjing] setProviderAuth 调用', { providerID, maskedKey });
-    const client = getXingjingClient();
-    try {
-    // Step 1: 写入 API Key 到磁盘
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await (client.auth as any).set({
-      providerID,
-      auth: { type: 'api', key: apiKey },
-    });
-
-    // Step 2: 强制 OpenCode 重新加载配置（对齐 OpenWork refreshProviders 流程）
-    // 保护机制：冷却期内不重复 dispose，避免双重重启导致 OpenCode 不稳定
-    const now = Date.now();
-    const disposeCooldownActive = now - _lastDisposeTime < DISPOSE_COOLDOWN_MS;
-    if (disposeCooldownActive) {
-      console.log('[xingjing] setProviderAuth 跳过 dispose（冷却期内，距上次', now - _lastDisposeTime, 'ms）');
-    } else {
-      // 快速探测 OpenCode 是否可达，对不可达的服务不执行 dispose（避免雪上加霜）
-      let serverReachable = true;
-      try {
-        await Promise.race([
-          client.global.health(),
-          new Promise<never>((_, rej) => setTimeout(() => rej(new Error('ping')), 3000)),
-        ]);
-      } catch {
-        serverReachable = false;
-        console.warn('[xingjing] setProviderAuth 跳过 dispose（OpenCode 不可达）');
-      }
-      if (serverReachable) {
-        try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          await (client.instance as any).dispose();
-          _lastDisposeTime = Date.now();
-        } catch { /* dispose 失败不阻断流程 */ }
-      }
-    }
-
-    // Step 3: 等待 OpenCode 重启就绪（仅在实际执行了 dispose 时等待）
-    if (!disposeCooldownActive) {
-      try {
-        await waitForHealthy(client, { timeoutMs: 8_000, pollMs: 250 });
-      } catch { /* 超时不阻断流程 */ }
-
-      // Step 3.5: 等待 session 端点就绪（health 通过但 session 可能仍在初始化）
-      // 对齐 OpenWork 设置页 refreshProviders 的完整等待：确保 dispose 后服务完全就绪
-      for (let i = 0; i < 12; i++) { // 最多 3s（12 × 250ms）
-        try {
-          await Promise.race([
-            client.session.list(),
-            new Promise<never>((_, rej) => setTimeout(() => rej(new Error('session-not-ready')), 2000)),
-          ]);
-          break; // session 端点就绪
-        } catch {
-          await sleep(250);
-        }
-      }
-    }
-
-    // Step 4: 验证 provider 是否已被 OpenCode 识别
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const providerResult = await (client.provider as any).list();
-      const raw = providerResult?.data ?? providerResult;
-      const allList = Array.isArray(raw?.all) ? raw.all : (Array.isArray(raw) ? raw : []);
-      const providerIds = allList.map((p: { id?: string }) => p.id);
-      if (providerIds.includes(providerID)) {
-        _lastVerifiedAuthKey = cacheKey;
-      }
-      console.log('[xingjing] setProviderAuth 完成', { providerID, verified: providerIds.includes(providerID) });
-    } catch {
-      // provider.list 失败不阻断流程，不缓存
-      console.log('[xingjing] setProviderAuth 完成（未验证）', { providerID });
-    }
-
-    return true;
-  } catch (e) {
-    console.warn('[xingjing] setProviderAuth 失败:', { providerID, error: e });
-    return false;
-  }
-  }; // end doAuth
-
-  const promise = doAuth();
-  _providerAuthInflight = { key: cacheKey, promise };
-  try {
-    return await promise;
-  } finally {
-    // 当前 promise 完成后清除 inflight（仅清除自己，避免清除后续调用）
-    if (_providerAuthInflight?.promise === promise) {
-      _providerAuthInflight = null;
-    }
-  }
-}
+// setProviderAuth 已删除 —— Provider 认证统一通过 OpenWork 原生 submitProviderApiKey 完成。
+// 参见 providers/store.ts L382-406（auth.set + refreshProviders({ dispose: true })）。
 
 // ─── 多平台 Skill 发现 ──────────────────────────────────────────────────────
 
@@ -431,6 +309,8 @@ export interface CallAgentOptions {
   knowledgeContext?: string;
   /** 历史会话回忆上下文（由 memory-recall 检索后注入，Markdown 格式） */
   recallContext?: string;
+  /** Skill 上下文（由 injectSkillContext 获取后注入，Markdown 格式）*/
+  skillContext?: string;
   /** 工具权限请求回调（用户决定是否授权）。
    *  不提供时沿用自动拒绝兜底行为。
    *  提供时将在 store 轮询中检测 pending permissions 并触发回调。*/
@@ -630,6 +510,7 @@ async function runAgentSession(
     }
 
     let lastErrName: string | undefined;
+        let lastErrConfigPath = '';
     try {
       // 权限策略：对齐 OpenWork 模式 —— 不在 session 创建时设置 deny-all 限制。
       // deny-all 会阻断 OpenCode 状态机，导致不发送 session.idle/completed 事件，
@@ -676,6 +557,7 @@ async function runAgentSession(
         const err = result.error as any;
         const errName = err?.name;
         lastErrName = errName;
+        lastErrConfigPath = err?.data?.path ?? '';
         // 单独打印 error.data.issues（ConfigInvalidError 的核心诊断信息）
         console.error('[xingjing] session.create 失败', {
           name: errName,
@@ -697,9 +579,16 @@ async function runAgentSession(
     }
 
     if (!sid) {
-      const msg = lastErrName === 'ConfigInvalidError'
-        ? '大模型未配置，请在设置页配置 API Key 后重试'
-        : '无法创建 AI 会话，请检查 OpenCode 服务是否已启动';
+      let msg: string;
+      if (lastErrName === 'ConfigInvalidError') {
+        // 区分 agent 配置错误与模型配置错误，给出更准确的提示
+        const configPath = lastErrConfigPath;
+        msg = configPath.includes('/agents/')
+          ? 'Agent 配置无效，正在自动修复…请重试'
+          : '大模型未配置，请在设置页配置 API Key 后重试';
+      } else {
+        msg = '无法创建 AI 会话，请检查 OpenCode 服务是否已启动';
+      }
       return { status: 'hard-error', sessionId: null, error: msg };
     }
   }
@@ -721,24 +610,29 @@ async function runAgentSession(
 
   // ── 发送 prompt（首次调用或重试时）──
   if (sendPrompt) {
-    const promptParts: string[] = [];
-    if (opts.systemPrompt) promptParts.push(opts.systemPrompt);
+    // 1) 构建 system 上下文（通过 promptAsync 的 system 参数独立注入）
+    //    agentId 已指定时，基础 systemPrompt 由 OpenCode 从 .md 原生加载，不重复注入
+    const systemParts: string[] = [];
+    if (opts.systemPrompt && !opts.agentId) {
+      systemParts.push(opts.systemPrompt);
+    }
     const now = new Date();
     const timeStr = now.toLocaleString('zh-CN', {
       year: 'numeric', month: '2-digit', day: '2-digit',
       hour: '2-digit', minute: '2-digit', second: '2-digit',
       weekday: 'long', hour12: false,
     });
-    promptParts.push(`## 当前系统时间\n${timeStr}`);
-    if (opts.knowledgeContext) promptParts.push(`## 相关知识上下文\n${opts.knowledgeContext}`);
-    if (opts.recallContext) promptParts.push(`## 相关历史上下文\n${opts.recallContext}`);
-    promptParts.push(opts.userPrompt);
-    const fullPrompt = promptParts.join('\n\n---\n\n');
+    systemParts.push(`## 当前系统时间\n${timeStr}`);
+    if (opts.knowledgeContext) systemParts.push(`## 相关知识上下文\n${opts.knowledgeContext}`);
+    if (opts.recallContext) systemParts.push(`## 相关历史上下文\n${opts.recallContext}`);
+    if (opts.skillContext) systemParts.push(opts.skillContext);
+    const systemStr = systemParts.length > 0 ? systemParts.join('\n\n---\n\n') : undefined;
 
+    // 2) user prompt 只包含纯用户输入
     try {
-      console.log('[xingjing-diag] promptAsync 发送', { sessionId: finalSid, hasModel: !!opts.model, modelID: opts.model?.modelID, attachmentCount: opts.attachments?.length ?? 0 });
+      console.log('[xingjing-diag] promptAsync 发送', { sessionId: finalSid, hasModel: !!opts.model, modelID: opts.model?.modelID, attachmentCount: opts.attachments?.length ?? 0, hasSystem: !!systemStr });
       const parts: Array<{ type: string; [key: string]: unknown }> = [
-        { type: 'text', text: fullPrompt },
+        { type: 'text', text: opts.userPrompt },
       ];
       if (opts.attachments?.length) {
         for (const att of opts.attachments) {
@@ -750,14 +644,18 @@ async function runAgentSession(
           });
         }
       }
-      // 对齐 OpenWork sendPrompt：不传 directory（directory 已在 session.create 时设置）
+      // 3) 通过 system 参数注入系统上下文，对齐 OpenWork 原生模式
+      //    [ALIGN] agent 参数 per-prompt 透传，与 OpenWork 原生 `session.promptAsync({ ..., agent })` 对齐，
+      //    确保复用 existingSessionId 的多轮对话中仍能按当前 agentId 路由
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await (client.session as any).promptAsync({
         sessionID: finalSid,
         ...(opts.model ? { model: opts.model } : {}),
+        ...(opts.agentId ? { agent: opts.agentId } : {}),
+        ...(systemStr ? { system: systemStr } : {}),
         parts,
       });
-      console.log('[xingjing-diag] promptAsync 已发送', { sessionId: finalSid });
+      console.log('[xingjing-diag] promptAsync 已发送', { sessionId: finalSid, hasSystem: !!systemStr, agent: opts.agentId });
     } catch {
       return { status: 'hard-error', sessionId: finalSid, error: '发送提示词失败' };
     }

@@ -1,9 +1,7 @@
 import { Component, createSignal, For, Show, onMount } from 'solid-js';
 import { soloAgents, AgentDef } from '../../../mock/autopilot';
-import {
-  SkillDef, initialSoloAssignments, AgentAssignment,
-  agentColorPresets, emojiPresets, ColorPreset, soloOrchestrations,
-} from '../../../mock/agentWorkshop';
+import type { SkillDef, AgentAssignment, ColorPreset, TaskOrchestration, SkillArtifactConfig } from '../../../types/agent-workshop';
+import { agentColorPresets, emojiPresets } from '../../../types/agent-workshop';
 import { soloTasks as mockSoloTasks, SoloTask } from '../../../mock/solo';
 import {
   loadSoloTasks,
@@ -11,7 +9,8 @@ import {
 } from '../../../services/file-store';
 import { listAllAgents, saveAgentToFile, deleteAgentFile } from '../../../services/agent-registry';
 import { buildSkillMarkdown, saveSkillToGlobal, deleteSkillFromGlobal, ensureSkillsRegistered } from '../../../services/skill-registry';
-import { SOLO_SKILL_DEFS } from '../../../skills/solo-skill-defs';
+import { parseSkillArtifactConfig } from '../../../utils/skill-artifact';
+import { SKILL_DEFS } from '../../../skills/skill-defs';
 import type { AutopilotAgent } from '../../../services/autopilot-executor';
 import { useAppStore } from '../../../stores/app-store';
 import { themeColors, chartColors } from '../../../utils/colors';
@@ -169,14 +168,14 @@ const SoloAgentWorkshop: Component = () => {
     return map;
   })();
   const [agentSkills, setAgentSkills] = createSignal<Record<string, string[]>>(initialAgentSkills);
-  const [assignments, setAssignments] = createSignal<AgentAssignment[]>([...initialSoloAssignments]);
+  const [assignments, setAssignments] = createSignal<AgentAssignment[]>([]);
   const [skillPool, setSkillPool] = createSignal<SkillDef[]>([]);
   const [skillPoolLoading, setSkillPoolLoading] = createSignal(false);
   let skillsRegistered = false;
   // 用内置池预填充 category，补全 OpenWork 列表中缺失的字段
   // 从 SKILL.md frontmatter 解析 category，作为 categoryCache 的初始值
   const categoryCache = new Map<string, string>();
-  for (const [name, content] of Object.entries(SOLO_SKILL_DEFS)) {
+  for (const [name, content] of Object.entries(SKILL_DEFS)) {
     const m = content.match(/^category:\s*(.+)$/m);
     if (m) categoryCache.set(name, m[1].trim());
   }
@@ -302,6 +301,11 @@ const SoloAgentWorkshop: Component = () => {
     systemPrompt: '',
     trigger: '',   // 自动触发条件
     glob: '',      // 文件匹配模式
+    // artifact 配置
+    artifactEnabled: false,
+    artifactFormat: 'auto' as 'markdown' | 'html' | 'auto',
+    artifactAutoSave: true,
+    artifactSavePath: '',
   });
 
   const [confirmDeleteAgentId, setConfirmDeleteAgentId] = createSignal<string | null>(null);
@@ -358,7 +362,7 @@ const SoloAgentWorkshop: Component = () => {
   };
 
   // ─── 技能真实执行 ───
-  const [orchestrations, setOrchestrations] = createSignal([...soloOrchestrations]);
+  const [orchestrations, setOrchestrations] = createSignal<TaskOrchestration[]>([]);
   const [executingTaskId, setExecutingTaskId] = createSignal<string | null>(null);
 
   const agentOrchestrations = () => {
@@ -534,7 +538,7 @@ const SoloAgentWorkshop: Component = () => {
   // Skill Modal
   const openCreateSkillModal = () => {
     setEditingSkill(null);
-    setSkillForm({ name: '', description: '', category: soloCategoryOptions[0], outputType: '', inputParams: [], systemPrompt: '', trigger: '', glob: '' });
+    setSkillForm({ name: '', description: '', category: soloCategoryOptions[0], outputType: '', inputParams: [], systemPrompt: '', trigger: '', glob: '', artifactEnabled: false, artifactFormat: 'auto' as const, artifactAutoSave: true, artifactSavePath: '' });
     setSkillModalOpen(true);
   };
 
@@ -553,6 +557,7 @@ const SoloAgentWorkshop: Component = () => {
         const triggerVal = triggerMatch?.[1]?.trim() || skill.trigger || '';
         const globMatch = content.match(/^glob:\s*(.+)$/m);
         const globVal = globMatch?.[1]?.trim() || skill.glob || '';
+        const artifactCfg = parseSkillArtifactConfig(content);
         setSkillForm({
           name: skill.name,
           description: skill.description,
@@ -562,6 +567,10 @@ const SoloAgentWorkshop: Component = () => {
           systemPrompt: body,
           trigger: triggerVal,
           glob: globVal,
+          artifactEnabled: artifactCfg?.enabled ?? false,
+          artifactFormat: artifactCfg?.format ?? 'auto' as const,
+          artifactAutoSave: artifactCfg?.autoSave !== false,
+          artifactSavePath: artifactCfg?.savePath ?? '',
         });
       } else {
         setSkillForm({
@@ -569,6 +578,7 @@ const SoloAgentWorkshop: Component = () => {
           category: skill.category || soloCategoryOptions[0],
           outputType: '', inputParams: [], systemPrompt: '',
           trigger: skill.trigger || '', glob: skill.glob || '',
+          artifactEnabled: false, artifactFormat: 'auto' as const, artifactAutoSave: true, artifactSavePath: '',
         });
       }
     } catch {
@@ -577,6 +587,7 @@ const SoloAgentWorkshop: Component = () => {
         category: skill.category || soloCategoryOptions[0],
         outputType: '', inputParams: [], systemPrompt: '',
         trigger: '', glob: '',
+        artifactEnabled: false, artifactFormat: 'auto' as const, artifactAutoSave: true, artifactSavePath: '',
       });
     }
     setSkillModalOpen(true);
@@ -586,11 +597,15 @@ const SoloAgentWorkshop: Component = () => {
     const f = skillForm();
     if (!f.name.trim()) return;
     const es = editingSkill();
+    const artifact: SkillArtifactConfig | undefined = f.artifactEnabled
+      ? { enabled: true, format: f.artifactFormat, autoSave: f.artifactAutoSave, savePath: f.artifactSavePath || undefined }
+      : undefined;
     const newSkill: SkillDef = {
       id: es ? es.id : `solo-skill-${Date.now()}`,
       name: f.name, description: f.description, category: f.category,
       outputType: f.outputType, inputParams: f.inputParams,
       trigger: f.trigger || undefined, glob: f.glob || undefined,
+      artifact,
     };
     if (es) {
       setSkillPool(prev => prev.map(s => s.id === es.id ? newSkill : s));
@@ -616,8 +631,8 @@ const SoloAgentWorkshop: Component = () => {
       await actions.upsertOpenworkSkill(newSkill.name, content, newSkill.description);
       // ② 仅用户自建 Skill 双写全局目录（内置 Skill 不写入全局，避免污染）
       const isBuiltin = es
-        ? Object.keys(SOLO_SKILL_DEFS).includes(es.name)
-        : Object.keys(SOLO_SKILL_DEFS).includes(newSkill.name);
+        ? Object.keys(SKILL_DEFS).includes(es.name)
+        : Object.keys(SKILL_DEFS).includes(newSkill.name);
       if (!isBuiltin) {
         await saveSkillToGlobal(newSkill.name, content);
       }
@@ -652,7 +667,7 @@ const SoloAgentWorkshop: Component = () => {
     } catch { /* 删除失败不阻塞 UI */ }
 
     // ② 同步删除全局目录（仅用户自建 Skill 需要）
-    const isBuiltin = Object.keys(SOLO_SKILL_DEFS).includes(skill.name);
+    const isBuiltin = Object.keys(SKILL_DEFS).includes(skill.name);
     if (!isBuiltin) {
       try {
         await deleteSkillFromGlobal(skill.name);
@@ -860,7 +875,7 @@ const SoloAgentWorkshop: Component = () => {
                               <Show when={def?.category}>
                                 <span
                                   class="text-xs px-1 py-0.5 rounded text-white"
-                                  style={{ background: categoryColor[def!.category] || themeColors.textMuted, 'font-size': '9px' }}
+                                  style={{ background: categoryColor[def!.category!] || themeColors.textMuted, 'font-size': '9px' }}
                                 >
                                   {def!.category}
                                 </span>
@@ -1330,6 +1345,64 @@ const SoloAgentWorkshop: Component = () => {
                   style={{ border: `1px solid ${themeColors.border}`, background: themeColors.surface, color: themeColors.text }}
                   rows={6}
                 />
+              </div>
+
+              {/* Artifact 配置 */}
+              <div>
+                <div class="flex items-center gap-2 mb-2">
+                  <div class="text-xs" style={{ color: themeColors.textMuted }}>产出物配置</div>
+                  <div
+                    class="w-8 h-4 rounded-full transition-colors cursor-pointer"
+                    style={{ background: skillForm().artifactEnabled ? chartColors.success : themeColors.border }}
+                    onClick={() => setSkillForm(prev => ({ ...prev, artifactEnabled: !prev.artifactEnabled }))}
+                  >
+                    <div class={`w-3 h-3 rounded-full mt-0.5 transition-transform ${skillForm().artifactEnabled ? 'translate-x-4' : 'translate-x-0.5'}`} style={{ background: themeColors.surface }} />
+                  </div>
+                  <span class="text-xs" style={{ color: themeColors.textMuted }}>
+                    {skillForm().artifactEnabled ? '已启用' : '未启用'}
+                  </span>
+                </div>
+                <Show when={skillForm().artifactEnabled}>
+                  <div class="rounded-xl p-3" style={{ border: `1px solid ${themeColors.border}`, background: themeColors.surfaceOverlay }}>
+                    <div class="grid grid-cols-2 gap-3 mb-2">
+                      <div>
+                        <div class="text-xs mb-1" style={{ color: themeColors.textMuted }}>输出格式</div>
+                        <select
+                          value={skillForm().artifactFormat}
+                          onChange={e => setSkillForm(prev => ({ ...prev, artifactFormat: e.currentTarget.value as 'markdown' | 'html' | 'auto' }))}
+                          class="w-full rounded-lg px-2 py-1.5 text-xs outline-none"
+                          style={{ border: `1px solid ${themeColors.border}`, background: themeColors.surface, color: themeColors.text }}
+                        >
+                          <option value="auto">自动检测</option>
+                          <option value="markdown">Markdown</option>
+                          <option value="html">HTML</option>
+                        </select>
+                      </div>
+                      <div class="flex items-end pb-1">
+                        <label class="flex items-center gap-1 cursor-pointer">
+                          <div
+                            class="w-8 h-4 rounded-full transition-colors"
+                            style={{ background: skillForm().artifactAutoSave ? chartColors.success : themeColors.border }}
+                            onClick={() => setSkillForm(prev => ({ ...prev, artifactAutoSave: !prev.artifactAutoSave }))}
+                          >
+                            <div class={`w-3 h-3 rounded-full mt-0.5 transition-transform ${skillForm().artifactAutoSave ? 'translate-x-4' : 'translate-x-0.5'}`} style={{ background: themeColors.surface }} />
+                          </div>
+                          <span class="text-xs" style={{ color: themeColors.textMuted }}>自动保存</span>
+                        </label>
+                      </div>
+                    </div>
+                    <div>
+                      <div class="text-xs mb-1" style={{ color: themeColors.textMuted }}>保存路径（相对产品目录）</div>
+                      <input
+                        value={skillForm().artifactSavePath}
+                        onInput={e => setSkillForm(prev => ({ ...prev, artifactSavePath: e.currentTarget.value }))}
+                        placeholder="如：docs/product/prd"
+                        class="w-full rounded-lg px-2 py-1.5 text-xs outline-none font-mono"
+                        style={{ border: `1px solid ${themeColors.border}`, background: themeColors.surface, color: themeColors.text }}
+                      />
+                    </div>
+                  </div>
+                </Show>
               </div>
             </div>
 

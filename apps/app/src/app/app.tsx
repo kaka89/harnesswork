@@ -43,7 +43,7 @@ import {
 } from "./workspace";
 import SessionView from "./pages/session";
 import { clearDevLogs, recordDevLog } from "./lib/dev-log";
-import { unwrap } from "./lib/opencode";
+import { unwrap, createClient } from "./lib/opencode";
 import { clearPerfLogs, finishPerf, perfNow, recordPerfLog } from "./lib/perf-log";
 import { deepLinkBridgeEvent, drainPendingDeepLinks, type DeepLinkBridgeDetail } from "./lib/deep-link-bridge";
 import {
@@ -246,7 +246,15 @@ export default function App() {
   const [engineRuntime, setEngineRuntime] = createSignal<EngineRuntime>("openwork-orchestrator");
   const [opencodeEnableExa, setOpencodeEnableExa] = createSignal(false);
 
-  const [baseUrl, setBaseUrl] = createSignal("http://127.0.0.1:4096");
+  // baseUrl 默认空串：Tauri 等 engine_info() 返回真实随机端口；
+  // Web/server 模式先尝试回读 localStorage 缓存（维持 L1558 设计），其余一律用空串。
+  // 禁用硬编码 127.0.0.1:4096 —— 在 OpenWork Server 模式下这个端口没人监听，
+  // 会触发 /global/health 连续失败 → WKWebView ipc:// 负载过大 → webview reload。
+  const [baseUrl, setBaseUrl] = createSignal<string>(
+    typeof window !== "undefined" && !isTauriRuntime()
+      ? (window.localStorage.getItem("openwork.baseUrl") ?? "")
+      : "",
+  );
   const [clientDirectory, setClientDirectory] = createSignal("");
 
   createEffect(() => {
@@ -1693,8 +1701,11 @@ export default function App() {
 
   createEffect(() => {
     if (typeof window === "undefined") return;
+    const value = baseUrl();
+    // 空串时跳过，避免启动期覆盖掉上次缓存的合法 baseUrl（如 server 模式的 64974/opencode）。
+    if (!value) return;
     try {
-      window.localStorage.setItem("openwork.baseUrl", baseUrl());
+      window.localStorage.setItem("openwork.baseUrl", value);
     } catch {
       // ignore
     }
@@ -2246,6 +2257,31 @@ export default function App() {
   // F003 startup-default-route: 始终从 mode-select 启动
   const initialRoute = () => "/mode-select";
 
+  // 为星静页面使用的 ensureClient 提供单飞队列：
+  // 避免与 workspaceStore/connectionsStore 并发创建多个 client 实例。
+  let _ensureClientInflight: Promise<boolean> | null = null;
+  const ensureClientForXingjing = async (): Promise<boolean> => {
+    if (client()) return true;
+    // workspaceStore 已有活跃 workspace 时，由其自行管理 client 生命周期；
+    // 本处仅在 runtimeWorkspaceId 为空（无活跃 workspace）的底头场景创建。
+    if ((runtimeWorkspaceId() ?? "").trim()) return false;
+    if (_ensureClientInflight) return _ensureClientInflight;
+    _ensureClientInflight = (async () => {
+      try {
+        if (client()) return true;
+        const base = openworkServerBaseUrl()?.trim();
+        const token = openworkServerAuth()?.token?.trim();
+        if (!base || !token) return false;
+        const c = createClient(`${base.replace(/\/+$/, "")}/opencode`, undefined, { token, mode: "openwork" });
+        setClient(c);
+        return true;
+      } finally {
+        _ensureClientInflight = null;
+      }
+    })();
+    return _ensureClientInflight;
+  };
+
   createEffect(() => {
     const rawPath = location.pathname.trim();
     const path = rawPath.toLowerCase();
@@ -2412,6 +2448,7 @@ export default function App() {
           reloadWorkspaceEngine={reloadWorkspaceEngineAndResume}
           reloadBusy={reloadBusy()}
           canReloadWorkspace={canReloadWorkspace()}
+          ensureClient={ensureClientForXingjing}
         />
             </StatusToastsProvider>
           </AutomationsProvider>

@@ -2,6 +2,7 @@ import { createContext, createEffect, useContext, type ParentProps } from "solid
 
 import { t, currentLocale } from "../../i18n";
 import { createStore, type SetStoreFunction, type Store } from "solid-js/store";
+import { isTauriRuntime } from "../utils";
 
 import type {
   Config,
@@ -269,6 +270,13 @@ export function GlobalSyncProvider(props: ParentProps) {
   };
 
   createEffect(() => {
+    // Tauri 桌面端 engine 直连（baseUrl 由 app.tsx 的 engine_info 动态发现），
+    // 根本不走 OpenWork 多服务器的 GlobalSDK 链路。如果此处不早退，
+    // 一旦 server.url 在某一 tick 因 HMR/localStorage 脏数据/其他 Provider 变动
+    // 瞬时非空，refresh() 会一口气发出 1次 global.health + 6 条 Promise.allSettled 并发
+    // （config/providers/providerAuth/mcp/lsp/projects），7 个并发 fetch 足以压垮 macOS WKWebView 的 ipc:// 通道
+    // —— 日志里 “IPC custom protocol failed, Tauri will now use the postMessage interface instead” 刚好 x7 。
+    if (isTauriRuntime()) return;
     const url = globalSDK.url();
     if (!url) return;
     void refresh();

@@ -34,11 +34,15 @@ import { initProductDir } from '../../../../lib/tauri';
 import { getHealthScore } from '../../../services/knowledge-health';
 import { buildKnowledgeIndex } from '../../../services/knowledge-index';
 import { loadSession as loadMemorySession, loadMemoryIndex, saveMemoryMeta } from '../../../services/memory-store';
+import { retrieveKnowledge } from '../../../services/knowledge-retrieval';
+import { recallRelevantContext } from '../../../services/memory-recall';
 import {
   type AutopilotAgent,
+  parseMention,
 } from '../../../services/autopilot-executor';
-import { listAllAgents, getBuiltinAgents } from '../../../services/agent-registry';
+import { listAllAgents } from '../../../services/agent-registry';
 import { isClientReady, buildGitSystemContext } from '../../../services/opencode-client';
+import { resolveSkillArtifactConfig, extractArtifactBlock, type SkillContentResolver } from '../../../utils/skill-artifact';
 import SavedFileList, { type SavedFileItem } from '../../../components/autopilot/saved-file-list';
 import PermissionDialog, {
   type PermissionRequest,
@@ -72,12 +76,14 @@ const genMsgId = () => `msg-${Date.now()}-${Math.random().toString(36).slice(2, 
 const nowTimeStr = () => new Date().toTimeString().slice(0, 5);
 
 /**
- * 从 OpenCode 存储的完整 user prompt 中提取用户实际输入。
+/**
+ * 从完整提示词中提取用户实际输入。
  *
- * 完整 prompt 格式为 systemPrompt + 时间 + 知识上下文 + 回忆上下文 + 用户输入，
- * 各段之间以 "\n\n---\n\n" 分隔。
- * 检测到 "## 当前系统时间" 标记时，认为包含元上下文，取最后一段为用户输入。
- * 未检测到标记时原样返回（兼容无 system prompt 的纯用户消息）。
+ * 改造后（system 参数重构），新会话的 user prompt 已不包含系统上下文。
+ * 此函数保留为向后兼容：历史 session 的消息可能仍包含旧格式的嵌入式系统上下文。
+ *
+ * 检测到 "当前系统时间" 标记时，取最后一段为用户输入。
+ * 未检测到标记时原样返回。
  */
 function stripSystemContext(content: string): string {
   const SEP = '\n\n---\n\n';
@@ -91,6 +97,9 @@ function stripSystemContext(content: string): string {
 
 /**
  * 对 accumulator 消息中含有系统上下文注入标记的 text part 进行剥离。
+ *
+ * 改造后（system 参数重构），新会话不再在 user prompt 中嵌入系统上下文。
+ * 此函数保留为向后兼容：历史 session 的消息可能仍包含旧格式的嵌入式系统上下文。
  *
  * 不依赖 role 字段：OpenCode 的 message.part.updated 事件先于 message.updated 到达时，
  * 占位 message 的 role 默认为 'assistant'，导致用户消息被误判。
@@ -288,8 +297,8 @@ const SoloAutopilot = () => {
   // ── 基础状态 ────────────────────────────────────────────────────────────────
   const [createModalOpen, setCreateModalOpen] = createSignal(false);
   const [goal, setGoal] = createSignal('');
-  // Agent 列表：同步初始值用内置常量（避免闪烁），异步更新加载自定义 Agent
-  const [allAgents, setAllAgents] = createSignal<AutopilotAgent[]>(getBuiltinAgents('solo'));
+  // Agent 列表：异步加载，初始为空数组
+  const [allAgents, setAllAgents] = createSignal<AutopilotAgent[]>([]);
   const [agentError, setAgentError] = createSignal<string | null>(null);
 
   // ── UI 面板状态 ──────────────────────────────────────────────────────────────
@@ -337,6 +346,8 @@ const SoloAutopilot = () => {
   const [chatLoading, setChatLoading] = createSignal(false);
   /** 标记"正在等待命令流式响应"，用于 session.command() 后的异步完成检测 */
   const [commandPending, setCommandPending] = createSignal(false);
+  /** 标记 prompt 是否已真正发送到服务端：完成检测的入场券，防止复用 session 时残留 idle 状态被误判为完成 */
+  const [promptSent, setPromptSent] = createSignal(false);
   /** 当前对话的 OpenCode Session ID（多轮复用同一 session） */
   const [currentChatSessionId, setCurrentChatSessionId] = createSignal<string | null>(null);
   // 历史会话恢复中的 sessionId（用于 loading 指示）
@@ -370,54 +381,56 @@ const SoloAutopilot = () => {
     };
   }
 
-  // 合并消息源用于渲染：全局 store 消息(实时) + 旧格式消息(历史恢复) + 乐观占位
-  // 使用 createMemo 确保只在依赖变化时重新计算，且不含副作用
+  // 合并消息源用于渲染：store 优先完全接管，避免 legacy 与 store 同时存在时消息重复（fix Bug 2 辅因）
   const chatDisplayMessages = createMemo((): MessageWithParts[] => {
     const sid = currentChatSessionId();
     const storeMsgs = getSessionMessages(sid);
     const legacy = chatMessages();
     const pending = pendingUserMsg();
 
-    const result: MessageWithParts[] = [];
-
-    // 旧格式消息（从历史恢复加载）
-    if (legacy.length > 0) {
-      result.push(...legacy.map(legacyToMessageWithParts));
-    }
-
-    // OpenWork 全局 store 消息（实时会话）
+    // store 有消息 → 以 store 为准（实时会话），pending 按时间戳插入到正确位置
+    // 修复：SSE 先推送 assistant 流式响应时，若直接追加 pending 到末尾
+    // 会导致用户输入显示在 AI 回复下方
     if (storeMsgs.length > 0) {
-      result.push(...storeMsgs.map(stripAccUserMsg));
-      // 命令场景：store 已有旧消息但还没收到新的用户消息 → 追加 pending
-      if (pending) result.push(pending);
+      const result = storeMsgs.map(stripAccUserMsg);
+      if (pending) {
+        const getTime = (m: MessageWithParts) =>
+          Number((m.info as any).time?.created ?? 0);
+        const pendingTime = getTime(pending);
+        // 插入到第一条 time > pendingTime 的消息之前；
+        // 若 store 全是更早的历史消息，则落到末尾（与旧行为一致）
+        let insertIdx = result.length;
+        for (let i = 0; i < result.length; i++) {
+          if (getTime(result[i]) > pendingTime) {
+            insertIdx = i;
+            break;
+          }
+        }
+        result.splice(insertIdx, 0, pending);
+      }
       return result;
     }
 
-    // 乐观占位消息（仅在 store 尚无消息时显示）
-    if (pending) {
-      result.push(pending);
-    }
-
+    // store 无消息 → legacy（历史恢复）+ pending
+    const result: MessageWithParts[] = legacy.map(legacyToMessageWithParts);
+    if (pending) result.push(pending);
     return result;
   });
 
-  // 副作用独立到 createEffect：全局 store 收到与 pending 匹配的用户消息后清除乐观占位
+  // 清除乐观占位：store 中任一消息文本包含 pending 文本即认为已到达（fix Bug 2 主因）
+  // 不限 role —— 规避 SSE 事件顺序竞态（message.part.updated 可能先于 message.updated 到达，此时 role 尚未填充）
+  // 不再检查 '## 当前系统时间' —— system 参数已重构为独立注入，该标记不再出现在用户消息中
   createEffect(() => {
     const sid = currentChatSessionId();
     const storeMsgs = getSessionMessages(sid);
     const pending = pendingUserMsg();
     if (!pending) return;
     const pendingText = (pending.parts.find(p => p.type === 'text') as any)?.text ?? '';
-    const hasMatchingUserMsg = storeMsgs.some(m =>
-      (m.info as any).role === 'user' &&
+    if (!pendingText) return;
+    const arrived = storeMsgs.some(m =>
       m.parts.some(p => p.type === 'text' && ((p as any).text ?? '').includes(pendingText))
     );
-    const hasSysCtxMsg = storeMsgs.some(m =>
-      m.parts.some(p => p.type === 'text' && ((p as any).text ?? '').includes('## 当前系统时间'))
-    );
-    if (hasMatchingUserMsg || hasSysCtxMsg) {
-      setPendingUserMsg(null);
-    }
+    if (arrived) setPendingUserMsg(null);
   });
 
   // 新消息出现或流式更新时自动滚到底部
@@ -447,6 +460,8 @@ const SoloAutopilot = () => {
   // 后备路径：Tauri 客户端中 SSE 事件可能被合并（session.status:busy 与 :idle 同 key），
   //   导致 running 状态被跳过，此时通过检查 assistant 消息数量变化来检测完成。
   let sessionSawRunning = false;
+  /** 当前会话关联的 Skill 名称（斜杠命令路径设置，普通聊天为 null） */
+  const [activeSessionSkill, setActiveSessionSkill] = createSignal<string | null>(null);
   /** prompt 发送前的 assistant 消息数量（用于后备完成检测） */
   let prePromptAssistantCount = -1;
 
@@ -462,6 +477,7 @@ const SoloAutopilot = () => {
     clearCompletionTimer();
     setChatLoading(false);
     setCommandPending(false);
+    setPromptSent(false);
     sessionSawRunning = false;
     prePromptAssistantCount = -1;
     const fullText = extractAssistantTextFromStore(sid);
@@ -485,7 +501,9 @@ const SoloAutopilot = () => {
       const storeStatus = statusMap[sid];
       const msgs = openworkCtx?.messagesBySessionId?.(sid) ?? [];
       const assistantCount = msgs.filter(m => (m.info as any).role === 'assistant').length;
-      console.log(`[solo-chat] timer-poll #${pollCount}: sid=${sid}, storeStatus=${storeStatus}, assistantCount=${assistantCount}, preCount=${prePromptAssistantCount}`);
+      // ▸ SSE 连通性诊断：检查全局 store 中是否有任何 session 状态
+      const allStatusKeys = Object.keys(statusMap);
+      console.log(`[solo-chat] timer-poll #${pollCount}: sid=${sid}, storeStatus=${storeStatus}, assistantCount=${assistantCount}, preCount=${prePromptAssistantCount}, allStatusKeys=${allStatusKeys.length}, keys=[${allStatusKeys.slice(0, 5).join(',')}], hasSessionStatusFn=${!!openworkCtx?.sessionStatusById}, hasMsgFn=${!!openworkCtx?.messagesBySessionId}`);
 
       // 路径 A：store 已显示 idle 且有新 assistant 消息 → 完成
       if ((storeStatus === 'idle' || storeStatus === 'completed') && prePromptAssistantCount >= 0 && assistantCount > prePromptAssistantCount) {
@@ -524,6 +542,9 @@ const SoloAutopilot = () => {
       sessionSawRunning = false;
       return;
     }
+    // 门控：prompt 未真正发送到服务端前，任何 status 都不触发完成检测
+    // 防止复用 existingSessionId 多轮会话时，sessionStatusById[sid] 残留的 idle 被 fallback 路径立即命中（fix Bug 1）
+    if (!promptSent()) return;
     const statusMap = openworkCtx?.sessionStatusById?.() ?? {};
     const status = statusMap[sid];
     // 未被 SSE 追踪的 session（新建后首次 SSE 事件到达前）→ 等待
@@ -570,7 +591,7 @@ const SoloAutopilot = () => {
   });
 
   // ── 自动保存产出物到磁盘 ───────────────────────────────────────────────────────
-  const autoSaveArtifact = async (title: string, content: string, agentId: string, agentName: string, agentEmoji: string) => {
+  const autoSaveArtifact = async (title: string, content: string, agentId: string, agentName: string, agentEmoji: string, customSavePath?: string) => {
     const product = productStore.activeProduct();
     const workDir = product?.workDir;
     if (!workDir) return;
@@ -587,7 +608,9 @@ const SoloAutopilot = () => {
         'product-brain': `apps/${appCode}/docs/product/prd`,
         'eng-brain': `apps/${appCode}/docs/product/architecture`,
       };
-      const subDir = dirMap[agentId] ?? `apps/${appCode}/docs/delivery`;
+      const subDir = customSavePath
+        ? `apps/${appCode}/${customSavePath}`
+        : (dirMap[agentId] ?? `apps/${appCode}/docs/delivery`);
       const safeName = title.replace(/[\/\\:*?"<>|]/g, '-').replace(/\s+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
       const timestamp = new Date().toISOString().slice(0, 10);
       const format = detectMsgFormatForArtifact(content) === 'html' ? 'html' : 'markdown';
@@ -612,10 +635,58 @@ const SoloAutopilot = () => {
   };
 
   // ── 从 chat 回复中自动提取并保存产出物 ──────────────────────────────────────────
-  const tryExtractArtifact = (_aiMsgId: string, fullText: string) => {
-    if (!looksLikeDocument(fullText)) return;
-    const title = extractDocTitle(fullText);
-    void autoSaveArtifact(title, fullText, 'chat', 'AI 助手', '💬');
+  const tryExtractArtifact = async (_aiMsgId: string, fullText: string) => {
+    const skillName = activeSessionSkill();
+
+    if (skillName) {
+      // === Skill 驱动路径 ===
+      const resolver: SkillContentResolver = {
+        getSkill: async (name) => {
+          try {
+            const detail = await actions.getOpenworkSkill(name);
+            return detail ? { content: detail.content } : null;
+          } catch { return null; }
+        },
+      };
+      const artifactConfig = await resolveSkillArtifactConfig(skillName, resolver);
+      if (!artifactConfig?.enabled) {
+        setActiveSessionSkill(null);
+        return;
+      }
+
+      // 尝试从 AI 输出提取标记块
+      const block = extractArtifactBlock(fullText);
+      // 降级：如果没有标记块但内容达到文档标准，用全文作为产出物
+      const content = block?.content ?? (looksLikeDocument(fullText) ? fullText : null);
+      if (!content) {
+        setActiveSessionSkill(null);
+        return;
+      }
+
+      const title = block?.title ?? extractDocTitle(content);
+
+      // 根据 Skill 配置决定是否保存
+      if (artifactConfig.autoSave !== false) {
+        void autoSaveArtifact(title, content, skillName, skillName, '📄', artifactConfig.savePath);
+      }
+    } else {
+      // === 普通聊天路径：仅展示，不自动保存 ===
+      if (!looksLikeDocument(fullText)) return;
+      // 添加到产出物面板展示（不调用 autoSaveArtifact）
+      const title = extractDocTitle(fullText);
+      const format = detectMsgFormatForArtifact(fullText) === 'html' ? 'html' as const : 'markdown' as const;
+      setSavedFiles((prev) => [...prev, {
+        id: `artifact-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        title,
+        relativePath: '',
+        format,
+        agentName: 'AI 助手',
+        agentEmoji: '💬',
+        savedAt: nowTimeStr(),
+      }]);
+    }
+
+    setActiveSessionSkill(null);
   };
 
   // ── 加载 OpenWork 能力徽标 ─────────────────────────────────────────────────────
@@ -842,15 +913,30 @@ const SoloAutopilot = () => {
       commandName = spaceIdx > 0 ? text.slice(1, spaceIdx) : text.slice(1);
       commandArgs = spaceIdx > 0 ? text.slice(spaceIdx + 1).trim() : '';
     } else if (commandName) {
-      // 去掉输入框中的 /command-name 前缀，剩下的作为 args
+      // 面板选中路径：尝试从输入框文本中去掉 /commandName 前缀
+      // P3 修复：若用户已修改输入框内容（删除了 /commandName），则直接将整个 text 作为 args
+      // 这样用户修改过的内容不会展示为命令名套骗
       const prefix = `/${commandName}`;
-      commandArgs = text.startsWith(prefix) ? text.slice(prefix.length).trim() : text;
+      if (text.startsWith(prefix)) {
+        // 正常情况：输入框含有 /commandName 前缀，前缀后面即为 args
+        commandArgs = text.slice(prefix.length).trim();
+      } else if (text.trim() === '') {
+        // 输入框已被清空（用户删除了全部内容），无 args
+        commandArgs = '';
+      } else {
+        // 用户修改了输入框（删除了 /commandName 前缀但添加了自定义内容），认为是手动输入的 args
+        commandArgs = text.trim();
+      }
     }
 
     // ── 命令执行路径：通过 session.command() ──
     if (commandName) {
+      setActiveSessionSkill(commandName);
       const client = openworkCtx?.opencodeClient?.();
       if (!client) { setAgentError('OpenCode 未连接'); return; }
+
+      // ▸ 兜底：确保 Provider auth 已同步到 OpenCode（复用 store 的 ensureProviderAuth，内置 dedup）
+      await actions.ensureProviderAuth();
 
       // 乐观 UI + 加载状态
       const syntheticUserMsg: MessageWithParts = {
@@ -882,17 +968,33 @@ const SoloAutopilot = () => {
             ...(workDir ? { directory: workDir } : {}),
           } as any);
           sid = (result.data as { id: string } | undefined)?.id ?? null;
+          // ▸ 检查 result.error（HeyAPI SDK 不抛异常，错误在 result.error 中返回）
+          if (!sid) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const err = (result as any).error;
+            const errName = err?.name;
+            if (errName === 'ConfigInvalidError') {
+              setAgentError('大模型未配置，请在设置页配置 API Key 后重试');
+              setChatLoading(false);
+              return;
+            }
+            console.error('[xingjing] session.create for command failed (result.error):', err);
+          }
           if (sid) {
             setCurrentChatSessionId(sid);
             console.log('[solo-chat] 命令 session 已创建', { sid, command: commandName });
-            // SDD-015: 确保全局 store 加载该 session 的消息
+            // SDD-015: 确保全局 store 加载该 session 的消息（await 对齐 runAgentSession）
             if (openworkCtx?.ensureSessionLoaded) {
-              void openworkCtx.ensureSessionLoaded(sid);
+              try {
+                await openworkCtx.ensureSessionLoaded(sid);
+              } catch { /* 非致命，store 可能稍后同步 */ }
             }
+            // /skill 命令路径：mode 标记为 chat（命令在单一 session 中执行）
             if (workDir) void saveMemoryMeta(workDir, sid, { tags: [], mode: 'chat' });
           }
         } catch (e) {
-          console.error('[xingjing] session.create for command failed:', e);
+          // 网络异常等运行时错误
+          console.error('[xingjing] session.create for command threw:', e);
         }
       }
 
@@ -902,29 +1004,62 @@ const SoloAutopilot = () => {
         return;
       }
 
+      // [FIX] 记录 prompt 发送前的 assistant 消息数（供后备完成检测使用，对齐普通对话路径）
+      const cmdMsgs = openworkCtx?.messagesBySessionId?.(sid) ?? [];
+      prePromptAssistantCount = cmdMsgs.filter(m => (m.info as any).role === 'assistant').length;
+
+      // P2 修复：命令路径导入 knowledge/recall 上下文（对齐普通对话路径）
+      // 如果有知识库内容则拼接到 commandArgs 后面作为辅助上下文
+      let enrichedArgs = commandArgs;
+      if (workDir) {
+        try {
+          const skillApiAdapter = openworkCtx ? {
+            listSkills: () => actions.listOpenworkSkills(),
+            getSkill: (name: string) => actions.getOpenworkSkill(name),
+            upsertSkill: (name: string, content: string, desc?: string) =>
+              actions.upsertOpenworkSkill(name, content, desc ?? ''),
+          } : null;
+          const [knowledgeCtx, recallResult] = await Promise.all([
+            retrieveKnowledge({ workDir, skillApi: skillApiAdapter, query: commandArgs || commandName, scene: 'autopilot' }).catch(() => ''),
+            recallRelevantContext(workDir, commandArgs || commandName).then(r => r.contextText).catch(() => ''),
+          ]);
+          const ctxParts: string[] = [];
+          if (knowledgeCtx?.trim()) ctxParts.push(`## 相关知识\n${knowledgeCtx.trim()}`);
+          if (recallResult?.trim()) ctxParts.push(`## 第三方回忆\n${recallResult.trim()}`);
+          if (ctxParts.length > 0) {
+            enrichedArgs = ctxParts.join('\n\n') + (commandArgs ? `\n\n## 用户指令\n${commandArgs}` : '');
+          }
+        } catch { /* 上下文获取失败不阻塞主流程 */ }
+      }
+
       // [FIX] 在 HTTP 调用前设置 commandPending，确保 streaming 完成检测 effect
       // 能捕获 SSE 流式在 await 期间完成的 isStreaming true→false 转换
       setCommandPending(true);
+      setPromptSent(false); // 关门：HTTP 调用返回前拒绝任何完成检测
       try {
         console.log('[solo-chat] 调用 session.command', { sid, command: commandName, model: modelStr });
         await client.session.command({
           sessionID: sid,
           command: commandName,
-          arguments: commandArgs,
+          arguments: enrichedArgs,
           model: modelStr,
         });
+        setPromptSent(true); // 开门：HTTP 已返回，允许完成检测接管
         console.log('[solo-chat] session.command HTTP 已返回，等待 SSE 完成', { sid });
         // HTTP 调用返回后 SSE 异步执行，chatLoading 由 commandPending effect 管理
         // 补偿检查：如果 SSE 流在 HTTP 等待期间已完成，effect 可能已清除了 commandPending
         // 这里无需额外处理，effect 的补偿路径会在下一个 tick 自动检测
-        // 超时兜底：若命令 30s 内未完成流式输出，释放 loading 状态
+        // 超时兜底：复杂 Skill（brainstorming/writing-plans 等）可能需要多轮工具调用，
+        // 延长至 120s 避免过早中断，同时保留 loading 状态防止用户误操作
         setTimeout(() => {
           if (commandPending()) {
-            console.warn('[solo-chat] 命令流式超时 30s，释放 loading');
+            console.warn('[solo-chat] 命令流式超时 120s，释放 loading');
             setChatLoading(false);
             setCommandPending(false);
           }
-        }, 30000);
+        }, 120000);
+        // 启动定时器兜底：确保 Tauri 环境下即使 reactive effect 不触发也能检测完成（对齐普通对话路径）
+        startCompletionTimer();
       } catch (e) {
         setCommandPending(false);
         setAgentError(`命令执行失败：${e}`);
@@ -933,9 +1068,84 @@ const SoloAutopilot = () => {
       return;
     }
 
-    // ── 普通对话路径 ──
+    // ── 普通对话路径（含 @agent / @skill:xxx 解析）──
+    setActiveSessionSkill(null);
+
+    // 解析 @mention：支持三种形式
+    //   @agentId text  → targetAgent 直连 Agent
+    //   @skill:name t  → targetSkill 注入 Skill 上下文执行（runDirectSkill）
+    //   普通文本        → 普通对话
+    const { targetAgent, targetSkill, cleanText } = parseMention(text, allAgents());
+
+    // ── @skill:xxx 路径 ──
+    // P0 修复：独立版之前丢弃了 targetSkill，此处补充分支
+    if (targetSkill) {
+      setActiveSessionSkill(targetSkill);
+      const workDirSkill = productStore.activeProduct()?.workDir;
+      const modelSkill = getSessionModel();
+
+      // 乐观 UI
+      const skillUserMsg: MessageWithParts = {
+        info: {
+          id: `pending-${Date.now()}`,
+          sessionID: currentChatSessionId() || 'pending',
+          role: 'user',
+          time: { created: Date.now() / 1000 },
+        } as any,
+        parts: [{ id: `part-${Date.now()}`, type: 'text', text, messageID: '' } as any],
+      };
+      setPendingUserMsg(skillUserMsg);
+      setGoal('');
+      setChatLoading(true);
+      setAgentError(null);
+
+      const skillApiAdapter = openworkCtx ? {
+        listSkills: () => actions.listOpenworkSkills(),
+        getSkill: (name: string) => actions.getOpenworkSkill(name),
+        upsertSkill: (name: string, content: string, desc?: string) =>
+          actions.upsertOpenworkSkill(name, content, desc ?? ''),
+      } : null;
+
+      const { runDirectSkill } = await import('../../../services/autopilot-executor');
+      try {
+        await runDirectSkill(targetSkill, cleanText, {
+          workDir: workDirSkill,
+          model: modelSkill ?? undefined,
+          callAgentFn: (o) => actions.callAgent(o),
+          skillApi: skillApiAdapter,
+          onPermissionAsked: handlePermissionAsked,
+          onStatus: (status) => {
+            if (status === 'done' || status === 'error') {
+              setChatLoading(false);
+              setActiveSessionSkill(null);
+            }
+          },
+          onStream: (_text) => {
+            // SSE 消息由全局 store 驱动，无需手动追加
+          },
+          onDone: (fullText) => {
+            setChatLoading(false);
+            setActiveSessionSkill(null);
+            if (fullText) void tryExtractArtifact('auto', fullText);
+          },
+          onError: (err) => {
+            setChatLoading(false);
+            setActiveSessionSkill(null);
+            setAgentError(`Skill ${targetSkill} 执行失败：${err}`);
+          },
+        });
+      } catch (e) {
+        setChatLoading(false);
+        setActiveSessionSkill(null);
+        setAgentError(String(e));
+      }
+      return;
+    }
+
+    const finalPrompt = targetAgent ? cleanText : text;
 
     // 乐观 UI：立即展示用户消息（含附件 file parts 供 MessageList 渲染）
+    // UI 仍显示原始 text（含 @mention），用户可见
     const userParts: any[] = [{ id: `part-${Date.now()}`, type: 'text', text, messageID: '' }];
     if (attachments?.length) {
       for (const att of attachments) {
@@ -962,18 +1172,22 @@ const SoloAutopilot = () => {
 
     setGoal('');          // 立即清空输入框
     setChatLoading(true);
+    setPromptSent(false); // 关门：prompt 真正发送到服务端前拒绝任何完成检测（fix Bug 1）
     setAgentError(null);
 
-    // 记录 prompt 发送前的 assistant 消息数（供后备完成检测使用）
+    // P3 修复：快照时机对齐 session 创建异步
+    // 若已有 existingSid，在发送前读取当前数量；若没有，则等 callAgent 创建 session 后（在 onSessionCreated 回调中）再快照
+    // 此处先设为 -1 表示“尚未就绪”，如果是新建 session 由 onSessionCreated 覆盖为 0
     const existingSid = currentChatSessionId();
     if (existingSid) {
       const msgs = openworkCtx?.messagesBySessionId?.(existingSid) ?? [];
       prePromptAssistantCount = msgs.filter(m => (m.info as any).role === 'assistant').length;
     } else {
-      prePromptAssistantCount = 0;
+      prePromptAssistantCount = -1; // 新建 session，在 onSessionCreated 中覆盖为 0
     }
 
-    const productName = productStore.activeProduct()?.name ?? '未知产品';
+    const productName = productStore.activeProduct()?.name;
+    const productDesc = productName ? `你是「${productName}」产品的 AI 助手，精通产品策略、技术架构与增长分析。` : '你是一个专业的产品 AI 助手，精通产品策略、技术架构与增长分析。';
     const workDir = productStore.activeProduct()?.workDir;
 
     // 仅当用户意图涉及 Git 操作时才注入认证上下文
@@ -986,12 +1200,19 @@ const SoloAutopilot = () => {
     // 使用 actions.callAgent 创建 session + 发送 prompt，确保注入 OpenWork 上下文。
     // callAgent 在 prompt 发送后立即返回（对齐 OpenWork 原生方案），
     // 完成检测由上方的 reactive effect 监听 sessionStatusById 驱动。
+    // [FIX Bug 1] 关键：必须等待 callAgent 完成（prompt 真正发送）后再置 promptSent=true 并启动 timer，
+    // 否则复用 session 时 sessionStatusById[sid] 残留的 idle 会被 timer 立即命中，
+    // 导致 chatLoading 提前释放 → UI 只显示部分内容就终止。
     actions.callAgent({
-      userPrompt: text,
-      systemPrompt: `你是「${productName}」产品的 AI 助手，精通产品策略、技术架构与增长分析。请用简洁、专业的中文回答用户的问题。${gitContext}`,
+      userPrompt: finalPrompt,
+      agentId: targetAgent?.id,
+      // 命中 Agent 时不再重复拼接默认 systemPrompt（OpenCode 从 .opencode/agents/ 加载）
+      systemPrompt: targetAgent
+        ? undefined
+        : `${productDesc}请用简洁、专业的中文回答用户的问题。${gitContext}`,
       title: currentChatSessionId()
         ? undefined
-        : (text.length > 50 ? text.slice(0, 50) + '...' : text),
+        : (finalPrompt.length > 50 ? finalPrompt.slice(0, 50) + '...' : finalPrompt),
       model: getSessionModel(),
       directory: workDir,
       existingSessionId: currentChatSessionId() || undefined,
@@ -999,25 +1220,34 @@ const SoloAutopilot = () => {
       // 关键：session 建立后确保全局 store 加载
       onSessionCreated: (sid) => {
         setCurrentChatSessionId(sid);
+        // P3 修复：新建 session 时，在 session 创建后立即快照 assistant 消息数（应为 0）
+        // 避免先设为 0 而 SSE 极快到达时被后备路径立即命中
+        if (prePromptAssistantCount < 0) {
+          const newMsgs = openworkCtx?.messagesBySessionId?.(sid) ?? [];
+          prePromptAssistantCount = newMsgs.filter(m => (m.info as any).role === 'assistant').length;
+        }
         // 确保全局 store 加载该 session 消息（全局 SSE 已在接收事件）
         if (openworkCtx?.ensureSessionLoaded) {
           void openworkCtx.ensureSessionLoaded(sid);
         }
-        // 将 chat 模式记录到 sidecar，供历史列表正确判断模式
-        if (workDir) void saveMemoryMeta(workDir, sid, { tags: [], mode: 'chat' });
+        // P1 修复：@agent 路径应标记为 'dispatch'（直连 Agent 与调度模式语义一致）
+        if (workDir) void saveMemoryMeta(workDir, sid, { tags: [], mode: targetAgent ? 'dispatch' : 'chat' });
       },
       // onError 仅处理创建/发送阶段的错误（完成检测由 reactive effect 管理）
       onError: (errMsg) => {
         setChatLoading(false);
         setAgentError(errMsg);
       },
-    }).catch((e) => {
-      setChatLoading(false);
-      setAgentError(String(e));
-    });
-
-    // 启动定时器兜底：确保 Tauri 环境下即使 reactive effect 不触发也能检测完成
-    startCompletionTimer();
+    })
+      .then(() => {
+        // prompt 已真正发送 → 开门并启动 timer 兜底
+        setPromptSent(true);
+        startCompletionTimer();
+      })
+      .catch((e) => {
+        setChatLoading(false);
+        setAgentError(String(e));
+      });
   };
 
   // ── handleStart：🚀 团队调度模式 ─────────────────────────────────────────────
@@ -1052,18 +1282,39 @@ const SoloAutopilot = () => {
   // 待执行的命令（用户选中后暂存，提交时执行）
   const [pendingCommand, setPendingCommand] = createSignal<{ name: string } | null>(null);
 
-  // 从 OpenCode 获取可用命令（含 skills）
+  // 从 OpenCode 获取可用命令 + OpenWork Skills 合并
   const listSlashCommands = async (): Promise<SlashCommand[]> => {
     const client = openworkCtx?.opencodeClient?.();
-    if (!client) return [];
     const workDir = productStore.activeProduct()?.workDir;
-    const cmds = await listCommandsTyped(client, workDir);
-    return cmds.map(c => ({
-      id: c.id,
-      name: c.name,
-      description: c.description,
-      source: c.source,
-    }));
+    const wsId = resolvedWorkspaceId();
+
+    // 并行获取 OpenCode commands + OpenWork skills
+    const [cmds, skills] = await Promise.all([
+      client ? listCommandsTyped(client, workDir) : Promise.resolve([]),
+      (wsId && openworkCtx?.listSkills)
+        ? openworkCtx!.listSkills(wsId).catch(() => [] as never[])
+        : Promise.resolve([] as never[]),
+    ]);
+
+    const seen = new Set<string>();
+    const result: SlashCommand[] = [];
+
+    // OpenCode commands 优先
+    for (const c of cmds) {
+      seen.add(c.name);
+      result.push({ id: c.id, name: c.name, description: c.description, source: c.source });
+    }
+
+    // 补充 OpenWork skills（去重）
+    for (const s of skills) {
+      const name = s.name.startsWith('skill-') ? s.name.slice(6) : s.name;
+      if (!seen.has(name)) {
+        seen.add(name);
+        result.push({ id: `skill:${s.name}`, name, description: s.description, source: 'skill' });
+      }
+    }
+
+    return result;
   };
 
   // 用户选中斜杠命令

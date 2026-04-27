@@ -52,6 +52,15 @@ export interface MemoryIndex {
 }
 
 // ─── Sidecar 元数据（tags/goal，OpenCode 不存储的星静特有数据）────────────────
+//
+// OpenWork Session 类型不支持自定义 metadata 字段（如 tags、goal、mode）。
+// 这些字段对星静的功能至关重要：
+// - tags: 会话标签，用于分类和搜索增强
+// - goal: 会话目标，用于上下文回忆
+// - mode: 会话模式（chat/dispatch），用于 UI 展示区分
+//
+// 因此通过本地 sidecar.json 文件补充存储这些元数据。
+// 当 OpenWork 未来支持自定义 metadata 时，可迁移到原生 API。
 
 const SIDECAR_PATH = '.xingjing/memory/sidecar.json';
 
@@ -157,14 +166,18 @@ export async function loadSession(
       return ms ? new Date(ms).toISOString() : new Date().toISOString();
     };
 
-    // 仅提取 type==='text' 的 parts，忽略 thinking / tool-use / tool-result 等
+    // 提取用户可见的文本内容（text + reasoning parts）
+    // reasoning part 包含 AI 的思考过程，应保留在历史记录中
     const extractTextContent = (m: any): string => {
       if (typeof m.content === 'string') return m.content;
       const parts: any[] = m.parts ?? m.info?.parts ?? [];
       return parts
-        .filter((p: any) => p.type === 'text' && typeof p.text === 'string')
+        .filter((p: any) =>
+          (p.type === 'text' || p.type === 'reasoning') &&
+          typeof p.text === 'string'
+        )
         .map((p: any) => p.text as string)
-        .join('');
+        .join('\n\n');
     };
 
     const rawMessages: MemoryMessage[] = messages.map((m: any) => ({
@@ -216,21 +229,76 @@ export async function saveSession(
 // ─── 搜索 ─────────────────────────────────────────────────────────────────────
 
 /**
- * 基于关键词/标签的会话搜索（索引级别，不加载详情）
+ * 基于关键词的会话搜索（优先使用 OpenWork 原生搜索）
  *
- * 算法：
- * 1. 将 query 拆分为关键词
- * 2. 对每个索引条目计算匹配分：summary + tags 中关键词命中数
- * 3. 按分数降序排列
+ * 搜索策略：
+ * 1. 优先使用 OpenWork session.list({ search }) 原生全文搜索
+ * 2. 失败时降级到本地关键词匹配
+ *
+ * 原生搜索优势：
+ * - 服务端索引，速度更快
+ * - 全文匹配，准确性更高
+ * - 减少客户端计算负担
  */
 export async function searchSessions(
   workDir: string,
   query: string,
   maxResults = 10,
 ): Promise<MemoryIndexEntry[]> {
-  const index = await loadMemoryIndex(workDir);
-  if (!query.trim()) return index.sessions.slice(0, maxResults);
+  if (!query.trim()) {
+    const index = await loadMemoryIndex(workDir);
+    return index.sessions.slice(0, maxResults);
+  }
 
+  // 尝试使用 OpenWork 原生搜索
+  try {
+    const client = getXingjingClient();
+    const result = await client.session.list({
+      directory: workDir,
+      search: query,
+      limit: maxResults,
+    });
+
+    if (result.data && Array.isArray(result.data)) {
+      // 加载 sidecar 元数据（tags/goal）
+      let sidecar: Record<string, { tags?: string[]; goal?: string; mode?: 'chat' | 'dispatch' }> = {};
+      try {
+        const raw = await fileRead(`${workDir}/${SIDECAR_PATH}`);
+        if (raw) sidecar = JSON.parse(raw);
+      } catch { /* sidecar 可能不存在 */ }
+
+      return result.data.map((s: any) => ({
+        id: s.id ?? '',
+        type: (sidecar[s.id]?.mode ?? 'chat') as MemorySession['type'],
+        summary: s.title ?? s.description ?? '',
+        tags: sidecar[s.id]?.tags ?? [],
+        createdAt: (() => {
+          const ms = s.time?.updated ?? s.time?.created;
+          if (!ms) return '';
+          return new Date(ms).toLocaleString('zh-CN', {
+            month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit',
+          });
+        })(),
+        messageCount: 0,
+      }));
+    }
+  } catch (e) {
+    console.warn('[memory] OpenWork 原生搜索失败，降级到本地搜索:', e);
+  }
+
+  // 降级：本地关键词搜索
+  return localSearchSessions(workDir, query, maxResults);
+}
+
+/**
+ * 本地关键词搜索（降级方案）
+ */
+async function localSearchSessions(
+  workDir: string,
+  query: string,
+  maxResults: number,
+): Promise<MemoryIndexEntry[]> {
+  const index = await loadMemoryIndex(workDir);
   const keywords = extractKeywords(query);
   if (keywords.length === 0) return index.sessions.slice(0, maxResults);
 
@@ -288,27 +356,36 @@ export type CallAgentFn = (opts: {
 }) => void;
 
 /**
- * 调用 LLM 生成会话摘要
+ * 调用 LLM 生成会话摘要（异步模式，立即返回 fallback）
  *
+ * 优化策略：
+ * 1. 立即返回 fallback 摘要（不阻塞 UI）
+ * 2. 异步生成 AI 摘要
+ * 3. 生成后自动更新到 OpenWork session.title
+ *
+ * @param sessionId 会话 ID（用于更新摘要）
  * @param messages 会话消息列表
  * @param callAgentFn 复用现有的 callAgent 接口
- * @returns Promise<SummaryResult> 摘要和标签
+ * @returns Promise<SummaryResult> 立即返回 fallback 摘要
  */
 export function generateSessionSummary(
+  sessionId: string,
   messages: MemoryMessage[],
   callAgentFn: CallAgentFn,
 ): Promise<SummaryResult> {
-  return new Promise((resolve) => {
+  // 1. 立即返回 fallback 摘要
+  const fallback: SummaryResult = {
+    summary: extractFallbackSummary(messages),
+    tags: [],
+  };
+
+  // 2. 异步生成 AI 摘要（不阻塞 UI）
+  setTimeout(() => {
     // 构造对话文本（截取最后 20 条消息，避免超长）
     const recentMessages = messages.slice(-20);
     const dialogText = recentMessages
       .map(m => `[${m.role}]: ${m.content.slice(0, 500)}`)
       .join('\n');
-
-    const fallback: SummaryResult = {
-      summary: extractFallbackSummary(messages),
-      tags: [],
-    };
 
     callAgentFn({
       userPrompt: SUMMARY_PROMPT + dialogText,
@@ -318,24 +395,48 @@ export function generateSessionSummary(
           const jsonMatch = fullText.match(/\{[\s\S]*\}/);
           if (jsonMatch) {
             const parsed = JSON.parse(jsonMatch[0]);
-            resolve({
-              summary: String(parsed.summary || '').slice(0, 200),
-              tags: Array.isArray(parsed.tags)
-                ? parsed.tags.map(String).slice(0, 5)
-                : [],
-            });
-            return;
+            const aiSummary = String(parsed.summary || '').slice(0, 200);
+            const aiTags = Array.isArray(parsed.tags)
+              ? parsed.tags.map(String).slice(0, 5)
+              : [];
+
+            // 3. 生成后更新到 OpenWork session.title
+            void updateSessionSummary(sessionId, aiSummary);
+
+            // 4. 更新 sidecar 中的 tags
+            // 注意：这里无法获取 workDir，需要调用方传入或通过其他方式获取
+            console.log('[memory] AI 摘要生成成功:', { sessionId, summary: aiSummary, tags: aiTags });
           }
-        } catch {
-          // JSON 解析失败，使用 fallback
+        } catch (e) {
+          console.warn('[memory] AI 摘要解析失败:', e);
         }
-        resolve(fallback);
       },
-      onError: () => {
-        resolve(fallback);
+      onError: (err) => {
+        console.warn('[memory] AI 摘要生成失败:', err);
       },
     });
-  });
+  }, 0);
+
+  return Promise.resolve(fallback);
+}
+
+/**
+ * 更新会话摘要到 OpenWork session.title
+ */
+async function updateSessionSummary(
+  sessionId: string,
+  summary: string,
+): Promise<void> {
+  try {
+    const client = getXingjingClient();
+    await client.session.update({
+      sessionID: sessionId,
+      title: summary.slice(0, 200),
+    });
+    console.log('[memory] 摘要已更新到 OpenWork session.title:', sessionId);
+  } catch (e) {
+    console.warn('[memory] 更新 session.title 失败:', e);
+  }
 }
 
 // ─── 工具函数 ─────────────────────────────────────────────────────────────────

@@ -21,10 +21,10 @@ import {
   Building2, ClipboardCheck, X, Pencil, Bot,
 } from 'lucide-solid';
 import {
-  SOLO_AGENTS,
   runDirectAgent,
   type AutopilotAgent,
 } from '../../../services/autopilot-executor';
+import { listAllAgents } from '../../../services/agent-registry';
 
 // ─── 常量 ──────────────────────────────────────────────────────────────────────
 
@@ -546,19 +546,20 @@ const SoloBuild: Component = () => {
   ]);
   const [agentLoading, setAgentLoading] = createSignal(false);
 
-  const engBrain = (): AutopilotAgent | undefined =>
-    SOLO_AGENTS.find(a => a.id === 'eng-brain');
+  const [engBrain, setEngBrain] = createSignal<AutopilotAgent | undefined>(undefined);
 
   onMount(async () => {
     const workDir = productStore.activeProduct()?.workDir;
     if (!workDir) return;
     try {
-      const [fileTasks, fileAdrs] = await Promise.all([
+      const [fileTasks, fileAdrs, soloAgents] = await Promise.all([
         loadSoloTasks(workDir),
         loadAdrs(workDir),
+        listAllAgents('solo'),
       ]);
       if (fileTasks.length > 0) setTasks(fileTasks as unknown as SoloTask[]);
       if (fileAdrs.length > 0) setAdrs(fileAdrs as unknown as ADR[]);
+      setEngBrain(soloAgents.find(a => a.id === 'eng-brain'));
     } catch { /* Mock fallback */ }
   });
 

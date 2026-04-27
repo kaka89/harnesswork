@@ -2,21 +2,22 @@
  * Agent 注册表 — 统一 Agent 发现与注册
  *
  * 设计原则：
- * - 双源合并：自定义 Agent 从全局目录 ~/.xingjing/agents/ 读取，内置 Agent 从代码常量加载
- * - 全局可见：自定义 Agent 跨产品/workspace 可见
- * - 内置 Agent 文件写入 per-workspace .opencode/agents/ 供 OpenCode session.create 使用
+ * - 纯文件驱动：所有 Agent 定义均从 ~/.xingjing/agents/ 文件中读取
+ * - 全局可见：Agent 跨产品/workspace 可见
+ * - 种子 Agent 首次启动时写入全局目录，后续从文件读取
  * - 统一读取 API：listAllAgents() 获取完整 Agent 列表
  */
 
-import { type AutopilotAgent, SOLO_AGENTS, TEAM_AGENTS, buildOrchestratorSystemPrompt } from './autopilot-executor';
+import { type AutopilotAgent, buildOrchestratorSystemPrompt } from './autopilot-executor';
+import { getSeedAgentFiles, getSeedAgentIds } from './seed-agent-loader';
 import { fileRead, fileWrite, fileList, fileDelete } from './file-ops';
 import { parseFrontmatter, extractBody } from '../utils/frontmatter';
 
 // ─── 类型定义 ─────────────────────────────────────────────────
 
 export interface RegisteredAgent extends AutopilotAgent {
-  /** Agent 来源：builtin = 内置种子, custom = 用户自定义 */
-  source: 'builtin' | 'custom';
+  /** Agent 来源：seed = 内置种子, custom = 用户自定义 */
+  source: 'seed' | 'custom';
   /** 文件来源时的文件路径 */
   filePath?: string;
   /** OpenCode Agent ID（用于 session.create 时指定 agent），对应文件名不含 .md */
@@ -25,6 +26,13 @@ export interface RegisteredAgent extends AutopilotAgent {
 
 // ─── 全局存储路径 ─────────────────────────────────────────────
 const GLOBAL_AGENTS_DIR = '~/.xingjing/agents';
+
+/**
+ * 已成功执行过完整注册流程的 mode 集合（进程级别）。
+ * 防止 SolidJS effect 重跑、页面反复进出时重复触发数十次 fetch 扇出，
+ * 是「Tauri IPC custom protocol failed」问题的防护套。
+ */
+const _registeredAgentModes = new Set<'solo' | 'team'>();
 
 // ─── 默认 UI 属性（用户自定义 Agent 缺省样式）────────────────────────────────
 
@@ -35,67 +43,30 @@ const DEFAULT_CUSTOM_AGENT_STYLE = {
   emoji: '🤖',
 };
 
-// ─── 内置 Agent 转换 ──────────────────────────────────────────
-
-function toRegisteredAgent(agent: AutopilotAgent): RegisteredAgent {
-  return {
-    ...agent,
-    source: 'builtin',
-    editable: false,
-    // 内置 Agent 也设置 opencodeAgentId，便于后续 session.create 使用
-    opencodeAgentId: agent.id,
-  };
-}
-
 // ─── 从 Agent Markdown 文件解析为 RegisteredAgent ────────────────
 
-/** 内置 Agent ID 查表（用于快速判断是否为内置 Agent）*/
-const BUILTIN_AGENT_IDS = new Set<string>();
-function ensureBuiltinIds() {
-  if (BUILTIN_AGENT_IDS.size > 0) return;
-  for (const a of [...SOLO_AGENTS, ...TEAM_AGENTS]) {
-    BUILTIN_AGENT_IDS.add(a.id);
-  }
-}
-
-/** 从 .opencode/agents/{id}.md 或 ~/.xingjing/agents/{id}.md 文件内容解析为 RegisteredAgent */
+/** 从 ~/.xingjing/agents/{id}.md 文件内容解析为 RegisteredAgent（统一逻辑，无内置常量分支）*/
 function parseAgentFile(agentId: string, content: string, isGlobal = false): RegisteredAgent | null {
-  const { frontmatter, body } = parseFrontmatter<Record<string, unknown>>(content);
+  const { frontmatter } = parseFrontmatter<Record<string, unknown>>(content);
   if (!frontmatter || Object.keys(frontmatter).length === 0) return null;
 
-  ensureBuiltinIds();
-  const isBuiltin = BUILTIN_AGENT_IDS.has(agentId);
-
-  // 内置 Agent：优先使用硬编码常量（保证运行时一致性），文件仅供 OpenCode 使用
-  if (isBuiltin) {
-    const builtinDef = [...SOLO_AGENTS, ...TEAM_AGENTS].find(a => a.id === agentId);
-    if (builtinDef) {
-      return {
-        ...builtinDef,
-        source: 'builtin',
-        editable: false,
-        opencodeAgentId: agentId,
-        filePath: `.opencode/agents/${agentId}.md`,
-      };
-    }
-  }
-
-  // 自定义 Agent：从 frontmatter 解析完整属性
+  const isSeed = getSeedAgentIds().has(agentId);
   const systemPrompt = extractBody(content);
   return {
     id: (frontmatter['id'] as string) || agentId,
     name: (frontmatter['name'] as string) || agentId,
     role: (frontmatter['role'] as string) || '',
+    mode: (frontmatter['mode'] as 'solo' | 'team') || undefined,
     color: (frontmatter['color'] as string) || DEFAULT_CUSTOM_AGENT_STYLE.color,
     bgColor: (frontmatter['bgColor'] as string) || DEFAULT_CUSTOM_AGENT_STYLE.bgColor,
     borderColor: (frontmatter['borderColor'] as string) || DEFAULT_CUSTOM_AGENT_STYLE.borderColor,
     emoji: (frontmatter['emoji'] as string) || DEFAULT_CUSTOM_AGENT_STYLE.emoji,
     skills: (frontmatter['skills'] as string[]) || [],
+    injectSkills: (frontmatter['injectSkills'] as string[]) || [],
     description: (frontmatter['description'] as string) || '',
     systemPrompt: systemPrompt || '',
-    source: 'custom',
-    editable: true,
-    // 自定义 Agent 赋予 agentId（ensureAgentsRegistered 确保 .opencode/agents/ 中有对应文件）
+    source: isSeed ? 'seed' : 'custom',
+    editable: !isSeed,
     opencodeAgentId: agentId,
     filePath: isGlobal ? `${GLOBAL_AGENTS_DIR}/${agentId}.md` : `.opencode/agents/${agentId}.md`,
   };
@@ -104,20 +75,18 @@ function parseAgentFile(agentId: string, content: string, isGlobal = false): Reg
 // ─── 统一发现接口 ──────────────────────────────────────────────
 
 /**
- * 统一 Agent 列表获取（双源合并）
+ * 统一 Agent 列表获取（纯文件驱动）
  *
- * 1. 从全局目录 ~/.xingjing/agents/ 读取自定义 Agent
- * 2. 合并内置 Agent 常量（始终可用）
- * 降级时返回内置常量。
+ * 从全局目录 ~/.xingjing/agents/ 读取所有 Agent（种子 + 自定义），
+ * 按 mode 字段过滤（mode 字段缺失的自定义 Agent 始终返回）。
  *
- * @param mode  'solo' | 'team' — 决定使用哪组内置 Agent
+ * @param mode  'solo' | 'team' — 用于过滤 Agent 的模式
  */
 export async function listAllAgents(
   mode: 'solo' | 'team',
 ): Promise<RegisteredAgent[]> {
   const results: RegisteredAgent[] = [];
 
-  // 1. 从全局目录读取自定义 Agent（~/.xingjing/agents/）
   try {
     const entries = await fileList(GLOBAL_AGENTS_DIR);
     const agentFiles = entries.filter(
@@ -130,22 +99,18 @@ export async function listAllAgents(
           if (!content) return;
           const agentId = entry.name.replace('.md', '');
           const agent = parseAgentFile(agentId, content, true);
-          if (agent) results.push(agent);
+          if (agent) {
+            results.push(agent);
+            // 幂等同步当前 workspace 的 .opencode/agents/{id}.md，修复历史上写入的无合法 frontmatter 文件（fire-and-forget）
+            void fileWrite(`.opencode/agents/${agentId}.md`, toOpencodeAgentMd(content)).catch(() => {});
+          }
         } catch { /* skip unreadable files */ }
       }),
     );
-  } catch { /* 全局目录不可用，继续 */ }
+  } catch { /* 全局目录不可用 */ }
 
-  // 2. 合并内置 Agent（从常量，始终可用）
-  const builtinAgents = mode === 'solo' ? SOLO_AGENTS : TEAM_AGENTS;
-  const existingIds = new Set(results.map(a => a.id));
-  for (const builtin of builtinAgents) {
-    if (!existingIds.has(builtin.id)) {
-      results.push(toRegisteredAgent(builtin));
-    }
-  }
-
-  return results;
+  // 按 mode 过滤：mode 字段匹配或未设置 mode 的自定义 Agent 全部返回
+  return results.filter(a => !a.mode || a.mode === mode);
 }
 
 /**
@@ -159,12 +124,51 @@ export async function discoverAgents(
   return listAllAgents(mode);
 }
 
+// ─── OpenCode 兼容转换 ──────────────────────────────────────────
+
 /**
- * 同步获取内置 Agent 列表（用于 UI 初始化，无需等待异步文件发现）
+ * 将 xingjing Agent Markdown 翻译为 OpenCode 合法格式。
+ *
+ * OpenCode .opencode/agents/*.md 需要 description + mode 字段：
+ *   ---
+ *   description: xxx
+ *   mode: primary | subagent | all
+ *   ---
+ *
+ * xingjing 自身的 frontmatter 使用 mode=solo|team（产品模式），与 OpenCode
+ * mode=primary|subagent|all（agent 执行模式）语义不同，不能直接透传。
+ * 此函数：
+ *   1. 从 xingjing frontmatter 提取 description
+ *   2. 固定输出 mode: primary（用户通过 @ 调用的 agent 一律以主执行模式运行）
+ *   3. 透传可选的 temperature / model（若存在）
+ *   4. 剥离其余 xingjing 私有字段（id / name / role / emoji / color / bgColor / skills / injectSkills / xingjing 的 mode）
+ *   5. 保留 body 作为 system prompt
  */
-export function getBuiltinAgents(mode: 'solo' | 'team'): RegisteredAgent[] {
-  const agents = mode === 'solo' ? SOLO_AGENTS : TEAM_AGENTS;
-  return agents.map(toRegisteredAgent);
+function toOpencodeAgentMd(xingjingMd: string): string {
+  const fmMatch = xingjingMd.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
+  if (!fmMatch) {
+    // 无 frontmatter：补一个最小合法头
+    return `---\ndescription: Custom agent\nmode: primary\n---\n\n${xingjingMd.trimStart()}`;
+  }
+  const rawFm = fmMatch[1];
+  const body = fmMatch[2].trimStart();
+
+  // 轻量 YAML 解析：仅提取简单 key: value（够用，避免引入依赖）
+  const fm: Record<string, string> = {};
+  for (const line of rawFm.split(/\r?\n/)) {
+    const m = line.match(/^([A-Za-z_][\w-]*)\s*:\s*(.*)$/);
+    if (m) fm[m[1]] = m[2].trim().replace(/^["']|["']$/g, '');
+  }
+
+  const description = fm.description || fm.role || fm.name || 'Custom agent';
+  const parts: string[] = [
+    `description: ${JSON.stringify(description)}`,
+    `mode: primary`,
+  ];
+  if (fm.temperature) parts.push(`temperature: ${fm.temperature}`);
+  if (fm.model) parts.push(`model: ${fm.model}`);
+
+  return `---\n${parts.join('\n')}\n---\n\n${body}`;
 }
 
 // ─── Agent CRUD（供 Agent Workshop 使用）──────────────────────────
@@ -177,8 +181,10 @@ export async function saveAgentToFile(agent: AutopilotAgent): Promise<boolean> {
   try {
     const content = buildAgentMarkdownContent(agent);
     const ok = await fileWrite(`${GLOBAL_AGENTS_DIR}/${agent.id}.md`, content);
-    // 同步到 .opencode/agents/（供 OpenCode session.create 使用）
-    await fileWrite(`.opencode/agents/${agent.id}.md`, content).catch(() => {});
+    // 同步到 .opencode/agents/（剥离 frontmatter，避免 OpenCode schema 校验失败）
+    await fileWrite(`.opencode/agents/${agent.id}.md`, toOpencodeAgentMd(content)).catch(() => {});
+    // Agent 列表变更，刷新 Orchestrator（确保可用 Agent 列表最新）
+    await refreshOrchestratorAgent(agent.mode ?? 'solo');
     return ok;
   } catch {
     return false;
@@ -190,7 +196,13 @@ export async function saveAgentToFile(agent: AutopilotAgent): Promise<boolean> {
  */
 export async function deleteAgentFile(agentId: string): Promise<boolean> {
   try {
-    return await fileDelete(`${GLOBAL_AGENTS_DIR}/${agentId}.md`);
+    const ok = await fileDelete(`${GLOBAL_AGENTS_DIR}/${agentId}.md`);
+    // 同步删除 .opencode/agents/ 副本
+    await fileDelete(`.opencode/agents/${agentId}.md`).catch(() => {});
+    // Agent 列表变更，刷新两个模式的 Orchestrator（删除时无法确定 mode）
+    await refreshOrchestratorAgent('solo');
+    await refreshOrchestratorAgent('team');
+    return ok;
   } catch {
     return false;
   }
@@ -198,13 +210,24 @@ export async function deleteAgentFile(agentId: string): Promise<boolean> {
 
 // ─── Agent 注册持久化（写入 .opencode/agents/）────────────────────
 
-/** 构建 Orchestrator Agent 定义，根据当前模式动态生成 systemPrompt */
-function buildOrchestratorAgent(mode: 'solo' | 'team'): AutopilotAgent {
-  const agents = mode === 'solo' ? SOLO_AGENTS : TEAM_AGENTS;
+/** 重新生成 Orchestrator Agent 并同步到 workspace（Agent 列表变更时调用）*/
+async function refreshOrchestratorAgent(mode: 'solo' | 'team'): Promise<void> {
+  try {
+    const allAgents = await listAllAgents(mode);
+    const orchestrator = buildOrchestratorAgent(allAgents, mode);
+    const content = buildAgentMarkdownContent(orchestrator);
+    await fileWrite(`${GLOBAL_AGENTS_DIR}/${orchestrator.id}.md`, content);
+    await fileWrite(`.opencode/agents/${orchestrator.id}.md`, toOpencodeAgentMd(content)).catch(() => {});
+  } catch { /* non-blocking */ }
+}
+
+/** 构建 Orchestrator Agent 定义，基于已加载的 Agent 列表动态生成 systemPrompt */
+function buildOrchestratorAgent(agents: AutopilotAgent[], mode: 'solo' | 'team'): AutopilotAgent {
   return {
     id: 'orchestrator',
     name: 'Orchestrator',
     role: '任务调度',
+    mode,
     color: '#531dab',
     bgColor: '#f9f0ff',
     borderColor: '#d3adf7',
@@ -216,57 +239,80 @@ function buildOrchestratorAgent(mode: 'solo' | 'team'): AutopilotAgent {
 }
 
 /**
- * 将内置 Agent 定义写入 .opencode/agents/ 目录（供 OpenCode session.create 使用）。
- * 已存在的文件不会被覆盖（保留用户自定义修改）。
+ * 将 Agent 定义写入全局目录并同步到 workspace .opencode/agents/
+ *
+ * 流程：
+ * 1. 将种子 .md 原始内容写入全局目录（仅不存在时写入，保留用户修改）
+ * 2. 动态生成 Orchestrator（基于当前 Agent 列表）
+ * 3. 全局目录 → workspace .opencode/agents/ 全量同步
+ *
  * 在 workspace 解析完成后调用。
  */
 export async function ensureAgentsRegistered(
   mode: 'solo' | 'team',
 ): Promise<void> {
-  const agents = mode === 'solo' ? SOLO_AGENTS : TEAM_AGENTS;
-  // 内置 Agent + Orchestrator 一并注册（Orchestrator 根据模式动态生成）
-  const allAgents: AutopilotAgent[] = [...agents, buildOrchestratorAgent(mode)];
-  for (const agent of allAgents) {
-    try {
-      const existing = await fileRead(`.opencode/agents/${agent.id}.md`);
-      if (existing) continue;
+  // 幂等守卫：同一 mode 只需执行一次完整注册流程。
+  // 避免 xingjing 页面重复挂载 / SolidJS effect 重跑时反复触发 ~30 次
+  // Tauri IPC fetch，导致 WKWebView 自定义 IPC 占满、access control checks 拦截。
+  if (_registeredAgentModes.has(mode)) return;
+  _registeredAgentModes.add(mode);
 
-      const content = buildAgentMarkdownContent(agent);
-      await fileWrite(`.opencode/agents/${agent.id}.md`, content);
-    } catch { /* 静默忽略，不影响正常使用 */ }
+  // 1. 将种子 .md 文件原始内容写入全局目录（仅不存在时写入，保留用户修改）
+  const seedFiles = getSeedAgentFiles();
+  for (const [agentId, rawContent] of seedFiles) {
+    try {
+      const existing = await fileRead(`${GLOBAL_AGENTS_DIR}/${agentId}.md`);
+      if (existing) continue;
+      await fileWrite(`${GLOBAL_AGENTS_DIR}/${agentId}.md`, rawContent);
+    } catch { /* 静默 */ }
   }
 
-  // 将全局自定义 Agent 同步到 .opencode/agents/（确保 OpenCode 原生可发现）
+  // 2. 动态生成 Orchestrator（基于已加载的 Agent 列表）
   try {
-    const entries = await fileList(GLOBAL_AGENTS_DIR);
-    const agentFiles = entries.filter(
-      e => e.type === 'file' && e.name.endsWith('.md') && !e.name.startsWith('.'),
-    );
-    ensureBuiltinIds();
-    for (const entry of agentFiles) {
-      const agentId = entry.name.replace('.md', '');
-      if (BUILTIN_AGENT_IDS.has(agentId)) continue; // 内置 Agent 已在上面写入
-      try {
-        const existing = await fileRead(`.opencode/agents/${agentId}.md`);
-        if (existing) continue; // 已存在则跳过
-        const content = await fileRead(`${GLOBAL_AGENTS_DIR}/${entry.name}`);
-        if (content) await fileWrite(`.opencode/agents/${agentId}.md`, content);
-      } catch { /* skip */ }
-    }
-  } catch { /* 全局目录不可读，跳过 */ }
+    const allAgents = await listAllAgents(mode);
+    const orchestrator = buildOrchestratorAgent(allAgents, mode);
+    const orchestratorContent = buildAgentMarkdownContent(orchestrator);
+    await fileWrite(`${GLOBAL_AGENTS_DIR}/${orchestrator.id}.md`, orchestratorContent);
+  } catch { /* 静默 */ }
+
+  // 3. 全局目录 → workspace .opencode/agents/ 同步（完整内容同步）
+  await syncGlobalToWorkspace();
 
   // 一次性迁移：将 ~/.xingjing/agent-workshop-solo.yaml 中的自定义 Agent 写入全局目录
   await migrateWorkshopYamlToAgentFiles();
 }
 
 /**
+ * 将全局 ~/.xingjing/agents/ 目录内容同步到 workspace .opencode/agents/
+ * 写入时剥离 xingjing frontmatter，确保 OpenCode schema 校验通过
+ */
+async function syncGlobalToWorkspace(): Promise<void> {
+  try {
+    const entries = await fileList(GLOBAL_AGENTS_DIR);
+    const agentFiles = entries.filter(
+      e => e.type === 'file' && e.name.endsWith('.md') && !e.name.startsWith('.'),
+    );
+    for (const entry of agentFiles) {
+      try {
+        const content = await fileRead(`${GLOBAL_AGENTS_DIR}/${entry.name}`);
+        if (!content) continue;
+        await fileWrite(`.opencode/agents/${entry.name}`, toOpencodeAgentMd(content));
+      } catch { /* skip individual file errors */ }
+    }
+  } catch { /* 全局目录不可读，跳过 */ }
+}
+
+/**
  * 将 AutopilotAgent 序列化为 Markdown 格式（frontmatter + body）。
+ * 用于 Workshop 创建自定义 Agent 和动态生成 Orchestrator。
+ * 种子 Agent 直接使用 .md 原始内容，不经过此函数。
  */
 export function buildAgentMarkdownContent(agent: AutopilotAgent): string {
   const lines = [
     '---',
     `id: ${agent.id}`,
     `name: ${agent.name}`,
+    ...(agent.mode ? [`mode: ${agent.mode}`] : []),
     `role: ${agent.role}`,
     `emoji: "${agent.emoji}"`,
     `color: "${agent.color}"`,
@@ -276,6 +322,10 @@ export function buildAgentMarkdownContent(agent: AutopilotAgent): string {
   if (agent.skills.length > 0) {
     lines.push('skills:');
     for (const s of agent.skills) lines.push(`  - ${s}`);
+  }
+  if (agent.injectSkills?.length) {
+    lines.push('injectSkills:');
+    for (const s of agent.injectSkills) lines.push(`  - ${s}`);
   }
   if (agent.description) {
     lines.push(`description: "${agent.description.replace(/"/g, '\\"')}"`);
@@ -303,13 +353,13 @@ async function migrateWorkshopYamlToAgentFiles(): Promise<void> {
     const globalData = await loadGlobalAgentWorkshop();
 
     if (globalData.agents && globalData.agents.length > 0) {
+      const seedIds = getSeedAgentIds();
       for (const agentRaw of globalData.agents) {
         const agent = agentRaw as Record<string, unknown>;
         const id = agent['id'] as string;
         if (!id) continue;
-        // 跳过内置 Agent ID
-        ensureBuiltinIds();
-        if (BUILTIN_AGENT_IDS.has(id)) continue;
+        // 跳过种子 Agent ID
+        if (seedIds.has(id)) continue;
 
         // 检查目标文件是否已存在
         const existing = await fileRead(`${GLOBAL_AGENTS_DIR}/${id}.md`);

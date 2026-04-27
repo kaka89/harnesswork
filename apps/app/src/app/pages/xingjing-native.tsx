@@ -99,6 +99,8 @@ interface XingjingNativePageProps {
   reloadBusy?: boolean;
   /** 是否可重载 workspace */
   canReloadWorkspace?: boolean;
+  /** 确保 OpenCode client 可用（无 workspace 时按需创建） */
+  ensureClient?: () => Promise<boolean>;
 }
 
 export default function XingjingNativePage(props: XingjingNativePageProps) {
@@ -106,9 +108,19 @@ export default function XingjingNativePage(props: XingjingNativePageProps) {
   const outerNavigate = useNavigate();
 
   // 构建 XingjingOpenworkContext，将 OpenWork 能力注入到星静内部
-  // 使用 createMemo 确保 openworkServerClient 连接/断开时响应式更新
+  //
+  // ⚠️ 关键设计：此 memo 只依赖 openworkServerClient 的「有/无」布尔状态，
+  // 不依赖 openworkServerStatus / opencodeClient 等其它 prop。
+  // 这样可以避免 OpenWork 状态频繁切换（connected ↔ limited ↔ reconnecting）
+  // 时，下游 createMemo 反复返回新对象引用，导致 AppStoreProvider 内的
+  // initBridge/destroyBridge、setSharedClient 等 effect 反复销毁重建，
+  // 出现日志反复刷出「Bridge 已销毁」「OpenWork Client 未就绪」的现象。
+  //
+  // ctx 对象内部所有方法通过闭包动态读取最新 props，因此即使对象引用稳定，
+  // 仍能拿到最新的 client / status / model 等响应式值。
+  const hasOpenworkClient = createMemo(() => !!props.openworkServerClient);
   const openworkCtx = createMemo<XingjingOpenworkContext | undefined>(() =>
-    props.openworkServerClient
+    hasOpenworkClient()
       ? {
           resolveWorkspaceByDir: async (productDir: string) => {
             const list = await props.openworkServerClient!.listWorkspaces().catch(() => null);
@@ -145,6 +157,20 @@ export default function XingjingNativePage(props: XingjingNativePageProps) {
             const match = list?.items?.find((w) => w.path === productDir)
               ?? list?.workspaces?.find((w) => w.path === productDir);
             return match?.id ?? null;
+          },
+          activateWorkspaceById: async (workspaceId: string) => {
+            // 先查询当前活跃 workspace，若已是目标则短路，避免无谓的 POST
+            // 触发 OpenWork host 端 client() 重建、SSE 重连等副作用
+            try {
+              const list = await props.openworkServerClient!.listWorkspaces().catch(() => null);
+              if (list?.activeId === workspaceId) return true;
+            } catch { /* ignore */ }
+            try {
+              await props.openworkServerClient!.activateWorkspace(workspaceId);
+              return true;
+            } catch {
+              return false;
+            }
           },
           listMcp: (workspaceId) =>
             props.openworkServerClient!.listMcp(workspaceId)
@@ -219,6 +245,8 @@ export default function XingjingNativePage(props: XingjingNativePageProps) {
           reloadWorkspaceEngine: props.reloadWorkspaceEngine,
           reloadBusy: props.reloadBusy,
           canReloadWorkspace: props.canReloadWorkspace,
+          // OpenWork 原生 ensureClient 能力透传
+          ensureClient: props.ensureClient,
         }
       : undefined
   );

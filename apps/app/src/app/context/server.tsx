@@ -60,6 +60,18 @@ export function ServerProvider(props: ParentProps & { defaultUrl: string }) {
 
     const fallback = normalizeServerUrl(props.defaultUrl) ?? "";
 
+    // Tauri 桌面端不使用 ServerProvider 的多服务器机制——
+    // 本地 engine 由 app.tsx 的 engine_info() 动态发现，端口随机，
+    // 任何持久化的 localhost server 地址（尤其是旧版本写入的 4096）都是过期垃圾数据。
+    // 这里 setReady(true) 同时保持 list=[]/active=""，health effect 会因 !url 早退，
+    // 下游 localStorage effect 也会顺便把旧的 openwork.server.active 清成空串。
+    if (isTauriRuntime()) {
+      setList([]);
+      setActiveRaw("");
+      setReady(true);
+      return;
+    }
+
     // In hosted web deployments served by OpenWork, OpenCode
     // traffic should go through the server proxy (usually same-origin `/opencode`).
     // Do not reuse any persisted localhost targets.

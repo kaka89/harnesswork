@@ -21,6 +21,7 @@ import {
 } from './knowledge-behavior';
 import { saveSoloKnowledge, type SoloKnowledgeItem } from './file-store';
 import { invalidateKnowledgeCache } from './knowledge-retrieval';
+import { extractArtifactBlock } from '../utils/skill-artifact';
 
 // ─── 配置 ─────────────────────────────────────────────────────────────────────
 
@@ -113,8 +114,8 @@ interface ExtractedKnowledge {
 /**
  * 从 Agent 输出中提取可沉淀的知识
  *
- * 提取策略：
- * 1. 检测"产出物"标记块（Agent 输出格式规范中的 `### 产出物：` 段落）
+ * 提取策略（复用 extractArtifactBlock 统一标记块检测）：
+ * 1. 检测“产出物”标记块（格式 A: Markdown 标记 / 格式 B: 结构化标签）
  * 2. 检测结构化建议/决策/最佳实践（Markdown 标题 + 列表）
  * 3. 提取关键标签（从标题和内容中）
  */
@@ -123,20 +124,19 @@ function extractKnowledgeFromOutput(
   agentId: string,
   goal?: string,
 ): ExtractedKnowledge | null {
-  // 优先提取「产出物」块
-  const artifactMatch = output.match(new RegExp('###\\s*产出物[：:]\\s*(.+?)\n([\\s\\S]*?)(?=\n##|\n---|\n###|$)'));
+  // 优先提取「产出物」块（复用统一的 extractArtifactBlock，同时支持格式 A + B）
+  const artifactBlock = extractArtifactBlock(output);
 
-  if (artifactMatch) {
-    const title = artifactMatch[1].trim();
-    const content = artifactMatch[2].trim().slice(0, MAX_EXTRACT_LENGTH);
+  if (artifactBlock) {
+    const content = artifactBlock.content.slice(0, MAX_EXTRACT_LENGTH);
     if (content.length < 50) return null;
 
     const classification = classifyByAgent(agentId);
-    const tags = extractTags(title, content, goal);
+    const tags = extractTags(artifactBlock.title, content, goal);
 
     return {
       type: classification.type,
-      title,
+      title: artifactBlock.title,
       content,
       tags,
       category: classification.category,

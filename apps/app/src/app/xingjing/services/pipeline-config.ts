@@ -32,6 +32,8 @@ export interface PipelineStage {
   output?: Record<string, string>;
   /** 阶段执行状态（运行时填充） */
   outputStatus?: 'pending' | 'running' | 'success' | 'failed' | 'skipped';
+  /** 是否启用（支持部分执行，默认 true） */
+  enabled?: boolean;
 }
 
 export interface PipelineConfig {
@@ -93,7 +95,9 @@ export function parsePipelineYaml(yamlContent: string): PipelineConfig | null {
         gate: s.gate === 'await-approval' ? 'await-approval' : 'auto',
         dependsOn: Array.isArray(dependsOnRaw) ? dependsOnRaw.map(String) : [],
         parallel: s.parallel === true || s.parallel === 'true',
+        output: (s.output && typeof s.output === 'object') ? s.output as Record<string, string> : undefined,
         outputStatus: 'pending',
+        enabled: s.enabled !== false, // 默认 true，仅显式 false 时禁用
       };
     });
 
@@ -113,21 +117,22 @@ export function parsePipelineYaml(yamlContent: string): PipelineConfig | null {
  *
  * @throws 检测到循环依赖时返回空数组
  */
-export function topologicalSort(stages: PipelineStage[]): PipelineStage[][] {
-  if (stages.length === 0) return [];
+export function topologicalSort(stages: PipelineStage[], enabledOnly = false): PipelineStage[][] {
+  const filtered = enabledOnly ? stages.filter((s) => s.enabled !== false) : stages;
+  if (filtered.length === 0) return [];
 
-  const stageMap = new Map(stages.map((s) => [s.id, s]));
+  const stageMap = new Map(filtered.map((s) => [s.id, s]));
   const inDegree = new Map<string, number>();
   const adjList = new Map<string, string[]>();
 
   // 初始化
-  for (const s of stages) {
+  for (const s of filtered) {
     inDegree.set(s.id, 0);
     adjList.set(s.id, []);
   }
 
-  // 构建邻接表和入度
-  for (const s of stages) {
+  // 构建邻接表和入度（仅考虑过滤后的节点）
+  for (const s of filtered) {
     for (const dep of s.dependsOn) {
       if (stageMap.has(dep)) {
         adjList.get(dep)!.push(s.id);
@@ -137,7 +142,7 @@ export function topologicalSort(stages: PipelineStage[]): PipelineStage[][] {
   }
 
   const layers: PipelineStage[][] = [];
-  let remaining = stages.length;
+  let remaining = filtered.length;
 
   while (remaining > 0) {
     // 找出所有入度为 0 的节点
@@ -171,4 +176,34 @@ export function topologicalSort(stages: PipelineStage[]): PipelineStage[][] {
   }
 
   return layers;
+}
+
+// ─── 序列化 PipelineConfig → YAML ─────────────────────────
+
+/**
+ * 将 PipelineConfig 序列化为 YAML 字符串。
+ * 支持导出和持久化场景。
+ */
+export function serializePipelineYaml(config: PipelineConfig): string {
+  const obj: Record<string, unknown> = {
+    app: config.app,
+    mode: config.mode,
+    max_retries: config.maxRetries,
+    stages: config.stages.map((s) => {
+      const stage: Record<string, unknown> = {
+        id: s.id,
+        name: s.name,
+        description: s.description,
+        agent: s.agent,
+        skills: s.skills,
+        gate: s.gate,
+      };
+      if (s.dependsOn.length > 0) stage.depends_on = s.dependsOn;
+      if (s.parallel) stage.parallel = true;
+      if (s.output && Object.keys(s.output).length > 0) stage.output = s.output;
+      if (s.enabled === false) stage.enabled = false;
+      return stage;
+    }),
+  };
+  return yaml.dump(obj, { lineWidth: -1, noRefs: true });
 }

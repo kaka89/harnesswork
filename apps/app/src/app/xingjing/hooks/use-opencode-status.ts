@@ -34,6 +34,9 @@ export function useOpenCodeStatus(): () => OpenCodeStatus {
   /** Ping OpenCode 端点，返回是否可达 */
   // 对齐 OpenWork 原生模式：使用 client.global.health()，自动走 SDK client 正确网络路径
   async function ping(): Promise<boolean> {
+    // 未就绪时直接返回 false，不报错也不发 HTTP；
+    // 由上层 check() 的守卫决定是否进入重连，避免首次 mount 时空转。
+    if (!isClientReady()) return false;
     try {
       const client = getXingjingClient();
       await Promise.race([
@@ -75,6 +78,9 @@ export function useOpenCodeStatus(): () => OpenCodeStatus {
   async function check() {
     // 重连进行中时跳过常规检测
     if (reconnecting) return;
+    // client 未注入时保持当前状态，不要把未就绪当断开处理——
+    // 否则会在首次 mount 时立即触发 tryReconnect 空转（日志中"断开→第1次失败"同毫秒刷屏）。
+    if (!isClientReady()) return;
 
     const ok = await ping();
     if (ok) {

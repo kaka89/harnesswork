@@ -309,12 +309,12 @@ const MentionPanel = (props: {
             width: `${Math.min(props.anchorRect!.width, 320)}px`,
             'max-height': '300px',
             'overflow-y': 'auto',
+            'overflow-x': 'hidden',
             'z-index': '500',
             background: themeColors.surface,
             border: `1px solid ${themeColors.border}`,
             'border-radius': '10px',
             'box-shadow': '0 8px 32px rgba(0,0,0,0.16)',
-            overflow: 'hidden',
           }}
         >
           {(() => {
@@ -382,7 +382,7 @@ const MentionPanel = (props: {
                                 {item.kind === 'agent' ? item.agent?.name ?? item.label : item.label.split('/').pop()}
                               </div>
                               <Show when={item.kind === 'agent' && item.agent?.description}>
-                                <div style={{ 'font-size': '11px', color: themeColors.textMuted }}>{item.agent!.description.slice(0, 32)}\u2026</div>
+                                <div style={{ 'font-size': '11px', color: themeColors.textMuted }}>{item.agent!.description.slice(0, 32)}{'…'}</div>
                               </Show>
                               <Show when={item.kind === 'file' && item.label.includes('/')}>
                                 <div style={{ 'font-size': '10px', color: themeColors.textMuted, overflow: 'hidden', 'text-overflow': 'ellipsis', 'white-space': 'nowrap' }}>{item.label}</div>

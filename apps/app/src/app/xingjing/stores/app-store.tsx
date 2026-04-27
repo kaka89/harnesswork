@@ -1,5 +1,5 @@
 import { createStore } from 'solid-js/store';
-import { createContext, useContext, ParentComponent, createEffect, createSignal, onMount } from 'solid-js';
+import { createContext, useContext, ParentComponent, createEffect, createSignal, onMount, untrack } from 'solid-js';
 import type { MessageWithParts } from '../../types';
 import type { PRD } from '../mock/prd';
 import type { Task } from '../mock/tasks';
@@ -13,7 +13,7 @@ import {
   loadGlobalSettings, saveGlobalSettings,
   ensureProductFiles,
 } from '../services/file-store';
-import { callAgent as _callAgent, setProviderAuth, setSharedClient, type CallAgentOptions } from '../services/opencode-client';
+import { callAgent as _callAgent, isClientReady, setSharedClient, type CallAgentOptions } from '../services/opencode-client';
 import { initBridge, destroyBridge, type NavigationTarget, type BridgeConfig } from '../services/xingjing-bridge';
 import { setSchedulerApi } from '../services/scheduler-client';
 import { ensureAgentsRegistered } from '../services/agent-registry';
@@ -79,6 +79,11 @@ export interface XingjingOpenworkContext {
    * 成功时返回新建的 workspace ID，失败返回 null。
    */
   createWorkspaceByDir: (productDir: string, productName: string) => Promise<string | null>;
+  /**
+   * 将指定 workspace 激活为 OpenWork Server 的当前活跃工作区（config.workspaces[0]）。
+   * 这确保后续 OpenCode 代理请求路由到正确的产品工作区。
+   */
+  activateWorkspaceById?: (workspaceId: string) => Promise<boolean>;
   /** 列出指定工作区的 MCP 服务器 */
   listMcp: (workspaceId: string) => Promise<Array<{ name: string; config: Record<string, unknown> }>>;
   /** 添加/更新一个 MCP 服务器配置 */
@@ -151,6 +156,13 @@ export interface XingjingOpenworkContext {
   reloadBusy?: boolean;
   /** 是否可重载 workspace */
   canReloadWorkspace?: boolean;
+  // ── OpenWork 原生 Provider/Client 能力 ──
+  /** 已连接的 Provider ID 列表（响应式） */
+  providerConnectedIds?: () => string[];
+  /** 通过 OpenWork Provider Store 提交 API Key（原生流程） */
+  submitProviderApiKey?: (providerId: string, apiKey: string) => Promise<string>;
+  /** 确保 OpenCode client 可用（无 workspace 时按需创建） */
+  ensureClient?: () => Promise<boolean>;
 }
 
 interface AppState {
@@ -212,6 +224,8 @@ const AppStoreContext = createContext<{
     removeMcp: (name: string) => Promise<boolean>;
     logoutMcpAuth: (name: string) => Promise<boolean>;
     callAgent: (opts: CallAgentOptions) => Promise<void>;
+    /** 确保 Provider auth 已同步到 OpenCode（内置 dedup，首次调用必同步，同 key 后续跳过） */
+    ensureProviderAuth: () => Promise<void>;
     // OpenWork Skill/Config API
     listOpenworkSkills: () => Promise<OpenworkSkillItem[]>;
     listHubSkills: () => Promise<Array<{ name: string; description: string }>>;
@@ -231,6 +245,9 @@ const AppStoreContext = createContext<{
     ensureWorkspaceForActiveProduct: () => Promise<string | null>;
     scanKnowledgeIndex: (skillApi: import('../services/knowledge-behavior').SkillApiAdapter) => Promise<import('../services/knowledge-index').KnowledgeIndex | null>;
     getWorkDir: () => string;
+    // Workflow (流程编排) API
+    loadWorkflowConfig: () => Promise<import('../types/settings').WorkflowConfig>;
+    saveWorkflowConfig: (config: import('../types/settings').WorkflowConfig) => Promise<boolean>;
   };
 }>();
 
@@ -258,6 +275,10 @@ export const AppStoreProvider: ParentComponent<{
   // ── OpenWork workspace 解析 ──
   const [resolvedWorkspaceId, setResolvedWorkspaceId] = createSignal<string | null>(null);
 
+  // 已激活过的 wsId 记录：相同 wsId 不再重发 activate，
+  // 避免进入页面 / 状态抖动时反复触发 OpenWork host 端 client 重建。
+  let _lastActivatedWsId: string | null = null;
+
   // 当活跃产品切换时，根据产品目录向 OpenWork 查询对应的 workspace ID
   createEffect(() => {
     const product = productStore.activeProduct();
@@ -267,11 +288,21 @@ export const AppStoreProvider: ParentComponent<{
     }
     if (props.openworkCtx) {
       props.openworkCtx.resolveWorkspaceByDir(product.workDir)
-        .then((wsId: string | null) => {
+        .then(async (wsId: string | null) => {
           if (wsId) {
+            // 仅在「wsId 真正切换」时激活，首次进入且已是活跃工作区时跳过
+            if (wsId !== _lastActivatedWsId) {
+              try {
+                await props.openworkCtx!.activateWorkspaceById?.(wsId);
+                console.log('[xingjing] workspace 已激活:', wsId);
+              } catch (e) {
+                console.warn('[xingjing] workspace 激活失败，继续使用已有 ID:', e);
+              }
+              _lastActivatedWsId = wsId;
+            }
             setResolvedWorkspaceId(wsId);
           } else {
-            // 工作区不存在，自动创建
+            // 工作区不存在，自动创建（createLocalWorkspace 自动 prepend 到 workspaces[0]）
             console.warn('[xingjing] workspace 未找到，尝试自动创建:', product.workDir);
             props.openworkCtx!.createWorkspaceByDir(product.workDir, product.name)
               .then((newWsId: string | null) => {
@@ -291,15 +322,21 @@ export const AppStoreProvider: ParentComponent<{
   });
 
   // ── 注入 OpenWork Client 到 opencode-client 模块 ──
+  //
+  // 幂等保护：setSharedClient 在引用未变时返回 false，
+  // 这里仅在「真正变化」时打印日志，
+  // 避免 OpenWork 状态切换/重连过程中反复刷出「未就绪」日志。
   createEffect(() => {
     const client = props.openworkCtx?.opencodeClient?.();
-    setSharedClient(client ?? null);
+    const changed = setSharedClient(client ?? null);
+    if (!changed) return;
 
-    // 诊断日志
     if (client) {
       console.log('[xingjing] OpenWork Client 已注入，星静 AI 功能可用');
+      // API Key 同步统一由 callAgent 守卫逻辑处理（await submitProviderApiKey），
+      // 避免 fire-and-forget 与 callAgent 竞态导致 refreshProviders({ dispose: true }) 并发。
     } else {
-      console.warn('[xingjing] OpenWork Client 未就绪，星静 AI 功能将受限。请确保 OpenWork 已启动并选择了工作区。');
+      console.warn('[xingjing] OpenWork Client 未就绪，星静 AI 功能将受限。');
     }
   });
 
@@ -320,25 +357,69 @@ export const AppStoreProvider: ParentComponent<{
   });
 
   // ── 工作区就绪后，确保内置 Agent 已注册到 .opencode/agents/ ──
+  //
+  // 设计要点：
+  // 1. 仅依赖 wsId（额外使用 untrack 切断 state.appMode 的响应式追踪），
+  //    避免 state.appMode 被代码其他处 set 时重复触发扇出。
+  // 2. 将 ensure*Registered 等重型 IO 延后到浏览器 idle 阶段，
+  //    避免与 OpenWork 主应用挂载阶段的大量 fetch 争抢 WKWebView 自定义 IPC 通道。
+  // 3. ensure*Registered 内部已加幂等守卫，即使重跑也不会重复扇出。
   createEffect(() => {
     const wsId = resolvedWorkspaceId();
-    if (wsId) {
+    if (!wsId) return;
+
+    // 切断 state.appMode / productStore.activeProduct() 的追踪，避免重跑
+    untrack(() => {
       const mode = state.appMode;
-      void ensureAgentsRegistered(mode);
-      // 同步确保内置 Skill 已注册到 .opencode/skills/
-      void ensureSkillsRegistered(
-        mode,
-        (name, content, description) => {
-          if (!props.openworkCtx) return Promise.resolve(false);
-          return props.openworkCtx.upsertSkill(wsId, name, content, description);
-        },
-        async () => {
-          if (!props.openworkCtx) return [];
-          const items = await props.openworkCtx.listSkills(wsId);
-          return items.map(s => ({ name: s.name }));
-        },
-      );
-    }
+      const product = productStore.activeProduct();
+
+      // 延后到 idle，避免与初始挂载阶段其它 fetch 同时压入 Tauri IPC 队列
+      const runIdle = (typeof window !== 'undefined' && (window as any).requestIdleCallback)
+        ? (window as any).requestIdleCallback as (cb: () => void) => void
+        : (cb: () => void) => setTimeout(cb, 200);
+
+      runIdle(() => {
+        void ensureAgentsRegistered(mode);
+        // 同步确保内置 Skill 已注册到 .opencode/skills/
+        void ensureSkillsRegistered(
+          mode,
+          (name, content, description) => {
+            if (!props.openworkCtx) return Promise.resolve(false);
+            return props.openworkCtx.upsertSkill(wsId, name, content, description);
+          },
+          async () => {
+            if (!props.openworkCtx) return [];
+            const items = await props.openworkCtx.listSkills(wsId);
+            return items.map(s => ({ name: s.name }));
+          },
+        );
+
+        // ── 幂等确保 xingjing-context Skill 存在且与当前产品信息同步 ──
+        if (product && props.openworkCtx) {
+          const ctx = props.openworkCtx;
+          void (async () => {
+            try {
+              const skillContent = `# 星静产品上下文
+
+## 产品信息
+- 名称：${product.name}
+- 编码：${product.code ?? 'N/A'}
+- 工作目录：${product.workDir}
+- 产品类型：${product.productType ?? 'solo'}
+${product.description ? `\n## 描述\n${product.description}` : ''}
+
+## 重要指引
+你是这个产品的 AI 助手。工作目录为 ${product.workDir}，请在此目录下查找代码和文档。
+`;
+              await ctx.upsertSkill(wsId, 'xingjing-context', skillContent, `产品 ${product.name} 的星静上下文`);
+              console.info(`[xingjing] xingjing-context skill 已同步 (workspace ${wsId})`);
+            } catch (e) {
+              console.warn('[xingjing] xingjing-context skill 同步失败:', e);
+            }
+          })();
+        }
+      });
+    });
   });
 
   // ── 初始化 XingjingBridge（将 OpenWork 全能力注入 Bridge 单例）──
@@ -446,24 +527,40 @@ export const AppStoreProvider: ParentComponent<{
         setState('llmConfig', { ...DEFAULT_LLM_CONFIG, ...g.llm });
       }
       if (g.allowedTools?.length) {
-        // 用户已有自定义配置，直接使用
-        setState('allowedTools', g.allowedTools);
+        // 迁移：确保新增的默认工具被补充到已有配置中
+        const missing = DEFAULT_ALLOWED_TOOLS.filter(t => !g.allowedTools!.includes(t));
+        const merged = missing.length ? [...g.allowedTools, ...missing] : g.allowedTools;
+        setState('allowedTools', merged);
+        if (missing.length) {
+          saveGlobalSettings({ ...g, allowedTools: merged }).catch(() => {});
+        }
       } else {
         // 首次启动：使用默认工具列表并持久化
         setState('allowedTools', DEFAULT_ALLOWED_TOOLS);
         saveGlobalSettings({ ...g, allowedTools: DEFAULT_ALLOWED_TOOLS }).catch(() => {});
       }
-      // ★ 启动时一次性后台同步 API Key 到 OpenCode（对齐 OpenWork 设置页模式）
-      // 若 global-settings.yaml 无 llm 配置，回退到 DEFAULT_LLM_CONFIG（预置 DeepSeek Key）
-      const llm = g.llm ?? DEFAULT_LLM_CONFIG;
-      if (llm?.providerID && llm.providerID !== 'custom' && llm?.apiKey && llm.apiKey.length > 4) {
-        setProviderAuth(llm.providerID, llm.apiKey).catch(() => {/* silent */});
-      }
+      // API Key 同步统一由 callAgent / 命令路径的 submitProviderApiKey 守卫处理，
+      // 避免 fire-and-forget 与用户操作竞态导致 refreshProviders({ dispose: true }) 并发。
     }).catch(() => {/* silent */});
   });
 
   // ── 获取当前活跃产品的 workDir ──
   const getWorkDir = () => productStore.activeProduct()?.workDir ?? '';
+
+  // ── Provider auth 同步去重：首次调用必定同步，相同 key 的后续调用跳过 ──
+  // 避免每次发消息都触发 refreshProviders({ dispose: true })
+  let _lastSubmittedProviderAuth = '';
+  const ensureProviderAuth = async () => {
+    const llmCfg = state.llmConfig;
+    if (!llmCfg.providerID || llmCfg.providerID === 'custom' || !llmCfg.apiKey || llmCfg.apiKey.length <= 4) return;
+    const authKey = `${llmCfg.providerID}:${llmCfg.apiKey}`;
+    if (authKey === _lastSubmittedProviderAuth) return;
+    const submit = props.openworkCtx?.submitProviderApiKey;
+    if (submit) {
+      await submit(llmCfg.providerID, llmCfg.apiKey).catch(() => {});
+      _lastSubmittedProviderAuth = authKey;
+    }
+  };
 
   const actions = {
     setRole: (role: Role) => {
@@ -590,12 +687,21 @@ export const AppStoreProvider: ParentComponent<{
       return props.openworkCtx.listAudit(wsId, limit);
     },
 
-    callAgent: (opts: CallAgentOptions) => {
+    // 暴露给命令路径复用
+    ensureProviderAuth,
+
+    callAgent: async (opts: CallAgentOptions) => {
+      // ── 兜底：确保 client 可用（无 workspace 时按需创建）──
+      if (!isClientReady() && props.openworkCtx?.ensureClient) {
+        await props.openworkCtx.ensureClient().catch(() => {});
+      }
+      // ── 兜底：确保 Provider auth 已同步到 OpenCode（首次调用必同步，后续 dedup 跳过）──
+      await ensureProviderAuth();
+
       const workDir = getWorkDir();
       const dir = opts.directory ?? workDir;
       const model = opts.model ?? props.openworkCtx?.selectedModel?.() ?? undefined;
       const owSessionStatusById = props.openworkCtx?.sessionStatusById;
-      const llmCfg = state.llmConfig;
       const currentProductName = productStore.activeProduct()?.name ?? '';
       // 固定住调用时刻的 workspaceId，避免长对话中产品切换导致 session 误删
       const workspaceIdSnapshot = resolvedWorkspaceId();
@@ -606,8 +712,8 @@ export const AppStoreProvider: ParentComponent<{
         ts: new Date().toISOString(),
         title: opts.title,
         product: currentProductName,
-        provider: model?.providerID ?? llmCfg.providerID,
-        model: model?.modelID ?? llmCfg.modelID,
+        provider: model?.providerID ?? state.llmConfig.providerID,
+        model: model?.modelID ?? state.llmConfig.modelID,
         promptLen,
       };
 
@@ -714,6 +820,10 @@ export const AppStoreProvider: ParentComponent<{
       const existing = await props.openworkCtx.resolveWorkspaceByDir(product.workDir).catch(() => null);
       if (existing) {
         setResolvedWorkspaceId(existing);
+        // 打开 workspace 时自动同步共享流程编排配置
+        import('../services/workflow-sync').then(({ syncWorkflowToWorkspace }) => {
+          syncWorkflowToWorkspace(product.workDir).catch(() => {});
+        });
         return existing;
       }
       // 创建新工作区
@@ -722,6 +832,16 @@ export const AppStoreProvider: ParentComponent<{
         setResolvedWorkspaceId(newWsId);
       }
       return newWsId;
+    },
+    // ── Workflow (流程编排) ──
+    loadWorkflowConfig: async () => {
+      const { loadSharedWorkflow } = await import('../services/workflow-sync');
+      return loadSharedWorkflow();
+    },
+    saveWorkflowConfig: async (config: import('../types/settings').WorkflowConfig) => {
+      const { saveAndSyncWorkflow } = await import('../services/workflow-sync');
+      const workDir = getWorkDir();
+      return saveAndSyncWorkflow(config, workDir || undefined);
     },
     scanKnowledgeIndex: async (skillApi: import('../services/knowledge-behavior').SkillApiAdapter) => {
       const workDir = getWorkDir();

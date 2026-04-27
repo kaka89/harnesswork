@@ -29,7 +29,7 @@ export default function ModeSelectPage() {
       prefs.viewMode = 'team';
       localStorage.setItem('xingjing:preferences', JSON.stringify(prefs));
     } catch { /* ignore */ }
-    navigate("/xingjing-solid");
+    navigate("/xingjing");
   };
 
   return (

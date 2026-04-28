@@ -2,16 +2,12 @@ import { useSyncExternalStore } from "react";
 
 import { t, currentLocale } from "../../../i18n";
 import type { StartupPreference, WorkspaceDisplay } from "../../../app/types";
-import { isTauriRuntime } from "../../../app/utils";
+import { isDesktopRuntime } from "../../../app/utils";
 import {
   openworkServerInfo,
   openworkServerRestart,
-  opencodeRouterInfo,
-  orchestratorStatus,
-  type OpenCodeRouterInfo,
   type OpenworkServerInfo,
-  type OrchestratorStatus,
-} from "../../../app/lib/tauri";
+} from "../../../app/lib/desktop";
 import {
   clearOpenworkServerSettings,
   createOpenworkServerClient,
@@ -54,8 +50,6 @@ export type OpenworkServerStoreSnapshot = {
   openworkServerHostInfo: OpenworkServerInfo | null;
   openworkServerDiagnostics: OpenworkServerDiagnostics | null;
   openworkReconnectBusy: boolean;
-  opencodeRouterInfoState: OpenCodeRouterInfo | null;
-  orchestratorStatusState: OrchestratorStatus | null;
   openworkAuditEntries: OpenworkAuditEntry[];
   openworkAuditStatus: "idle" | "loading" | "error";
   openworkAuditError: string | null;
@@ -87,8 +81,6 @@ type MutableState = {
   openworkServerHostInfoReady: boolean;
   openworkServerDiagnostics: OpenworkServerDiagnostics | null;
   openworkReconnectBusy: boolean;
-  opencodeRouterInfoState: OpenCodeRouterInfo | null;
-  orchestratorStatusState: OrchestratorStatus | null;
   openworkAuditEntries: OpenworkAuditEntry[];
   openworkAuditStatus: "idle" | "loading" | "error";
   openworkAuditError: string | null;
@@ -121,11 +113,9 @@ export function createOpenworkServerStore(options: CreateOpenworkServerStoreOpti
     openworkServerCapabilities: null,
     openworkServerCheckedAt: null,
     openworkServerHostInfo: null,
-    openworkServerHostInfoReady: !isTauriRuntime(),
+    openworkServerHostInfoReady: !isDesktopRuntime(),
     openworkServerDiagnostics: null,
     openworkReconnectBusy: false,
-    opencodeRouterInfoState: null,
-    orchestratorStatusState: null,
     openworkAuditEntries: [],
     openworkAuditStatus: "idle",
     openworkAuditError: null,
@@ -228,8 +218,6 @@ export function createOpenworkServerStore(options: CreateOpenworkServerStoreOpti
       openworkServerHostInfo: state.openworkServerHostInfo,
       openworkServerDiagnostics: state.openworkServerDiagnostics,
       openworkReconnectBusy: state.openworkReconnectBusy,
-      opencodeRouterInfoState: state.opencodeRouterInfoState,
-      orchestratorStatusState: state.orchestratorStatusState,
       openworkAuditEntries: state.openworkAuditEntries,
       openworkAuditStatus: state.openworkAuditStatus,
       openworkAuditError: state.openworkAuditError,
@@ -267,13 +255,13 @@ export function createOpenworkServerStore(options: CreateOpenworkServerStoreOpti
   };
 
   const shouldWaitForLocalHostInfo = () =>
-    isTauriRuntime() &&
+    isDesktopRuntime() &&
     options.startupPreference() !== "server" &&
     !state.openworkServerHostInfoReady;
 
   const shouldRetryStartupCheck = (status: OpenworkServerStatus) =>
     status !== "connected" &&
-    isTauriRuntime() &&
+    isDesktopRuntime() &&
     options.startupPreference() !== "server" &&
     Date.now() - bootStartedAt < 5_000;
 
@@ -396,7 +384,7 @@ export function createOpenworkServerStore(options: CreateOpenworkServerStoreOpti
     refreshSnapshot();
     emitChange();
 
-    if (!isTauriRuntime()) return;
+    if (!isDesktopRuntime()) return;
     const port = state.openworkServerHostInfo?.port;
     if (!port) return;
     if (state.openworkServerSettings.portOverride === port) return;
@@ -421,14 +409,20 @@ export function createOpenworkServerStore(options: CreateOpenworkServerStoreOpti
   };
 
   const start = () => {
-    if (started || disposed || typeof window === "undefined") return;
+    if (typeof window === "undefined") return;
+    if (started) return;
+    // Allow restart after a prior dispose() (React 18 StrictMode double-mounts
+    // each effect in dev: mount → dispose → re-mount). If we early-return when
+    // `disposed` is true, the real mount never arms polling and the UI stays
+    // on stale/empty state forever.
+    disposed = false;
     started = true;
 
     syncFromOptions();
     queueHealthCheck(0);
 
     const refreshHostInfo = () => {
-      if (!isTauriRuntime()) return;
+      if (!isDesktopRuntime()) return;
       if (!options.documentVisible()) return;
       void (async () => {
         try {
@@ -476,46 +470,6 @@ export function createOpenworkServerStore(options: CreateOpenworkServerStoreOpti
     };
     refreshDiagnostics();
     startInterval("diagnostics", refreshDiagnostics, 10_000);
-
-    const refreshRouterInfo = () => {
-      if (!isTauriRuntime()) return;
-      if (!options.documentVisible()) return;
-      if (!options.developerMode()) {
-        setStateField("opencodeRouterInfoState", null);
-        return;
-      }
-
-      void (async () => {
-        try {
-          const info = await opencodeRouterInfo();
-          if (!disposed) setStateField("opencodeRouterInfoState", info);
-        } catch {
-          if (!disposed) setStateField("opencodeRouterInfoState", null);
-        }
-      })();
-    };
-    refreshRouterInfo();
-    startInterval("router", refreshRouterInfo, 10_000);
-
-    const refreshOrchestratorStatus = () => {
-      if (!isTauriRuntime()) return;
-      if (!options.documentVisible()) return;
-      if (!options.developerMode()) {
-        setStateField("orchestratorStatusState", null);
-        return;
-      }
-
-      void (async () => {
-        try {
-          const status = await orchestratorStatus();
-          if (!disposed) setStateField("orchestratorStatusState", status);
-        } catch {
-          if (!disposed) setStateField("orchestratorStatusState", null);
-        }
-      })();
-    };
-    refreshOrchestratorStatus();
-    startInterval("orchestrator", refreshOrchestratorStatus, 10_000);
 
     const refreshDevtoolsWorkspace = () => {
       if (!options.documentVisible()) return;
@@ -632,7 +586,7 @@ export function createOpenworkServerStore(options: CreateOpenworkServerStoreOpti
     }));
 
     const ok = result.status === "connected" || result.status === "limited";
-    if (ok && !isTauriRuntime()) {
+    if (ok && !isDesktopRuntime()) {
       const active = options.selectedWorkspaceDisplay();
       const shouldAttach =
         !options.activeClient() ||
@@ -656,7 +610,7 @@ export function createOpenworkServerStore(options: CreateOpenworkServerStoreOpti
 
     try {
       let hostInfo = state.openworkServerHostInfo;
-      if (isTauriRuntime()) {
+      if (isDesktopRuntime()) {
         try {
           hostInfo = await openworkServerInfo();
           mutateState((current) => ({ ...current, openworkServerHostInfo: hostInfo }));
@@ -718,7 +672,7 @@ export function createOpenworkServerStore(options: CreateOpenworkServerStoreOpti
       }
     }
 
-    if (!isTauriRuntime()) return null;
+    if (!isDesktopRuntime()) return null;
 
     try {
       hostInfo = await openworkServerRestart({
@@ -761,7 +715,7 @@ export function createOpenworkServerStore(options: CreateOpenworkServerStoreOpti
     updateOpenworkServerSettings(next);
 
     try {
-      if (isTauriRuntime() && options.selectedWorkspaceDisplay().workspaceType === "local") {
+      if (isDesktopRuntime() && options.selectedWorkspaceDisplay().workspaceType === "local") {
         const restarted = await options.restartLocalServer();
         if (!restarted) {
           throw new Error(t("app.error_restart_local_worker", currentLocale()));

@@ -1,5 +1,5 @@
 /** @jsxImportSource react */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
 
 import { SUGGESTED_PLUGINS } from "../../app/constants";
@@ -7,7 +7,6 @@ import { createClient } from "../../app/lib/opencode";
 import {
   buildOpenworkWorkspaceBaseUrl,
   createOpenworkServerClient,
-  normalizeOpenworkServerUrl,
   readOpenworkServerSettings,
   type OpenworkServerCapabilities,
   type OpenworkServerClient,
@@ -24,7 +23,6 @@ import ConnectionsModals from "../domains/connections/modals";
 import { GeneralSettingsView } from "../domains/settings/pages/general-view";
 import { AdvancedView } from "../domains/settings/pages/advanced-view";
 import { AppearanceView } from "../domains/settings/pages/appearance-view";
-import { AutomationsView } from "../domains/settings/pages/automations-view";
 import { DebugView } from "../domains/settings/pages/debug-view";
 import { DenView } from "../domains/settings/pages/den-view";
 import { ExtensionsView } from "../domains/settings/pages/extensions-view";
@@ -35,7 +33,6 @@ import { UpdatesView } from "../domains/settings/pages/updates-view";
 import { useDebugViewModel } from "../domains/settings/state/debug-view-model";
 import { useBootState } from "./boot-state";
 import { SettingsShell } from "../domains/settings/shell/settings-shell";
-import { createAutomationsStore, useAutomationsStoreSnapshot } from "../domains/settings/state/automations-store";
 import { createExtensionsStore, useExtensionsStoreSnapshot } from "../domains/settings/state/extensions-store";
 import { usePlatform } from "../kernel/platform";
 import { useLocal } from "../kernel/local-provider";
@@ -46,7 +43,6 @@ import {
   useWorkspaceShellLayout,
 } from "./workspace-shell-layout";
 import {
-  openworkServerInfo,
   pickDirectory,
   resolveWorkspaceListSelectedId,
   workspaceBootstrap,
@@ -55,14 +51,19 @@ import {
   workspaceSetRuntimeActive,
   workspaceSetSelected,
   type WorkspaceInfo,
-} from "../../app/lib/tauri";
+} from "../../app/lib/desktop";
 import { isDesktopProviderBlocked } from "../../app/cloud/desktop-app-restrictions";
 import { useCheckDesktopRestriction } from "../domains/cloud/desktop-config-provider";
 import { useCloudProviderAutoSync } from "../domains/cloud/use-cloud-provider-auto-sync";
-import { isMacPlatform, isTauriRuntime, normalizeDirectoryPath } from "../../app/utils";
+import { isDesktopRuntime, isMacPlatform, normalizeDirectoryPath, safeStringify } from "../../app/utils";
 import { CreateWorkspaceModal } from "../domains/workspace/create-workspace-modal";
 import { ModelPickerModal } from "../domains/session/modals/model-picker-modal";
 import type { ModelOption, ModelRef } from "../../app/types";
+import { recordInspectorEvent } from "./app-inspector";
+import { ensureDesktopLocalOpenworkConnection } from "./desktop-local-openwork";
+import { resolveOpenworkConnection } from "./openwork-connection";
+import { abortSessionSafe } from "../../app/lib/opencode-session";
+import { useReloadCoordinator } from "./reload-coordinator";
 
 type RouteWorkspace = OpenworkWorkspaceInfo & {
   displayNameResolved: string;
@@ -79,30 +80,103 @@ function mapDesktopWorkspace(workspace: WorkspaceInfo): RouteWorkspace {
   };
 }
 
+function describeRouteError(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  const serialized = safeStringify(error);
+  return serialized && serialized !== "{}" ? serialized : t("app.unknown_error");
+}
+
+function mergeRouteWorkspaces(
+  serverWorkspaces: OpenworkWorkspaceInfo[],
+  desktopWorkspaces: RouteWorkspace[],
+): RouteWorkspace[] {
+  const desktopById = new Map(desktopWorkspaces.map((workspace) => [workspace.id, workspace]));
+  const desktopByPath = new Map(
+    desktopWorkspaces
+      .map((workspace) => [normalizeDirectoryPath(workspace.path ?? ""), workspace] as const)
+      .filter(([path]) => path.length > 0),
+  );
+
+  const mergedServer = serverWorkspaces.map((workspace) => {
+    const match =
+      desktopById.get(workspace.id) ??
+      desktopByPath.get(normalizeDirectoryPath(workspace.path ?? ""));
+    const merged = match
+      ? {
+          ...workspace,
+          displayName: workspace.displayName?.trim()
+            ? workspace.displayName
+            : match.displayName,
+          name: match.name?.trim() ? match.name : workspace.name,
+        }
+      : workspace;
+    return {
+      ...merged,
+      displayNameResolved: workspaceLabel(merged),
+    };
+  });
+
+  const mergedIds = new Set(mergedServer.map((workspace) => workspace.id));
+  const mergedPaths = new Set(
+    mergedServer
+      .map((workspace) => normalizeDirectoryPath(workspace.path ?? ""))
+      .filter((path) => path.length > 0),
+  );
+
+  const missingDesktop = desktopWorkspaces.filter((workspace) => {
+    if (mergedIds.has(workspace.id)) return false;
+    const normalizedPath = normalizeDirectoryPath(workspace.path ?? "");
+    if (normalizedPath && mergedPaths.has(normalizedPath)) return false;
+    return true;
+  });
+
+  return [...mergedServer, ...missingDesktop];
+}
+
+function reconcileSelectedWorkspaceId(
+  currentId: string,
+  serverList: { activeId?: string | null },
+  desktopList: Awaited<ReturnType<typeof workspaceBootstrap>> | null,
+  workspaces: RouteWorkspace[],
+) {
+  const current = currentId.trim();
+  const serverIds = new Set(workspaces.map((workspace) => workspace.id));
+  if (current && serverIds.has(current)) return current;
+
+  const desktopSelectedId = resolveWorkspaceListSelectedId(desktopList);
+  const desktopSelected = desktopSelectedId
+    ? desktopList?.workspaces?.find((workspace) => workspace.id === desktopSelectedId)
+    : null;
+  const currentDesktop = current
+    ? desktopList?.workspaces?.find((workspace) => workspace.id === current)
+    : null;
+  const selectedPath = normalizeDirectoryPath((currentDesktop ?? desktopSelected)?.path ?? "");
+
+  if (selectedPath) {
+    const pathMatch = workspaces.find(
+      (workspace) => normalizeDirectoryPath(workspace.path ?? "") === selectedPath,
+    );
+    if (pathMatch) return pathMatch.id;
+  }
+
+  return serverList.activeId?.trim() || desktopSelectedId || workspaces[0]?.id || "";
+}
+
 function folderNameFromPath(path: string) {
   const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
   const parts = normalized.split("/").filter(Boolean);
   return parts[parts.length - 1] ?? "workspace";
 }
 
-async function resolveRouteOpenworkConnection() {
-  const settings = readOpenworkServerSettings();
-  let normalizedBaseUrl = normalizeOpenworkServerUrl(settings.urlOverride ?? "") ?? "";
-  let resolvedToken = settings.token?.trim() ?? "";
-
-  if ((!normalizedBaseUrl || !resolvedToken) && isTauriRuntime()) {
-    try {
-      const info = await openworkServerInfo();
-      normalizedBaseUrl =
-        normalizeOpenworkServerUrl(info.connectUrl ?? info.baseUrl ?? info.lanUrl ?? info.mdnsUrl ?? "") ??
-        normalizedBaseUrl;
-      resolvedToken = info.ownerToken?.trim() || info.clientToken?.trim() || resolvedToken;
-    } catch {
-      // ignore and fall back to stored settings only
-    }
+function isLoopbackServerUrl(raw: string) {
+  try {
+    const parsed = new URL(raw);
+    return parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost" || parsed.hostname === "::1";
+  } catch {
+    return false;
   }
-
-  return { normalizedBaseUrl, resolvedToken };
 }
 
 type PersistedThemeMode = "light" | "dark" | "system";
@@ -135,6 +209,14 @@ function toSessionGroups(
   }));
 }
 
+function isActiveSessionStatus(status: unknown) {
+  return status === "running" || status === "retry" || status === "busy";
+}
+
+function getSessionStatus(session: any) {
+  return session?.status ?? session?.state ?? session?.runStatus ?? null;
+}
+
 function parseSettingsPath(pathname: string): {
   tab: SettingsTab;
   redirectPath: string | null;
@@ -149,9 +231,7 @@ function parseSettingsPath(pathname: string): {
   switch (head) {
     case "general":
     case "den":
-    case "automations":
     case "skills":
-    case "messaging":
     case "advanced":
     case "appearance":
     case "updates":
@@ -219,6 +299,7 @@ export function SettingsRoute() {
   const local = useLocal();
   const platform = usePlatform();
   const checkDesktopRestriction = useCheckDesktopRestriction();
+  const reloadCoordinator = useReloadCoordinator();
   const route = parseSettingsPath(location.pathname);
 
   const [loading, setLoading] = useState(true);
@@ -233,6 +314,8 @@ export function SettingsRoute() {
   const [busy, setBusy] = useState(false);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
   const [routeError, setRouteError] = useState<string | null>(null);
+  const workspacesRef = useRef<RouteWorkspace[]>([]);
+  const reconnectAttemptedWorkspaceIdRef = useRef("");
   const [providers, setProviders] = useState<ProviderListItem[]>([]);
   const [providerDefaults, setProviderDefaults] = useState<Record<string, string>>({});
   const [providerConnectedIds, setProviderConnectedIds] = useState<string[]>([]);
@@ -316,6 +399,59 @@ export function SettingsRoute() {
     developerMode,
   };
 
+  const activeReloadBlockingSessions = useMemo(
+    () =>
+      Object.values(sessionsByWorkspaceId)
+        .flat()
+        .filter((session) => isActiveSessionStatus(getSessionStatus(session)))
+        .map((session: any) => ({
+          id: String(session?.id ?? ""),
+          title:
+            String(session?.title ?? session?.slug ?? session?.id ?? "").trim() ||
+            t("session.untitled"),
+        }))
+        .filter((session) => session.id.length > 0),
+    [sessionsByWorkspaceId],
+  );
+
+  const reloadWorkspaceEngineFromUi = useCallback(async () => {
+    const workspaceId = routeStateRef.current.runtimeWorkspaceId?.trim() || selectedWorkspaceId.trim();
+    if (!openworkClient || !workspaceId) {
+      setRouteError(t("app.error_connect_first"));
+      return false;
+    }
+
+    await openworkClient.reloadEngine(workspaceId);
+
+    try {
+      window.dispatchEvent(new CustomEvent("openwork-server-settings-changed"));
+    } catch {
+      // ignore browser event dispatch failures
+    }
+
+    return true;
+  }, [openworkClient, selectedWorkspaceId]);
+
+  useEffect(() => {
+    return reloadCoordinator.registerWorkspaceReloadControls({
+      canReloadWorkspaceEngine: () => Boolean(openworkClient && (selectedWorkspace?.id || selectedWorkspaceId)),
+      reloadWorkspaceEngine: reloadWorkspaceEngineFromUi,
+      activeSessions: () => activeReloadBlockingSessions,
+      stopSession: async (sessionId) => {
+        if (!activeClient) return;
+        await abortSessionSafe(activeClient, sessionId);
+      },
+    });
+  }, [
+    activeClient,
+    activeReloadBlockingSessions,
+    openworkClient,
+    reloadCoordinator,
+    reloadWorkspaceEngineFromUi,
+    selectedWorkspace?.id,
+    selectedWorkspaceId,
+  ]);
+
   const shellLayout = useWorkspaceShellLayout({
     expandedRightWidth: 320,
     defaultLeftWidth: DEFAULT_WORKSPACE_LEFT_SIDEBAR_WIDTH,
@@ -327,11 +463,13 @@ export function SettingsRoute() {
     () =>
       createOpenworkServerStore({
         startupPreference: () => {
-          // In Tauri desktop mode, prefer the embedded host server (hostInfo.baseUrl)
-          // unless the user has explicitly pinned a remote urlOverride.
-          if (!isTauriRuntime()) return "server";
+          // In desktop mode, loopback URLs are ephemeral local runtime details.
+          // Only non-loopback stored URLs indicate an explicit remote/manual
+          // server connection preference.
+          if (!isDesktopRuntime()) return "server";
           const stored = readOpenworkServerSettings();
-          return stored.urlOverride?.trim() ? "server" : "local";
+          const urlOverride = stored.urlOverride?.trim() ?? "";
+          return urlOverride && !isLoopbackServerUrl(urlOverride) ? "server" : "local";
         },
         documentVisible: () => typeof document === "undefined" || document.visibilityState === "visible",
         developerMode: () => routeStateRef.current.developerMode,
@@ -355,8 +493,9 @@ export function SettingsRoute() {
         openworkServer: openworkServerStore,
         runtimeWorkspaceId: () => routeStateRef.current.runtimeWorkspaceId,
         developerMode: () => routeStateRef.current.developerMode,
+        markReloadRequired: reloadCoordinator.markReloadRequired,
       }),
-    [openworkServerStore],
+    [openworkServerStore, reloadCoordinator.markReloadRequired],
   );
   const providerAuthStore = useMemo(
     () =>
@@ -376,9 +515,14 @@ export function SettingsRoute() {
         setDisabledProviders,
         markOpencodeConfigReloadRequired: () => {
           setConfigActionStatus(t("settings.config_updated"));
+          reloadCoordinator.markReloadRequired("config", {
+            type: "config",
+            name: "opencode.json",
+            action: "updated",
+          });
         },
       }),
-    [openworkServerStore],
+    [openworkServerStore, reloadCoordinator.markReloadRequired],
   );
   const extensionsStore = useMemo(
     () =>
@@ -394,26 +538,14 @@ export function SettingsRoute() {
         setBusyLabel,
         setBusyStartedAt: () => {},
         setError: setRouteError,
+        markReloadRequired: reloadCoordinator.markReloadRequired,
       }),
-    [openworkServerStore],
+    [openworkServerStore, reloadCoordinator.markReloadRequired],
   );
-  const automationsStore = useMemo(
-    () =>
-      createAutomationsStore({
-        selectedWorkspaceId: () => routeStateRef.current.selectedWorkspaceId,
-        selectedWorkspaceRoot: () => routeStateRef.current.selectedWorkspaceRoot,
-        runtimeWorkspaceId: () => routeStateRef.current.runtimeWorkspaceId,
-        openworkServer: openworkServerStore,
-        schedulerPluginInstalled: () => false,
-      }),
-    [openworkServerStore],
-  );
-
   const openworkServerSnapshot = useOpenworkServerStoreSnapshot(openworkServerStore);
   const connectionsSnapshot = useConnectionsStoreSnapshot(connectionsStore);
   const providerAuthSnapshot = useProviderAuthStoreSnapshot(providerAuthStore);
   useExtensionsStoreSnapshot(extensionsStore);
-  useAutomationsStoreSnapshot(automationsStore);
 
   const debugViewProps = useDebugViewModel({
     developerMode,
@@ -438,9 +570,12 @@ export function SettingsRoute() {
   const opencodeClient = useMemo(
     () =>
       opencodeBaseUrl && token
-        ? createClient(opencodeBaseUrl, undefined, { token, mode: "openwork" })
+        ? createClient(opencodeBaseUrl, selectedWorkspaceRoot || undefined, {
+            token,
+            mode: "openwork",
+          })
         : null,
-    [opencodeBaseUrl, token],
+    [opencodeBaseUrl, selectedWorkspaceRoot, token],
   );
 
   useEffect(() => {
@@ -520,10 +655,25 @@ export function SettingsRoute() {
   const refreshRouteState = useMemo(() => async () => {
     setLoading(true);
     setRouteError(null);
+    let desktopList = null as Awaited<ReturnType<typeof workspaceBootstrap>> | null;
+    let desktopWorkspaces = workspacesRef.current;
     try {
-      const desktopList = isTauriRuntime() ? await workspaceBootstrap().catch(() => null) : null;
-      const desktopWorkspaces = (desktopList?.workspaces ?? []).map(mapDesktopWorkspace);
-      const { normalizedBaseUrl, resolvedToken } = await resolveRouteOpenworkConnection();
+      if (isDesktopRuntime()) {
+        try {
+          desktopList = await workspaceBootstrap();
+          desktopWorkspaces = (desktopList.workspaces ?? []).map(mapDesktopWorkspace);
+        } catch (error) {
+          const message = describeRouteError(error);
+          console.error("[settings-route] workspaceBootstrap failed", error);
+          recordInspectorEvent("route.workspace_bootstrap.error", {
+            route: "settings",
+            message,
+            preservedWorkspaceCount: workspacesRef.current.length,
+          });
+          desktopWorkspaces = workspacesRef.current;
+        }
+      }
+      const { normalizedBaseUrl, resolvedToken } = await resolveOpenworkConnection();
 
       if (!normalizedBaseUrl || !resolvedToken) {
         setOpenworkClient(null);
@@ -538,21 +688,7 @@ export function SettingsRoute() {
 
       const client = createOpenworkServerClient({ baseUrl: normalizedBaseUrl, token: resolvedToken });
       const list = await client.listWorkspaces();
-      const serverWorkspaces = list.items.map((workspace) => ({
-        ...workspace,
-        displayNameResolved: workspaceLabel(workspace),
-      }));
-      // Mirror Solid's `applyServerLocalWorkspaces`: prefer server-registered
-      // local workspaces (their IDs are what subsequent API calls need) and
-      // append any remote entries from the desktop list since the server
-      // doesn't track remotes.
-      const desktopRemotes = desktopWorkspaces.filter(
-        (workspace) => workspace.workspaceType === "remote",
-      );
-      const nextWorkspaces =
-        serverWorkspaces.length > 0
-          ? [...serverWorkspaces, ...desktopRemotes]
-          : desktopWorkspaces;
+      const nextWorkspaces = mergeRouteWorkspaces(list.items, desktopWorkspaces);
       const sessionEntries = await Promise.all(
         nextWorkspaces.map(async (workspace) => {
           try {
@@ -580,9 +716,22 @@ export function SettingsRoute() {
       setWorkspaces(nextWorkspaces);
       setSessionsByWorkspaceId(Object.fromEntries(sessionEntries.map((entry) => [entry.workspaceId, entry.sessions])));
       setErrorsByWorkspaceId(Object.fromEntries(sessionEntries.map((entry) => [entry.workspaceId, entry.error])));
-      setSelectedWorkspaceId((current) => current || resolveWorkspaceListSelectedId(desktopList) || list.activeId?.trim() || nextWorkspaces[0]?.id || "");
+      setSelectedWorkspaceId((current) =>
+        reconcileSelectedWorkspaceId(current, list, desktopList, nextWorkspaces),
+      );
     } catch (error) {
-      setRouteError(error instanceof Error ? error.message : t("app.unknown_error"));
+      const message = describeRouteError(error);
+      console.error("[settings-route] refreshRouteState failed", error);
+      recordInspectorEvent("route.refresh.error", {
+        route: "settings",
+        message,
+        preservedWorkspaceCount: desktopWorkspaces.length,
+      });
+      setRouteError(message);
+      if (desktopWorkspaces.length > 0) {
+        setWorkspaces(desktopWorkspaces);
+        setSelectedWorkspaceId((current) => current || resolveWorkspaceListSelectedId(desktopList) || desktopWorkspaces[0]?.id || "");
+      }
     } finally {
       setLoading(false);
       // Settings can be the first route a user lands on (direct link, deep
@@ -591,6 +740,32 @@ export function SettingsRoute() {
       markBootRouteReady();
     }
   }, [markBootRouteReady]);
+
+  useEffect(() => {
+    workspacesRef.current = workspaces;
+  }, [workspaces]);
+
+  useEffect(() => {
+    if (!isDesktopRuntime()) return;
+    if (loading) return;
+    if (openworkClient) {
+      reconnectAttemptedWorkspaceIdRef.current = "";
+      return;
+    }
+    if (!selectedWorkspace || selectedWorkspace.workspaceType !== "local") return;
+    const workspaceId = selectedWorkspace.id?.trim() ?? "";
+    if (!workspaceId || reconnectAttemptedWorkspaceIdRef.current === workspaceId) return;
+    reconnectAttemptedWorkspaceIdRef.current = workspaceId;
+
+    void ensureDesktopLocalOpenworkConnection({
+      route: "settings",
+      workspace: selectedWorkspace,
+      allWorkspaces: workspaces,
+    }).catch((error) => {
+      const message = error instanceof Error ? error.message : describeRouteError(error);
+      setRouteError(message);
+    });
+  }, [loading, openworkClient, selectedWorkspace, workspaces]);
 
   useEffect(() => {
     void refreshRouteState();
@@ -608,16 +783,14 @@ export function SettingsRoute() {
     connectionsStore.start();
     providerAuthStore.start();
     extensionsStore.start();
-    automationsStore.start();
 
     return () => {
-      automationsStore.dispose();
       extensionsStore.dispose();
       providerAuthStore.dispose();
       connectionsStore.dispose();
       openworkServerStore.dispose();
     };
-  }, [automationsStore, connectionsStore, extensionsStore, openworkServerStore, providerAuthStore]);
+  }, [connectionsStore, extensionsStore, openworkServerStore, providerAuthStore]);
 
   // Periodically refresh cloud providers from Den while signed in (dev
   // #1509 "auto-sync cloud providers"). Mounted here because the settings
@@ -630,10 +803,8 @@ export function SettingsRoute() {
     connectionsStore.syncFromOptions();
     providerAuthStore.syncFromOptions();
     extensionsStore.syncFromOptions();
-    automationsStore.syncFromOptions();
   }, [
     activeClient,
-    automationsStore,
     connectionsStore,
     extensionsStore,
     openworkServerStore,
@@ -644,7 +815,7 @@ export function SettingsRoute() {
   ]);
 
   useEffect(() => {
-    if (!opencodeClient) {
+    if (!activeClient) {
       setProviders([]);
       setProviderDefaults({});
       setProviderConnectedIds([]);
@@ -653,7 +824,7 @@ export function SettingsRoute() {
     }
     void providerAuthStore.refreshProviders();
     void connectionsStore.refreshMcpServers();
-  }, [connectionsStore, opencodeClient, providerAuthStore, selectedWorkspace?.id]);
+  }, [activeClient, connectionsStore, providerAuthStore, selectedWorkspace?.id]);
 
   if (route.redirectPath) {
     return <Navigate to={route.redirectPath} replace />;
@@ -674,7 +845,10 @@ export function SettingsRoute() {
     ? "bg-green-7/10 text-green-11 border-green-7/20"
     : "bg-gray-4/60 text-gray-11 border-gray-7/50";
   const providerSummary = providerConnectedIds.length > 0
-    ? t("settings.connected_providers_count", undefined, { count: providerConnectedIds.length })
+    ? t("status.providers_connected", undefined, {
+      count: providerConnectedIds.length,
+      plural: providerConnectedIds.length === 1 ? "" : "s",
+    })
     : t("settings.no_providers_connected");
   const connectedProviders = providers
     .filter((provider) => providerConnectedIds.includes(provider.id))
@@ -691,7 +865,6 @@ export function SettingsRoute() {
         mcp: { read: true, write: true },
         commands: { read: true, write: true },
         config: { read: true, write: true },
-        proxy: { opencode: true, opencodeRouter: false },
       }
     : null;
 
@@ -704,15 +877,26 @@ export function SettingsRoute() {
     if (!folder) return;
     setCreateWorkspaceBusy(true);
     try {
+      const workspaceName = folderNameFromPath(folder);
       const list = await workspaceCreate({
         folderPath: folder,
-        name: folderNameFromPath(folder),
+        name: workspaceName,
         preset,
       });
       const createdId = resolveWorkspaceListSelectedId(list) || list.workspaces[list.workspaces.length - 1]?.id || "";
       if (createdId) {
         await workspaceSetSelected(createdId).catch(() => undefined);
         await workspaceSetRuntimeActive(createdId).catch(() => undefined);
+      }
+      // Register the workspace with the running openwork-server so
+      // listWorkspaces() reflects it immediately. Without this the UI only
+      // picks up the new workspace after an app restart (because the server
+      // is launched with a fixed --workspace list at boot and the bridge
+      // write only updates desktop-side state).
+      if (openworkClient) {
+        await openworkClient
+          .createLocalWorkspace({ folderPath: folder, name: workspaceName, preset })
+          .catch(() => undefined);
       }
       setCreateWorkspaceOpen(false);
       await refreshRouteState();
@@ -811,27 +995,6 @@ export function SettingsRoute() {
             onSendFeedback={() => platform.openLink("https://openworklabs.com/docs")}
             onJoinDiscord={() => platform.openLink("https://discord.gg/VEhNQXxYMB")}
             onReportIssue={() => platform.openLink("https://github.com/different-ai/openwork/issues/new?template=bug.yml")}
-          />
-        );
-      case "automations":
-        return (
-          <AutomationsView
-            automations={automationsStore}
-            busy={busy}
-            selectedWorkspaceRoot={selectedWorkspaceRoot}
-            createSessionAndOpen={async () => undefined}
-            newTaskDisabled={!opencodeClient}
-            schedulerInstalled={false}
-            canEditPlugins={!isRemoteWorkspace}
-            addPlugin={async () => {
-              setRouteError("Scheduler plugin install is not wired into the React settings route yet.");
-            }}
-            reloadWorkspaceEngine={async () => {
-              setRouteError("Workspace reload is not wired into the React settings route yet.");
-            }}
-            reloadBusy={false}
-            canReloadWorkspace={false}
-            openLink={(url) => platform.openLink(url)}
           />
         );
       case "skills":
@@ -954,10 +1117,8 @@ export function SettingsRoute() {
               updateOpenworkServerSettings: openworkServerStore.updateOpenworkServerSettings,
               resetOpenworkServerSettings: openworkServerStore.resetOpenworkServerSettings,
               testOpenworkServerConnection: openworkServerStore.testOpenworkServerConnection,
-              canReloadWorkspace: false,
-              reloadWorkspaceEngine: async () => {
-                setRouteError("Workspace reload is not wired into the React settings route yet.");
-              },
+              canReloadWorkspace: reloadCoordinator.canReloadWorkspaceEngine,
+              reloadWorkspaceEngine: reloadCoordinator.reloadWorkspaceEngine,
               reloadBusy: false,
               reloadError: routeError,
               developerMode,
@@ -1002,7 +1163,7 @@ export function SettingsRoute() {
             onReleaseChannelChange={(next) =>
               local.setPrefs((previous) => ({ ...previous, releaseChannel: next }))
             }
-            alphaChannelSupported={isTauriRuntime() && isMacPlatform()}
+            alphaChannelSupported={isDesktopRuntime() && isMacPlatform()}
           />
         );
       case "recovery":
@@ -1033,13 +1194,6 @@ export function SettingsRoute() {
             onCleanupOpenworkDockerContainers={() => {
               setRouteError("Docker cleanup is not wired into the React settings route yet.");
             }}
-          />
-        );
-      case "messaging":
-        return (
-          <PlaceholderSettingsView
-            title="Messaging settings are not fully ported"
-            detail="The React settings route replaces the Solid bridge for the ported settings surfaces, but messaging still depends on app state that has not been moved over yet."
           />
         );
       case "debug":
@@ -1129,11 +1283,14 @@ export function SettingsRoute() {
         client={activeClient}
         projectDir={selectedWorkspaceRoot}
         language={currentLocale() as Language}
-        reloadBlocked={false}
-        activeSessions={[]}
+        reloadBlocked={activeReloadBlockingSessions.length > 0}
+        activeSessions={activeReloadBlockingSessions}
         isRemoteWorkspace={selectedWorkspace?.workspaceType === "remote"}
-        onForceStopSession={() => undefined}
-        onReloadEngine={() => undefined}
+        onForceStopSession={(sessionId) => {
+          if (!activeClient) return undefined;
+          return abortSessionSafe(activeClient, sessionId);
+        }}
+        onReloadEngine={reloadCoordinator.reloadWorkspaceEngine}
         modalState={{
           mcpAuthModalOpen: connectionsSnapshot.mcpAuthModalOpen,
           mcpAuthEntry: connectionsSnapshot.mcpAuthEntry,

@@ -5,12 +5,13 @@ import {
   engineInfo,
   engineStart,
   openworkServerInfo,
-  orchestratorWorkspaceActivate,
   resolveWorkspaceListSelectedId,
+  runtimeBootstrap,
   workspaceBootstrap,
-} from "../../app/lib/tauri";
+} from "../../app/lib/desktop";
+import { ingestMigrationSnapshotOnElectronBoot } from "../../app/lib/migration";
 import { hydrateOpenworkServerSettingsFromEnv, writeOpenworkServerSettings } from "../../app/lib/openwork-server";
-import { isTauriRuntime, safeStringify } from "../../app/utils";
+import { isDesktopRuntime, isElectronRuntime, safeStringify } from "../../app/utils";
 import { useServer } from "../kernel/server-provider";
 import { useBootState } from "./boot-state";
 
@@ -19,14 +20,28 @@ import { useBootState } from "./boot-state";
 // keeps running across the transient unmount.
 let BOOT_STARTED = false;
 
+function isOpenworkServerReady(info?: {
+  running?: boolean | null;
+  baseUrl?: string | null;
+  ownerToken?: string | null;
+  clientToken?: string | null;
+}) {
+  return Boolean(
+    info?.running === true &&
+      info.baseUrl?.trim() &&
+      (info.ownerToken?.trim() || info.clientToken?.trim()),
+  );
+}
+
 /**
  * On desktop (Tauri) startup:
  *   1) bootstrap the workspace list
  *   2) if a local workspace is selected, restart the embedded OpenWork server
  *   3) start the OpenCode engine pointed at the workspace
- *   4) activate the workspace in the orchestrator
- *   5) persist the resulting base URL + token into local OpenWork settings so the
- *      React routes (session-route / settings-route) see a live `readOpenworkServerSettings()`
+ *   4) activate the workspace on the running OpenWork server
+ *   5) notify React routes that fresh desktop runtime info is available. Electron
+ *      routes read live runtime info directly instead of persisting ephemeral
+ *      localhost ports/tokens into OpenWork settings.
  *
  * Safe to call multiple times — gated by a `didBoot` ref so it runs once per mount.
  */
@@ -35,7 +50,7 @@ export function useDesktopRuntimeBoot() {
   const { setActive } = useServer();
 
   useEffect(() => {
-    if (!isTauriRuntime()) {
+    if (!isDesktopRuntime()) {
       // Web/headless: nothing to spawn, we're instantly "ready".
       markReady();
       return;
@@ -45,6 +60,18 @@ export function useDesktopRuntimeBoot() {
 
     void (async () => {
       try {
+        // On Electron specifically: if the previous Tauri install dropped
+        // a migration snapshot, fold it into localStorage before any of
+        // the boot code reads workspace preferences. Idempotent across
+        // launches (the helper only writes keys that are still empty
+        // and acks the file after ingestion).
+        if (isElectronRuntime()) {
+          const hydrated = await ingestMigrationSnapshotOnElectronBoot();
+          if (hydrated > 0) {
+            // eslint-disable-next-line no-console -- valuable one-time signal
+            console.info(`[migration] hydrated ${hydrated} localStorage keys from Tauri snapshot`);
+          }
+        }
         hydrateOpenworkServerSettingsFromEnv();
 
         setPhase("bootstrapping-workspaces");
@@ -65,6 +92,51 @@ export function useDesktopRuntimeBoot() {
 
         const workspaceRoot = workspace.path?.trim();
         if (!workspaceRoot) {
+          markReady();
+          return;
+        }
+
+        if (isElectronRuntime()) {
+          setPhase("starting-engine", "Starting your workspace");
+          const boot = (await runtimeBootstrap().catch((error) => ({
+            ok: false,
+            error: error instanceof Error ? error.message : safeStringify(error),
+          }))) as {
+            ok?: boolean;
+            skipped?: boolean;
+            error?: string;
+            engine?: { baseUrl?: string | null };
+            openworkServer?: {
+              running?: boolean | null;
+              baseUrl?: string | null;
+              ownerToken?: string | null;
+              clientToken?: string | null;
+              port?: number | null;
+              remoteAccessEnabled?: boolean;
+            };
+          };
+
+          if (boot.ok === false) {
+            setError(boot.error || "Failed to start OpenWork runtime");
+            return;
+          }
+
+          if (!boot.skipped && !isOpenworkServerReady(boot.openworkServer)) {
+            setError("OpenWork server did not finish starting. Please restart OpenWork.");
+            return;
+          }
+
+          if (boot.engine?.baseUrl) {
+            setActive(boot.engine.baseUrl);
+          }
+          const serverInfo = boot.openworkServer;
+          if (serverInfo?.baseUrl) {
+            try {
+              window.dispatchEvent(new CustomEvent("openwork-server-settings-changed"));
+            } catch {
+              /* ignore */
+            }
+          }
           markReady();
           return;
         }
@@ -105,9 +177,8 @@ export function useDesktopRuntimeBoot() {
         }
 
         // SLOW PATH ─────────────────────────────────────────────────────
-        // No running engine. engine_start handles both orchestrator spawn
-        // and openwork-server (re)start with --opencode-base-url attached,
-        // so we don't need a separate openworkServerRestart step.
+        // No running engine. Tauri now mirrors Electron: engine_start boots
+        // openwork-server and lets that server manage OpenCode.
         const localPaths = list.workspaces
           .filter((entry) => entry.workspaceType !== "remote")
           .map((entry) => entry.path?.trim() ?? "")
@@ -117,9 +188,9 @@ export function useDesktopRuntimeBoot() {
           if (!workspacePaths.includes(path)) workspacePaths.push(path);
         }
 
-        setPhase("starting-engine", "Launching the OpenCode engine");
+        setPhase("starting-engine", "Starting your workspace");
         const engineStartResult = await engineStart(workspaceRoot, {
-          runtime: "openwork-orchestrator",
+          runtime: "direct",
           workspacePaths,
         }).catch((error) => {
           console.warn("[desktop-boot] engineStart failed:", error);
@@ -153,14 +224,6 @@ export function useDesktopRuntimeBoot() {
             console.warn("[desktop-boot] post-engineStart openworkServerInfo failed:", error);
           }
         }
-
-        setPhase("activating-workspace", workspace.displayName || workspace.name || workspaceRoot);
-        await orchestratorWorkspaceActivate({
-          workspacePath: workspaceRoot,
-          name: workspace.name ?? workspace.displayName ?? null,
-        }).catch((error) => {
-          console.warn("[desktop-boot] orchestratorWorkspaceActivate failed:", error);
-        });
 
         markReady();
       } catch (error) {

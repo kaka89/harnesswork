@@ -371,7 +371,13 @@ export function XingjingSessionPage(props: SessionPageProps) {
         <div className="flex w-[180px] shrink-0 flex-col border-r border-dls-border bg-white">
           <XingjingNavSidebar
             activeSection={activeSection}
-            onSelect={setActiveSection}
+            onSelect={(section) => {
+              if (section === "settings") {
+                navigate("/settings/general");
+              } else {
+                setActiveSection(section);
+              }
+            }}
             clientConnected={props.clientConnected}
             openworkServerClient={props.openworkServerClient}
             openworkServerStatus={props.openworkServerStatus}

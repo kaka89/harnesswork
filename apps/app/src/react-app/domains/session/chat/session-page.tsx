@@ -1,6 +1,7 @@
 /** @jsxImportSource react */
 import { useEffect, useMemo, useState } from "react";
-import { Check, HardDrive, Loader2, Minimize2, RefreshCcw, Redo2, Shield, Undo2, Zap } from "lucide-react";
+import { Check, ChevronLeft, HardDrive, Loader2, Minimize2, RefreshCcw, Redo2, Shield, Undo2, Zap } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 
 import { t } from "../../../../i18n";
 import { buildOpenworkWorkspaceBaseUrl, type OpenworkServerClient, type OpenworkServerStatus } from "../../../../app/lib/openwork-server";
@@ -194,6 +195,7 @@ function sessionTitleForId(groups: WorkspaceSessionGroup[], id: string | null | 
 }
 
 export function SessionPage(props: SessionPageProps) {
+  const navigate = useNavigate();
   const { leftSidebarWidth, startLeftSidebarResize } = useWorkspaceShellLayout({
     defaultLeftWidth: DEFAULT_WORKSPACE_LEFT_SIDEBAR_WIDTH,
     expandedRightWidth: 280,
@@ -363,6 +365,16 @@ export function SessionPage(props: SessionPageProps) {
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[24px] border border-dls-border bg-dls-surface shadow-[var(--dls-shell-shadow)]">
           <header className="z-10 flex h-12 shrink-0 items-center justify-between border-b border-dls-border bg-dls-surface px-4 md:px-6">
             <div className="flex min-w-0 items-center gap-3">
+              <button
+                type="button"
+                className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-[13px] text-gray-10 transition-colors hover:bg-gray-2/70 hover:text-dls-text"
+                onClick={() => navigate("/mode-select")}
+                title="返回模式选择"
+                aria-label="返回模式选择"
+              >
+                <ChevronLeft size={16} />
+                <span className="hidden text-[12px] lg:inline">返回</span>
+              </button>
               <h1 className="truncate text-[15px] font-semibold text-dls-text">
                 {showWorkspaceSetupEmptyState
                   ? t("session.create_or_connect_workspace")

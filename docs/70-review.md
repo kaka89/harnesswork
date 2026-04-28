@@ -5,6 +5,17 @@
 > 上游：[`50-product-mode.md`](./50-product-mode.md)（反馈数据来源）、[`10-product-shell.md`](./10-product-shell.md)（activeProduct workDir）
 > 下游：无（本模块为终端消费模块，不对外暴露服务）
 
+> **⚠️ v0.12.0 重要变更 — 旧实现已完全移除**：
+> 
+> 本文档描述的 `ReviewPage`、`components/common/echarts.tsx` 等 `apps/app/src/app/xingjing/` 下所有源文件**已完全删除**。
+> 
+> **新集成方案（React 19）**：
+> - 评估模块集成进 `/settings/xingjing/review` tab（扩展 [`SettingsRoute`](file:///Users/umasuo_m3pro/Desktop/startup/xingjing/harnesswork/apps/app/src/react-app/shell/settings-route.tsx)）
+> - 数据来源：本地 `.opencode/docs/metrics.yml`（workspace 文件）
+> - 图表可中就 echarts 或 React 图表库重新实现
+> 
+> **以下内容为 SolidJS v0.11.x 时代评估模块历史设计档案**，可作产品功能设计参考。
+
 ---
 
 ## §1 模块定位与用户价值

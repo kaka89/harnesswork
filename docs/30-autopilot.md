@@ -2,6 +2,23 @@
 
 > 独立版唯一业务主页。定位：**面向 Solo 开发者的 AI 虚拟团队会话入口**。上承 [10 · Shell 路由/布局](./10-product-shell.md) 挂载到 `/solo/autopilot`，下接 [05a · 会话与消息](./05a-openwork-session-message.md)、[05b · Skill/Agent/MCP](./05b-openwork-skill-agent-mcp.md)、[05e · 权限与问题](./05e-openwork-permission-question.md) 的 OpenWork 底座能力，并通过 [06 · OpenWork 桥契约](./06-openwork-bridge-contract.md) 定义的 `useAppStore` / `openworkCtx` 统一注入。
 
+> **⚠️ v0.12.0 重要变更 — 旧实现已完全移除**：
+> 
+> 本文档描述的 `EnhancedComposer`、`AutopilotPage`、`SavedFileList`、`autopilot-executor.ts` 等所有 `apps/app/src/app/xingjing/` 下的源文件**已完全删除**。
+> 
+> **新集成方案（React 19）**：
+> 
+> | 旧功能 | 新方案 |
+> |---|---|
+> | `AutopilotPage`（`/solo/autopilot`） | 直接复用 [`SessionRoute`](file:///Users/umasuo_m3pro/Desktop/startup/xingjing/harnesswork/apps/app/src/react-app/shell/session-route.tsx) 页面 |
+> | `EnhancedComposer` | 扩展 `domains/session/` 的 Composer 组件 |
+> | `@skill:xxx` mention 解析 | `useEffect` hook 在 Composer 中添加 |
+> | `SavedFileList` 侧栏 | 注入 SessionPage 右侧栏 slot |
+> | 产出物检测 | `useEffect` 监听 session 消息中的文件写入事件 |
+> | workspace preset `xingjingMode` | 配置默认 agent/systemPrompt，实例化时应用 |
+> 
+> **以下内容为 SolidJS v0.11.x 时代 Autopilot 模块历史设计档案**，可作产品功能设计参考。
+
 ---
 
 ## §1 模块定位与用户价值

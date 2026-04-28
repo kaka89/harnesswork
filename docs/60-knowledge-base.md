@@ -3,6 +3,18 @@
 > 模块入口：[`pages/solo/knowledge/index.tsx`](file:///Users/umasuo_m3pro/Desktop/startup/xingjing/harnesswork/apps/app/src/app/xingjing/pages/solo/knowledge/index.tsx) · 路由 `/solo/knowledge`
 >
 > 上游：[`10-product-shell.md`](./10-product-shell.md)（产品切换）、[`50-product-mode.md`](./50-product-mode.md)（文档来源之一）、[`40-agent-workshop.md`](./40-agent-workshop.md)（行为知识 = Knowledge Skill）
+
+> **⚠️ v0.12.0 重要变更 — 旧实现已完全移除**：
+> 
+> 本文档描述的 `KnowledgeBasePage`、`knowledge-index.ts`、`knowledge-scanner.ts`、`knowledge-behavior.ts` 等 `apps/app/src/app/xingjing/` 下所有源文件**已完全删除**。
+> 
+> **新集成方案（React 19）**：
+> - 知识库 = workspace 文件在 `.opencode/docs/` 下
+> - 不再有独立的知识索引器；依赖 OpenCode 内置文件级上下文注入（AGENTS.md、opencode.jsonc）
+> - 记忆管理：[`shell/session-memory.ts`](file:///Users/umasuo_m3pro/Desktop/startup/xingjing/harnesswork/apps/app/src/react-app/shell/session-memory.ts)
+> - 文件扩展页面：`/settings/xingjing` tab 下的知识库管理面板
+> 
+> **以下内容为 SolidJS v0.11.x 时代知识库模块历史设计档案**，可作产品功能设计参考。
 > 下游：[`30-autopilot.md`](./30-autopilot.md)（retrieveKnowledge + 跳转 Autopilot）、[`05b-openwork-skill-agent-mcp.md`](./05b-openwork-skill-agent-mcp.md)（Skill API 唯一依赖）、[`05c-openwork-workspace-fileops.md`](./05c-openwork-workspace-fileops.md)（workspace 文件扫描）
 
 ---

@@ -7,7 +7,14 @@
 >
 > 这两套体系**互不感知、各自独立**：平台 `ApprovalService` 不拦截 opencode 内部 permission 流；前端对 opencode permission/question 纯 SDK 透传，不经过 OpenWork 写审批。本文将两者同篇描述，以便读者对比它们的事件结构、持久化、超时、UI、订阅入口。
 >
-> 本篇**不含** xingjing 相关实现，也不含团队版、焦点模式、xingjing-server。
+> 本篇**不含** xingjing 相关实现，也不含团随版、焦点模式、xingjing-server。
+
+> **⚠️ v0.12.0 代码路径迁移注意**：本文档引用的 `apps/app/src/app/context/session.ts`、`apps/app/src/app/context/workspace.ts` 等**已完全移除**。v0.12.0 迁移后对应能力路径：
+> - opencode permission/question 事件处理：`apps/app/src/react-app/domains/session/sync/actions-store.ts`
+> - permission/question UI 模弁：`apps/app/src/react-app/domains/session/modals/question-modal.tsx`
+> - 平台 ApprovalService：`apps/server-v2/src/services/`
+> 
+> 设计逻辑不变，代码锚点行号需应新路径重新定位。迁移完整符号映射见 [./audit-react-migration.md](./audit-react-migration.md)。
 
 ---
 

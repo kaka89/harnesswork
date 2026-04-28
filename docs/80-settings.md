@@ -5,6 +5,18 @@
 > 上游：[`10-product-shell.md`](./10-product-shell.md)（productStore / openworkCtx / themeMode）
 > 下游：[`05b-openwork-skill-agent-mcp.md`](./05b-openwork-skill-agent-mcp.md)（MCP/Skill 注册）、[`05d-openwork-model-provider.md`](./05d-openwork-model-provider.md)（Provider API Key）、[`05f-openwork-settings-persistence.md`](./05f-openwork-settings-persistence.md)（持久化策略）、[`30-autopilot.md`](./30-autopilot.md)（allowedTools 授权）
 
+> **⚠️ v0.12.0 重要变更 — 旧实现已完全移除**：
+> 
+> 本文档描述的 `SettingsPage`（`/settings`）、`file-store.ts`、`types/settings.ts`、`utils/defaults.ts` 等 `apps/app/src/app/xingjing/` 下所有源文件**已完全删除**。
+> 
+> **新集成方案（React 19）**：
+> - 星静设置集成进 OpenWork 原生 `/settings/*` 路由（[`shell/settings-route.tsx`](file:///Users/umasuo_m3pro/Desktop/startup/xingjing/harnesswork/apps/app/src/react-app/shell/settings-route.tsx)）
+> - 新增 `XingjingSettingsPanel` 作为 `/settings/xingjing` tab（扩展 `domains/settings/`）
+> - 全局设置写入 workspace 的 `opencode.jsonc` 以及 OpenWork 中的 LocalProvider
+> - 不再有 `~/.xingjing/global-settings.yaml`；统一使用 OpenWork 设置持久化机制
+> 
+> **以下内容为 SolidJS v0.11.x 时代设置模块历史设计档案**，可作产品功能设计参考。
+
 ---
 
 ## §1 模块定位与用户价值

@@ -1,6 +1,22 @@
 # 40 · Agent/Skill 工作台（Agent Workshop）
 
-> 独立版的"AI 虚拟团队"可视化配置面板。定位：**管理 AI 搭档（Agent）与 Skill 池、配置搭档技能栈、把任务指派给搭档并真实触发 Skill 串行执行**。上承 [10 · Shell](./10-product-shell.md) 挂载到 `/solo/agent-workshop`；数据层依托 [05b · Skill/Agent/MCP](./05b-openwork-skill-agent-mcp.md) 的 OpenWork 原生注册表 + 星静全局目录双写；执行层通过 [06 · 桥契约](./06-openwork-bridge-contract.md) 的 `actions.callAgent` 顺序串行每个 Skill。
+> 独立版的“AI 虚拟团队”可视化配置面板。定位：**管理 AI 搞档（Agent）与 Skill 池、配置搞档技能栈、把任务指派给搞档并真实触发 Skill 串行执行**。上承 [10 · Shell](./10-product-shell.md) 挂载到 `/solo/agent-workshop`；数据层依托 [05b · Skill/Agent/MCP](./05b-openwork-skill-agent-mcp.md) 的 OpenWork 原生注册表 + 星静全局目录双写；执行层通过 [06 · 桥契约](./06-openwork-bridge-contract.md) 的 `actions.callAgent` 顺序串行每个 Skill。
+
+> **⚠️ v0.12.0 重要变更 — 旧实现已完全移除**：
+> 
+> 本文档所描述的 `AgentWorkshopPage`、`agent-registry.ts`、`skill-registry.ts` 等 `apps/app/src/app/xingjing/` 下所有源文件**已完全删除**。
+> 
+> **新集成方案（React 19）**：
+> 
+> | 旧功能 | 新方案 |
+> |---|---|
+> | `AgentWorkshopPage`（`/solo/agent-workshop`） | 集成进 `/settings/extensions`（[`domains/settings/`](file:///Users/umasuo_m3pro/Desktop/startup/xingjing/harnesswork/apps/app/src/react-app/domains/settings)） |
+> | Agent CRUD（`agent-registry.ts`） | server-v2 managed REST API（[`routes/managed.ts`](file:///Users/umasuo_m3pro/Desktop/startup/xingjing/harnesswork/apps/server-v2/src/routes/managed.ts)） |
+> | Skill CRUD（`skill-registry.ts`） | server-v2 managed REST API + Skill 编辑器扩展 |
+> | 全局目录双写（`~/.xingjing/agents/`） | `.opencode/agents/` 完全由 server-v2 管理 |
+> | `actions.callAgent` 串行执行 | server-v2 managed-resource-service + opencode session API |
+> 
+> **以下内容为 SolidJS v0.11.x 时代 Agent Workshop 历史设计档案**，可作产品功能设计参考。
 
 ---
 

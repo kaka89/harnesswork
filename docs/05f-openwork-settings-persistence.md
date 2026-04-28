@@ -7,7 +7,15 @@
 > 3. 启动加载序列与 Provider 注入关系（AppEntry 四层 Provider 嵌套）；
 > 4. 版本迁移与 legacy key 兼容策略。
 >
-> 本篇**不含** xingjing 子目录代码（`apps/app/src/app/xingjing/**`），也不含团队版、焦点模式、xingjing-server。
+> 本篇**不含** xingjing 子目录代码（`apps/app/src/app/xingjing/**`），也不含团随版、焦点模式、xingjing-server。
+
+> **⚠️ v0.12.0 代码路径迁移注意**：本文档引用的 `apps/app/src/app/context/local.tsx`、`apps/app/src/app/context/model-config.ts`、`apps/app/src/app/context/extensions.ts` 等**已完全移除**。v0.12.0 迁移后对应能力路径：
+> - LocalProvider / 本地偏好持久化：`apps/app/src/react-app/kernel/local-provider.tsx`
+> - 模型配置：`apps/app/src/react-app/kernel/model-config.ts`
+> - 设置页面：`apps/app/src/react-app/domains/settings/`
+> - AppEntry Provider 链→新 `AppProviders` ：`apps/app/src/react-app/shell/providers.tsx`
+> 
+> 设计逻辑不变，代码锚点行号需应新路径重新定位。迁移完整符号映射见 [./audit-react-migration.md](./audit-react-migration.md)。
 
 ---
 

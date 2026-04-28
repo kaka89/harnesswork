@@ -9,6 +9,18 @@
 > - [40-agent-workshop.md](./40-agent-workshop.md) 工坊
 > - [60-knowledge-base.md](./60-knowledge-base.md) 知识库
 
+> **⚠️ v0.12.0 重要变更 — 旧实现已完全移除**：
+> 
+> 本文档描述的 `ProductModePage`、`file-store.ts`、`insight-executor.ts`、`requirement-dev-bridge.ts` 等 `apps/app/src/app/xingjing/` 下所有源文件**已完全删除**。
+> 
+> **新集成方案（React 19）**：
+> - 产品目录结构映射到 workspace preset（一个产品 = 一个 workspace）
+> - 产品文档 session sidebar 面板扩展（注入 SessionRoute 右侧栏）
+> - 知识沉淀：`.opencode/docs/` 下的 workspace 文件
+> - 不再有独立的 `file-store.ts`；文件操作通过 server-v2 files API
+> 
+> **以下内容为 SolidJS v0.11.x 时代产品模式历史设计档案**，可作产品功能设计参考。
+
 ---
 
 ## 1. 模块定位与价值

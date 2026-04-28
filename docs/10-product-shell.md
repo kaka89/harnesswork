@@ -3,6 +3,23 @@
 > 范围：星静独立版 Shell 层（认证门 · 产品治理 · 路由 · 主布局 · OpenWork 连接面板）
 > 参考：[00 总览](./00-overview.md) · [06 星静–OpenWork 接缝契约](./06-openwork-bridge-contract.md)
 
+> **⚠️ v0.12.0 重要变更 — 旧实现已完全移除**：
+> 
+> 本文档描述的旧 Shell 层（`XingjingNativePage`、`XingjingApp`、`MainLayout`、独立路由 `/xingjing`、`XingjingOpenworkContext` 46 字段注入）均**已随 SolidJS 代码一并删除**，相关源文件不再存在。
+> 
+> **新集成方案（React 19）**：星静 Shell 层直接复用 OpenWork 原生壳层，不再有独立的 Shell。具体分映：
+> 
+> | 旧功能 | 新方案 |
+> |---|---|
+> | 独立路由 `/xingjing` + `XingjingNativePage` | 无独立路由；星静集成进 `/session`、`/settings` 现有路由 |
+> | 认证门 `AuthPage` + Solo Bypass | 复用 [`DenSigninGate`](file:///Users/umasuo_m3pro/Desktop/startup/xingjing/harnesswork/apps/app/src/react-app/shell/app-root.tsx)，无需独立认证 |
+> | `ProductSwitcher` 产品切换器 | workspace 切换器扩展（`domains/workspace/`） |
+> | `MainLayout` 左侧护栏 + 导航骨架 | SessionRoute 左侧栏扩展 |
+> | `XingjingOpenworkContext` 46 字段 props 注入 | `useGlobalSDK()`、`useOpenworkStore()`、`useGlobalSync()` 等 React hooks |
+> | 连接状态指示灯 | [`openwork-connection.ts`](file:///Users/umasuo_m3pro/Desktop/startup/xingjing/harnesswork/apps/app/src/react-app/shell/openwork-connection.ts) 已内置提供 |
+> 
+> **以下内容为 SolidJS v0.11.x 时代的展示模块历史设计档案**，可作产品功能设计参考，具体实现必须按 React 19 + OpenWork 原生集成方案重新设计。
+
 ---
 
 ## §1 模块定位与用户价值

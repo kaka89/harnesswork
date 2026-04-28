@@ -1,6 +1,24 @@
 # 05h · OpenWork 前端状态架构
 
-本篇以代码为源，深入刻画 OpenWork 独立版前端（`harnesswork/apps/app`）独有的四层 Provider 架构、顶层 store 结构与 SSE 事件驱动模型。内容聚焦"状态如何在 Provider 链里传播与反应式刷新"，不涉及跨会话持久化的字节布局（参见 [./05f-openwork-settings-persistence.md](./05f-openwork-settings-persistence.md)），也不涉及多进程运行时（参见 [./05g-openwork-process-runtime.md](./05g-openwork-process-runtime.md)）。
+> **⚠️ v0.12.0 大幅更新**：本文档原来描述 SolidJS 时代的 `AppEntry` 4 层 Provider 架构。v0.12.0 迁移至 React 19 后，代码结构**已完全改变**。**旧架构描述（本文就体）仅作历史参考**，不能用于指导当前开发。
+>
+> **新架构要点**：
+> - 入口文件：`apps/app/src/index.react.tsx`
+> - Provider 链：`QueryClientProvider → PlatformProvider → AppProviders(BootStateProvider→ServerProvider→DenAuthProvider→LocalProvider...) → Router → AppRoot`
+> - 全局状态：Zustand `useOpenworkStore`（[`kernel/store.ts`](file:///Users/umasuo_m3pro/Desktop/startup/xingjing/harnesswork/apps/app/src/react-app/kernel/store.ts)）
+> - 服务端状态：React Query（[`infra/query-client.ts`](file:///Users/umasuo_m3pro/Desktop/startup/xingjing/harnesswork/apps/app/src/react-app/infra)）
+> - SDK 客户端：`GlobalSDKProvider`（[`kernel/global-sdk-provider.tsx`](file:///Users/umasuo_m3pro/Desktop/startup/xingjing/harnesswork/apps/app/src/react-app/kernel/global-sdk-provider.tsx)）
+> - 全局同步：`GlobalSyncProvider`（[`kernel/global-sync-provider.tsx`](file:///Users/umasuo_m3pro/Desktop/startup/xingjing/harnesswork/apps/app/src/react-app/kernel/global-sync-provider.tsx)）
+>
+> 新的完整 Provider 链和状态架构详见：[`audit-react-migration.md §5`](./audit-react-migration.md)、[`05-openwork-platform-overview.md §2.4`](./05-openwork-platform-overview.md)、[`06-openwork-bridge-contract.md §2`](./06-openwork-bridge-contract.md)。
+
+---
+
+> 以下就体内容为 **SolidJS v0.11.x 时代架构历史档案**，中的代码路径均已不存在。
+
+---
+
+本篇以代码为源，深入刻画 OpenWork 独立版前端（`harnesswork/apps/app`）独有的四层 Provider 架构、顶层 store 结构与 SSE 事件驱动模型。内容聚焦“状态如何在 Provider 链里传播与反应式刷新”，不涉及跨会话持久化的字节布局（参见 [./05f-openwork-settings-persistence.md](./05f-openwork-settings-persistence.md)），也不涉及多进程运行时（参见 [./05g-openwork-process-runtime.md](./05g-openwork-process-runtime.md)）。
 
 ---
 

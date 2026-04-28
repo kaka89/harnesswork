@@ -1,7 +1,15 @@
 # 05d — OpenWork 模型与 Provider 子系统
 
 > 本篇与 [05-openwork-platform-overview.md](./05-openwork-platform-overview.md)、[05a-openwork-session-message.md](./05a-openwork-session-message.md)、[05b-openwork-skill-agent-mcp.md](./05b-openwork-skill-agent-mcp.md)、[05c-openwork-workspace-fileops.md](./05c-openwork-workspace-fileops.md) 构成 OpenWork 平台 9 份文档的第五篇。  
-> 信息源仅为 `apps/server/`、`apps/app/`、`apps/opencode-router/`。xingjing 子目录与团队版代码路径不在本篇范围。
+> 信息源仅为 `apps/server/`、`apps/app/`、`apps/opencode-router/`。xingjing 子目录与团随版代码路径不在本篇范围。
+
+> **⚠️ v0.12.0 代码路径迁移注意**：本文档中引用的 `apps/app/src/app/context/providers/store.ts`、`apps/app/src/app/context/model-config.ts` 等旧路径**已完全移除**。v0.12.0 React 迁移后，对应能力已迁移至：
+> - Provider 鉴权 / store：`apps/app/src/react-app/domains/connections/store.ts`
+> - Provider auth 流程：`apps/app/src/react-app/domains/connections/provider-auth/`
+> - 模型配置 / 选择：`apps/app/src/react-app/kernel/model-config.ts`
+> - 设置页面：`apps/app/src/react-app/domains/settings/pages/`
+> 
+> 内容设计逻辑不变，但代码锚点中的行号应遇到新路径后重新定位。迁移完整符号映射见 [./audit-react-migration.md](./audit-react-migration.md)。
 
 ---
 

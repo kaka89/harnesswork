@@ -13,6 +13,7 @@ import { DevProfiler, DevProfilerOverlay } from "./dev-profiler";
 import { ReactRenderWatchdogOverlay } from "./react-render-watchdog-overlay";
 import { SessionRoute } from "./session-route";
 import { SettingsRoute } from "./settings-route";
+import { ModeSelectPage } from "../domains/xingjing/pages/mode-select-page";
 
 type DenSigninGateProps = {
   children: ReactNode;
@@ -102,6 +103,14 @@ export function AppRoot() {
               }
             />
             <Route
+              path="/mode-select"
+              element={
+                <DevProfiler id="ModeSelectRoute">
+                  <ModeSelectPage />
+                </DevProfiler>
+              }
+            />
+            <Route
               path="/session"
               element={
                 <DevProfiler id="SessionRoute">
@@ -125,10 +134,9 @@ export function AppRoot() {
                 </DevProfiler>
               }
             />
-            {/* Default + fallback: land on the session view. Users open
-                settings deliberately via the sidebar or command palette. */}
-            <Route path="/" element={<Navigate to="/session" replace />} />
-            <Route path="*" element={<Navigate to="/session" replace />} />
+            {/* Default + fallback: route to mode-select first so user can choose a mode. */}
+            <Route path="/" element={<Navigate to="/mode-select" replace />} />
+            <Route path="*" element={<Navigate to="/mode-select" replace />} />
           </Routes>
         </DenSigninGate>
         <LoadingOverlay />

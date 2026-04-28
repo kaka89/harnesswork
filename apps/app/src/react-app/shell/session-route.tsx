@@ -55,6 +55,7 @@ import { t } from "../../i18n";
 import { useLocal } from "../kernel/local-provider";
 import { usePlatform } from "../kernel/platform";
 import { SessionPage } from "../domains/session/chat/session-page";
+import { XingjingSessionPage } from "../domains/xingjing/pages/xingjing-session-page";
 import { isDesktopProviderBlocked } from "../../app/cloud/desktop-app-restrictions";
 import { useCheckDesktopRestriction } from "../domains/cloud/desktop-config-provider";
 import { useRestrictionNotice } from "../domains/cloud/restriction-notice-provider";
@@ -84,6 +85,7 @@ import { filterProviderList, mapConfigProvidersToList } from "../../app/utils/pr
 import { ensureDesktopLocalOpenworkConnection } from "./desktop-local-openwork";
 import { resolveOpenworkConnection } from "./openwork-connection";
 import { useReloadCoordinator } from "./reload-coordinator";
+import { useXingjingAutopilot } from "../domains/xingjing";
 
 type RouteWorkspace = OpenworkWorkspaceInfo & {
   displayNameResolved: string;
@@ -282,6 +284,11 @@ export function SessionRoute() {
   const params = useParams<{ sessionId?: string }>();
   const selectedSessionId = params.sessionId?.trim() || null;
 
+  const [appMode] = useState(() =>
+    typeof window !== "undefined" ? localStorage.getItem("xingjing.app-mode") : null
+  );
+  const PageComponent = appMode === "xingjing" ? XingjingSessionPage : SessionPage;
+
   const { markRouteReady: markBootRouteReady } = useBootState();
   const [loading, setLoading] = useState(true);
   const [client, setClient] = useState<OpenworkServerClient | null>(null);
@@ -339,6 +346,15 @@ export function SessionRoute() {
     () => readOpenworkServerSettings(),
     [openworkServerSettingsVersion],
   );
+
+  // ── 星静 (Xingjing) 集成 ────────────────────────────────────────────────
+  // 从 domains/xingjing 获取当前 session 的 autopilot 数据（消息、状态、todos）。
+  // useXingjingAutopilot 只读 session-sync 写入的 React Query 缓存，不新建 SSE 连接。
+  const { todos: xingjingTodos } = useXingjingAutopilot(
+    selectedWorkspaceId || null,
+    selectedSessionId,
+  );
+  // ────────────────────────────────────────────────────────────────────────────
 
   const shareWorkspaceState = useShareWorkspaceState({
     workspaces,
@@ -1507,7 +1523,7 @@ export function SessionRoute() {
         openworkToken={token}
       />
     ) : null}
-    <SessionPage
+    <PageComponent
       selectedSessionId={selectedSessionId}
       selectedWorkspaceId={selectedWorkspaceId}
       selectedWorkspaceDisplay={selectedWorkspace ? {
@@ -1625,7 +1641,7 @@ export function SessionRoute() {
         onUndo: () => {},
         onRedo: () => {},
       }}
-      todos={[] satisfies TodoItem[]}
+      todos={xingjingTodos as TodoItem[]}
       sessionLoadingById={(sessionId) => effectiveLoading && Boolean(sessionId && sessionId === selectedSessionId)}
       shareWorkspaceModal={
         shareWorkspaceState.shareWorkspaceOpen

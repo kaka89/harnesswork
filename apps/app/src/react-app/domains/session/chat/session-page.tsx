@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import { useEffect, useMemo, useState } from "react";
-import { HardDrive, Loader2, RefreshCcw, Redo2, Shield, Undo2, Zap } from "lucide-react";
+import { Check, HardDrive, Loader2, Minimize2, RefreshCcw, Redo2, Shield, Undo2, Zap } from "lucide-react";
 
 import { t } from "../../../../i18n";
 import { buildOpenworkWorkspaceBaseUrl, type OpenworkServerClient, type OpenworkServerStatus } from "../../../../app/lib/openwork-server";
@@ -31,7 +31,6 @@ import {
 } from "../../../shell/workspace-shell-layout";
 import { OwDotTicker } from "../../../shell/dot-ticker";
 import { useReactRenderWatchdog } from "../../../shell/react-render-watchdog";
-import { ArtifactsDrawer } from "../../xingjing";
 
 type StatusBarOverrides = Pick<
   StatusBarProps,
@@ -195,13 +194,7 @@ function sessionTitleForId(groups: WorkspaceSessionGroup[], id: string | null | 
 }
 
 export function SessionPage(props: SessionPageProps) {
-  const {
-    leftSidebarWidth,
-    rightSidebarExpanded,
-    rightSidebarWidth,
-    startLeftSidebarResize,
-    toggleRightSidebar,
-  } = useWorkspaceShellLayout({
+  const { leftSidebarWidth, startLeftSidebarResize } = useWorkspaceShellLayout({
     defaultLeftWidth: DEFAULT_WORKSPACE_LEFT_SIDEBAR_WIDTH,
     expandedRightWidth: 280,
   });
@@ -219,6 +212,7 @@ export function SessionPage(props: SessionPageProps) {
   const [renameBusy, setRenameBusy] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const [todoExpanded, setTodoExpanded] = useState(true);
   const [showDelayedSessionLoadingState, setShowDelayedSessionLoadingState] = useState(false);
 
   const selectedSessionTitle = useMemo(
@@ -243,6 +237,11 @@ export function SessionPage(props: SessionPageProps) {
   const permissionPresentation = useMemo(
     () => describePermissionRequest(props.activePermission),
     [props.activePermission],
+  );
+  const todos = useMemo(() => props.todos.filter((todo) => todo.content.trim()), [props.todos]);
+  const completedTodos = useMemo(
+    () => todos.filter((todo) => todo.status === "completed").length,
+    [todos],
   );
   const sidebarInitialLoading = useMemo(() => getSidebarInitialLoading(props.sidebar), [props.sidebar]);
 
@@ -312,6 +311,11 @@ export function SessionPage(props: SessionPageProps) {
       setDeleteBusy(false);
     }
   };
+
+  const todoLabel =
+    completedTodos > 0
+      ? t("session.todo_progress_label", undefined, { completed: completedTodos, total: todos.length })
+      : t("session.todo_label", undefined, { count: todos.length });
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-[radial-gradient(circle_at_top,rgba(74,111,255,0.12),transparent_42%),var(--app-bg,#0b1020)] text-dls-text">
@@ -502,6 +506,55 @@ export function SessionPage(props: SessionPageProps) {
             </div>
           </div>
 
+          {todos.length > 0 ? (
+            <div className="mx-auto w-full max-w-[800px] px-4">
+              <div className="rounded-t-[20px] border border-b-0 border-dls-border bg-dls-surface shadow-[var(--dls-card-shadow)]">
+                <button
+                  type="button"
+                  className="flex w-full items-center justify-between rounded-t-[20px] px-4 py-3 text-xs text-gray-9 transition-colors hover:bg-gray-2/50"
+                  onClick={() => setTodoExpanded((current) => !current)}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-gray-11 font-medium">{todoLabel}</span>
+                  </div>
+                  <Minimize2 size={12} className={`text-gray-8 transition-transform ${todoExpanded ? "" : "rotate-180"}`} />
+                </button>
+                {todoExpanded ? (
+                  <div className="max-h-60 space-y-2.5 overflow-auto border-t border-dls-border px-4 pb-3">
+                    {todos.map((todo, index) => {
+                      const done = todo.status === "completed";
+                      const cancelled = todo.status === "cancelled";
+                      const active = todo.status === "in_progress";
+                      return (
+                        <div key={`${todo.content}-${index}`} className="flex items-start gap-2.5 pt-2.5 first:pt-2.5">
+                          <div className="flex items-center gap-1.5 pt-0.5">
+                            <div
+                              className={`flex h-4.5 w-4.5 items-center justify-center rounded-full border ${
+                                done
+                                  ? "border-green-6 bg-green-2 text-green-11"
+                                  : active
+                                    ? "border-amber-6 bg-amber-2 text-amber-11"
+                                    : cancelled
+                                      ? "border-gray-6 bg-gray-2 text-gray-8"
+                                      : "border-gray-6 bg-gray-1 text-gray-8"
+                              }`}
+                            >
+                              {done ? <Check size={10} /> : active ? <span className="h-1.5 w-1.5 rounded-full bg-amber-9" /> : null}
+                            </div>
+                          </div>
+                          <div className={`flex-1 text-sm leading-relaxed ${cancelled ? "text-gray-9 line-through" : "text-gray-12"}`}>
+                            <span className="mr-1.5 text-gray-9">{index + 1}.</span>
+                            {todo.content}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+
           <StatusBar
             clientConnected={props.clientConnected}
             openworkServerStatus={props.openworkServerStatus}
@@ -519,17 +572,6 @@ export function SessionPage(props: SessionPageProps) {
             showSettingsButton={props.statusBar?.showSettingsButton}
           />
         </main>
-        <aside
-          className="hidden shrink-0 overflow-hidden rounded-[24px] border border-dls-border bg-dls-sidebar shadow-[var(--dls-shell-shadow)] lg:flex lg:flex-col"
-          style={{ width: rightSidebarWidth }}
-        >
-          <ArtifactsDrawer
-            workspaceId={props.selectedWorkspaceId}
-            sessionId={props.selectedSessionId}
-            expanded={rightSidebarExpanded}
-            onToggle={toggleRightSidebar}
-          />
-        </aside>
       </div>
 
       {props.providerAuthModal ? <ProviderAuthModal {...props.providerAuthModal} /> : null}

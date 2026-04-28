@@ -74,3 +74,10 @@ export {
   ArtifactsDrawer,
   type ArtifactsDrawerProps,
 } from "./components/artifacts-drawer";
+
+// ============================================================================
+// Pages
+// ============================================================================
+
+export { XingjingSessionPage } from "./pages/xingjing-session-page";
+export { ModeSelectPage, APP_MODE_KEY } from "./pages/mode-select-page";

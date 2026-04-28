@@ -5,6 +5,12 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, HashRouter } from "react-router-dom";
 
 import { getOpenWorkDeployment } from "./app/lib/openwork-deployment";
+import {
+  readOpenworkConnectInviteFromSearch,
+  stripOpenworkConnectInviteFromUrl,
+  writeOpenworkServerSettings,
+} from "./app/lib/openwork-server";
+import { writeStartupPreference } from "./app/utils";
 import { bootstrapTheme } from "./app/theme";
 import { isDesktopRuntime } from "./app/utils";
 import { initLocale } from "./i18n";
@@ -21,6 +27,20 @@ import "./app/index.css";
 bootstrapTheme();
 initLocale();
 startDeepLinkBridge();
+
+// Process OpenWork invite URL params (ow_url, ow_token, ow_startup, ow_auto_connect)
+// This enables browser access via invite links to auto-connect to OpenWork
+if (typeof window !== "undefined" && window.location.search) {
+  const invite = readOpenworkConnectInviteFromSearch(window.location.search);
+  if (invite) {
+    writeOpenworkServerSettings({ urlOverride: invite.url, token: invite.token });
+    if (invite.startup === "server") {
+      writeStartupPreference("server");
+    }
+    const cleaned = stripOpenworkConnectInviteFromUrl(window.location.href);
+    window.history.replaceState(null, "", cleaned);
+  }
+}
 
 const root = document.getElementById("root");
 

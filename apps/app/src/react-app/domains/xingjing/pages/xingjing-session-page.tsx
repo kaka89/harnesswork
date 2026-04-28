@@ -84,21 +84,31 @@ function sessionTitleForId(
 
 // ── CopyUrlButton ────────────────────────────────────────────────────────────────
 
-function CopyUrlButton({ url }: { url: string }) {
+function CopyUrlButton({ owUrl, owToken }: { owUrl: string; owToken: string }) {
   const [copied, setCopied] = useState(false);
+  const buildInviteUrl = () => {
+    const base = window.location.origin;
+    const params = new URLSearchParams({
+      ow_url: owUrl,
+      ow_startup: "server",
+      ow_auto_connect: "1",
+    });
+    if (owToken) params.set("ow_token", owToken);
+    return `${base}?${params.toString()}`;
+  };
   const handleCopy = () => {
-    void navigator.clipboard.writeText(url).then(() => {
+    void navigator.clipboard.writeText(buildInviteUrl()).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     });
   };
-  const display = url.replace(/^https?:\/\//, "");
+  const display = owUrl.replace(/^https?:\/\//, "");
   return (
     <button
       type="button"
       onClick={handleCopy}
       className="flex w-full items-center gap-1 rounded px-1 py-0.5 text-[10px] text-dls-secondary hover:bg-dls-hover hover:text-dls-text"
-      title={copied ? "已复制" : "点击复制 URL"}
+      title={copied ? "已复制" : "点击复制浏览器访问链接"}
     >
       <Copy size={10} className="shrink-0" />
       <span className="truncate">{copied ? "已复制!" : display}</span>
@@ -210,7 +220,10 @@ function XingjingNavSidebar({
         })()}
         {/* 浏览器访问 URL（点击复制） */}
         {openworkServerClient?.baseUrl ? (
-          <CopyUrlButton url={openworkServerClient.baseUrl} />
+          <CopyUrlButton
+            owUrl={openworkServerClient.baseUrl}
+            owToken={openworkServerClient.token?.trim() ?? ""}
+          />
         ) : null}
       </div>
     </div>

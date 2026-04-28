@@ -6,7 +6,6 @@ import {
   BookOpen,
   Bot,
   ChevronLeft,
-  ChevronRight,
   Code2,
   LayoutDashboard,
   Lightbulb,
@@ -63,14 +62,6 @@ const NAV_ITEMS: { id: XingjingNavSection; label: string; icon: LucideIcon }[] =
   { id: "knowledge", label: "个人知识库", icon: BookOpen },
   { id: "ai-partner", label: "AI搭档", icon: Bot },
   { id: "settings", label: "设置", icon: Settings },
-];
-
-const AGENTS = [
-  { id: "atmosphere", label: "AI氛围搭档", color: "bg-purple-3 text-purple-11" },
-  { id: "product", label: "AI产品搭档", color: "bg-blue-3 text-blue-11" },
-  { id: "engineer", label: "AI工程搭档", color: "bg-green-3 text-green-11" },
-  { id: "growth", label: "AI增长搭档", color: "bg-orange-3 text-orange-11" },
-  { id: "operations", label: "AI运营搭档", color: "bg-pink-3 text-pink-11" },
 ];
 
 // ── Private helper ────────────────────────────────────────────────────────────
@@ -180,37 +171,6 @@ function XingjingNavSidebar({
   );
 }
 
-// ── XingjingAgentsPanel (168px, collapsible) ──────────────────────────────────
-
-function XingjingAgentsPanel({ onCollapse }: { onCollapse: () => void }) {
-  return (
-    <div className="flex w-[168px] shrink-0 flex-col border-r border-dls-border bg-dls-surface/60">
-      <div className="flex h-10 shrink-0 items-center justify-between border-b border-dls-border px-3">
-        <span className="text-[12px] font-medium text-dls-text">AI虚拟团队</span>
-        <button
-          type="button"
-          onClick={onCollapse}
-          className="rounded p-0.5 text-dls-secondary hover:bg-dls-hover hover:text-dls-text"
-          title="收起"
-        >
-          <ChevronLeft size={13} />
-        </button>
-      </div>
-      <div className="flex flex-col gap-1 overflow-y-auto py-2">
-        {AGENTS.map((agent) => (
-          <button
-            key={agent.id}
-            type="button"
-            className={`mx-2 rounded-lg px-2 py-2 text-left text-[12px] font-medium transition-colors hover:opacity-80 ${agent.color}`}
-          >
-            {agent.label}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 // ── XingjingSessionPage ───────────────────────────────────────────────────────
 
 /**
@@ -236,7 +196,6 @@ export function XingjingSessionPage(props: SessionPageProps) {
   });
 
   const [activeSection, setActiveSection] = useState<XingjingNavSection>("cockpit");
-  const [agentsPanelOpen, setAgentsPanelOpen] = useState(true);
   const [rightExpanded, setRightExpanded] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameTitle, setRenameTitle] = useState("");
@@ -361,30 +320,12 @@ export function XingjingSessionPage(props: SessionPageProps) {
           />
         </div>
 
-        {/* Agents panel (collapsible) */}
-        {agentsPanelOpen ? (
-          <XingjingAgentsPanel onCollapse={() => setAgentsPanelOpen(false)} />
-        ) : (
-          <div className="flex w-6 shrink-0 flex-col items-center border-r border-dls-border bg-dls-surface/50 pt-3">
-            <button
-              type="button"
-              onClick={() => setAgentsPanelOpen(true)}
-              className="rounded p-0.5 text-dls-secondary hover:bg-dls-hover hover:text-dls-text"
-              title="展开 AI 虚拟团队"
-            >
-              <ChevronRight size={13} />
-            </button>
-          </div>
-        )}
-
         {/* Main content flex-1 */}
         <div className="flex min-w-0 flex-1 flex-col bg-dls-surface">
           {/* Sub header h-10 */}
           <div className="flex h-10 shrink-0 items-center justify-between border-b border-dls-border px-4">
             <div className="flex items-center gap-2 text-[12px] text-dls-secondary">
               <span className="font-medium text-dls-text">独立版</span>
-              <span>·</span>
-              <span>AI虚拟团队</span>
               {props.history ? (
                 <>
                   <span>·</span>

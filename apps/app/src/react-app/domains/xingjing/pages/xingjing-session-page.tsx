@@ -10,15 +10,12 @@ import {
   Copy,
   LayoutDashboard,
   Lightbulb,
-  Loader2,
   Moon,
   RefreshCcw,
-  Redo2,
   Rocket,
   Settings,
   Shield,
   Target,
-  Undo2,
   Zap,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -387,37 +384,6 @@ export function XingjingSessionPage(props: SessionPageProps) {
           <div className="flex h-10 shrink-0 items-center justify-between border-b border-dls-border px-4">
             <div className="flex items-center gap-2 text-[12px] text-dls-secondary">
               <span className="font-medium text-dls-text">独立版</span>
-              {props.history ? (
-                <>
-                  <span>·</span>
-                  <button
-                    type="button"
-                    className="flex items-center rounded px-1 py-0.5 hover:bg-dls-hover disabled:opacity-40"
-                    onClick={() => void props.history?.onUndo()}
-                    disabled={!props.history.canUndo || props.history.busyAction !== null}
-                    title={t("session.undo_title")}
-                  >
-                    {props.history.busyAction === "undo" ? (
-                      <Loader2 size={12} className="animate-spin" />
-                    ) : (
-                      <Undo2 size={12} />
-                    )}
-                  </button>
-                  <button
-                    type="button"
-                    className="flex items-center rounded px-1 py-0.5 hover:bg-dls-hover disabled:opacity-40"
-                    onClick={() => void props.history?.onRedo()}
-                    disabled={!props.history.canRedo || props.history.busyAction !== null}
-                    title={t("session.redo_title")}
-                  >
-                    {props.history.busyAction === "redo" ? (
-                      <Loader2 size={12} className="animate-spin" />
-                    ) : (
-                      <Redo2 size={12} />
-                    )}
-                  </button>
-                </>
-              ) : null}
             </div>
             <div className="flex items-center gap-2">
               <Button variant="outline" onClick={props.sidebar.onOpenCreateWorkspace}>

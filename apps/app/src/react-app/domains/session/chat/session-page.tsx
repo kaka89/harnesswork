@@ -321,6 +321,17 @@ export function SessionPage(props: SessionPageProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-[radial-gradient(circle_at_top,rgba(74,111,255,0.12),transparent_42%),var(--app-bg,#0b1020)] text-dls-text">
+      {/* TitleBar */}
+      <header className="flex h-10 shrink-0 items-center border-b border-white/10 bg-white/5 px-3">
+        <button
+          type="button"
+          onClick={() => navigate("/mode-select")}
+          className="flex items-center gap-1 rounded px-2 py-1 text-[12px] text-gray-10 hover:bg-white/10 hover:text-dls-text"
+        >
+          <ChevronLeft size={13} />
+          返回模式选择
+        </button>
+      </header>
       <div className="flex min-h-0 flex-1 gap-4 p-3 md:p-4">
         <aside
           className="relative hidden min-h-0 shrink-0 overflow-hidden rounded-[24px] border border-dls-border bg-dls-sidebar shadow-[var(--dls-shell-shadow)] lg:flex lg:flex-col"
@@ -365,16 +376,6 @@ export function SessionPage(props: SessionPageProps) {
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[24px] border border-dls-border bg-dls-surface shadow-[var(--dls-shell-shadow)]">
           <header className="z-10 flex h-12 shrink-0 items-center justify-between border-b border-dls-border bg-dls-surface px-4 md:px-6">
             <div className="flex min-w-0 items-center gap-3">
-              <button
-                type="button"
-                className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-[13px] text-gray-10 transition-colors hover:bg-gray-2/70 hover:text-dls-text"
-                onClick={() => navigate("/mode-select")}
-                title="返回模式选择"
-                aria-label="返回模式选择"
-              >
-                <ChevronLeft size={16} />
-                <span className="hidden text-[12px] lg:inline">返回</span>
-              </button>
               <h1 className="truncate text-[15px] font-semibold text-dls-text">
                 {showWorkspaceSetupEmptyState
                   ? t("session.create_or_connect_workspace")

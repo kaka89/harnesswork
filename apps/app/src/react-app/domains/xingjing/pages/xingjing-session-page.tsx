@@ -7,6 +7,7 @@ import {
   Bot,
   ChevronLeft,
   Code2,
+  Copy,
   LayoutDashboard,
   Lightbulb,
   Loader2,
@@ -23,6 +24,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 
 import { t } from "../../../../i18n";
+import type { OpenworkServerClient, OpenworkServerStatus } from "../../../../app/lib/openwork-server";
 import { buildOpenworkWorkspaceBaseUrl } from "../../../../app/lib/openwork-server";
 import { getDisplaySessionTitle } from "../../../../app/lib/session-title";
 import { Button } from "../../../design-system/button";
@@ -80,14 +82,43 @@ function sessionTitleForId(
 
 // ── XingjingNavSidebar (180px left panel) ─────────────────────────────────────
 
+// ── CopyUrlButton ────────────────────────────────────────────────────────────────
+
+function CopyUrlButton({ url }: { url: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = () => {
+    void navigator.clipboard.writeText(url).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+  const display = url.replace(/^https?:\/\//, "");
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      className="flex w-full items-center gap-1 rounded px-1 py-0.5 text-[10px] text-dls-secondary hover:bg-dls-hover hover:text-dls-text"
+      title={copied ? "已复制" : "点击复制 URL"}
+    >
+      <Copy size={10} className="shrink-0" />
+      <span className="truncate">{copied ? "已复制!" : display}</span>
+    </button>
+  );
+}
+
+// ── XingjingNavSidebar ─────────────────────────────────────────────────────
+
 function XingjingNavSidebar({
   activeSection,
   onSelect,
   clientConnected,
+  openworkServerClient,
 }: {
   activeSection: XingjingNavSection;
   onSelect: (section: XingjingNavSection) => void;
   clientConnected: boolean;
+  openworkServerClient: OpenworkServerClient | null;
+  openworkServerStatus: OpenworkServerStatus;
 }) {
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -137,35 +168,50 @@ function XingjingNavSidebar({
         })}
       </nav>
 
-      {/* Work mode & connection status */}
-      <div className="shrink-0 border-t border-dls-border p-2">
-        <p className="mb-1 text-[10px] text-dls-secondary">今日工作模式</p>
-        <div className="flex gap-1">
-          <button
-            type="button"
-            className="flex-1 rounded bg-green-3/70 py-0.5 text-[11px] font-medium text-green-11"
-          >
-            专注
-          </button>
-          <button
-            type="button"
-            className="flex-1 rounded py-0.5 text-[11px] text-dls-secondary hover:bg-dls-hover"
-          >
-            碎片
-          </button>
-        </div>
-        <div
-          className={`mt-1.5 flex items-center gap-1.5 text-[10px] ${
-            clientConnected ? "text-green-10" : "text-gray-10"
-          }`}
-        >
-          <span
-            className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+      {/* Connection status panel */}
+      <div className="shrink-0 space-y-1.5 border-t border-dls-border p-2">
+        {/* OpenWork 状态行 */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1.5 text-[10px]">
+            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${
               clientConnected ? "bg-green-9" : "bg-gray-7"
-            }`}
-          />
-          OpenWork {clientConnected ? "✓ 已连接" : "断开"}
+            }`} />
+            <span className={clientConnected ? "text-green-10" : "text-gray-10"}>
+              OpenWork
+            </span>
+          </div>
+          <span className={`text-[10px] ${
+            clientConnected ? "text-green-10" : "text-gray-9"
+          }`}>
+            {clientConnected ? "已连接" : "断开"}
+          </span>
         </div>
+        {/* OpenCode 状态行 */}
+        {(() => {
+          const baseUrl = openworkServerClient?.baseUrl ?? "";
+          const opencodeConnected = clientConnected && Boolean(baseUrl);
+          return (
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5 text-[10px]">
+                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                  opencodeConnected ? "bg-green-9" : "bg-gray-7"
+                }`} />
+                <span className={opencodeConnected ? "text-green-10" : "text-gray-10"}>
+                  OpenCode
+                </span>
+              </div>
+              <span className={`text-[10px] ${
+                opencodeConnected ? "text-green-10" : "text-gray-9"
+              }`}>
+                {opencodeConnected ? "已连接" : "断开"}
+              </span>
+            </div>
+          );
+        })()}
+        {/* 浏览器访问 URL（点击复制） */}
+        {openworkServerClient?.baseUrl ? (
+          <CopyUrlButton url={openworkServerClient.baseUrl} />
+        ) : null}
       </div>
     </div>
   );
@@ -317,6 +363,8 @@ export function XingjingSessionPage(props: SessionPageProps) {
             activeSection={activeSection}
             onSelect={setActiveSection}
             clientConnected={props.clientConnected}
+            openworkServerClient={props.openworkServerClient}
+            openworkServerStatus={props.openworkServerStatus}
           />
         </div>
 

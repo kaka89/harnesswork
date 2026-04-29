@@ -388,15 +388,28 @@ export function SessionSurface(props: SessionSurfaceProps) {
     setError(null);
     setSending(true);
     setAwaitingAssistantBaseline(renderedMessages.length);
+    const nextDraft = buildDraft(text, attachments);
+    // Optimistically clear the composer before awaiting onSendDraft.
+    // Some send paths (e.g. session.command for slash-commands) are
+    // synchronous/blocking and only resolve after the full AI run
+    // completes. Clearing first ensures the input box empties immediately
+    // on submit regardless of the underlying API's return timing.
+    // On failure the draft and attachments are restored so nothing is lost.
+    const prevDraft = draft;
+    const prevAttachments = attachments;
+    setDraft("");
+    setAttachments([]);
+    props.onDraftChange(buildDraft("", []));
     try {
-      const nextDraft = buildDraft(text, attachments);
       await props.onSendDraft(nextDraft);
-      setDraft("");
-      attachments.forEach(revokeAttachmentPreview);
-      setAttachments([]);
-      props.onDraftChange(buildDraft("", []));
+      // Revoke preview object-URLs only after a confirmed send so that a
+      // rollback on failure can still show the attachment previews.
+      prevAttachments.forEach(revokeAttachmentPreview);
       setSending(false);
     } catch (nextError) {
+      // Restore draft + attachments so the user can retry.
+      setDraft(prevDraft);
+      setAttachments(prevAttachments);
       setError(nextError instanceof Error ? nextError.message : "Failed to send prompt.");
       setAwaitingAssistantBaseline(null);
       setSending(false);
@@ -406,6 +419,14 @@ export function SessionSurface(props: SessionSurfaceProps) {
   const handleAbort = async () => {
     if (!chatStreaming) return;
     setError(null);
+    // Optimistically reset liveStatus to idle so the UI unblocks immediately,
+    // regardless of whether the abort network call succeeds or times out.
+    try {
+      getReactQueryClient().setQueryData(reactStatusKey(props.workspaceId, props.sessionId), { type: "idle" });
+    } catch {
+      // ignore cache update failures
+    }
+    setSending(false);
     try {
       await abortSessionSafe(opencodeClient, props.sessionId);
       await snapshotQuery.refetch();

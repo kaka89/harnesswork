@@ -54,7 +54,7 @@ function isTrackedSession(entry: SyncEntry, sessionId: string) {
   return (entry.trackedSessionRefs.get(sessionId) ?? 0) > 0;
 }
 
-function toUIPart(part: Part): UIMessage["parts"][number] | null {
+export function toUIPart(part: Part): UIMessage["parts"][number] | null {
   if (part.type === "text") {
     return {
       type: "text",
@@ -125,7 +125,7 @@ function getPartMetadataId(part: UIMessage["parts"][number]) {
   return "partId" in metadata ? (metadata as { partId?: string }).partId ?? null : null;
 }
 
-function upsertMessage(messages: UIMessage[], next: UIMessage) {
+export function upsertMessage(messages: UIMessage[], next: UIMessage) {
   const index = messages.findIndex((message) => message.id === next.id);
   if (index === -1) return [...messages, next];
   return messages.map((message, messageIndex) =>
@@ -161,7 +161,7 @@ function inferStubRole(messages: UIMessage[]): UIMessage["role"] {
   return "assistant";
 }
 
-function upsertPart(messages: UIMessage[], messageId: string, partId: string, next: UIMessage["parts"][number]) {
+export function upsertPart(messages: UIMessage[], messageId: string, partId: string, next: UIMessage["parts"][number]) {
   return messages.map((message) => {
     if (message.id !== messageId) return message;
     const index = message.parts.findIndex((part) =>

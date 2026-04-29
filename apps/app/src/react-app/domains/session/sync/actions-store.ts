@@ -29,7 +29,9 @@ import type {
   ModelRef,
 } from "../../../../app/types";
 import { addOpencodeCacheHint, safeStringify } from "../../../../app/utils";
+import { getReactQueryClient } from "../../../infra/query-client";
 import { clearSessionDraft, saveSessionDraft } from "./draft-store";
+import { statusKey } from "./session-sync";
 
 type SessionModelConfig = {
   applyPendingSessionChoice: (sessionId: string) => void;
@@ -144,12 +146,37 @@ export function createSessionActionsStore(options: {
 
   type PartInput = TextPartInput | FilePartInput | AgentPartInput | SubtaskPartInput;
 
-  const attachmentToFilePart = async (attachment: ComposerAttachment): Promise<FilePartInput> => ({
-    type: "file",
-    url: await fileToDataUrl(attachment.file),
-    filename: attachment.name,
-    mime: attachment.mimeType,
-  });
+  const attachmentToFilePart = async (
+    attachment: ComposerAttachment,
+    workspaceRoot?: string,
+  ): Promise<FilePartInput> => {
+    // In desktop (Tauri) mode: write the file to the workspace directory so the
+    // AI agent can locate and read it via its filesystem search tools.
+    if (workspaceRoot) {
+      try {
+        const dataUrl = await fileToDataUrl(attachment.file);
+        const { writeAttachmentToWorkspace } = await import("../../../../app/lib/desktop");
+        const destPath = await writeAttachmentToWorkspace(workspaceRoot, attachment.name, dataUrl);
+        if (destPath) {
+          return {
+            type: "file",
+            url: `file://${destPath}`,
+            filename: attachment.name,
+            mime: attachment.mimeType,
+          } as FilePartInput;
+        }
+      } catch {
+        // Fall through to DataURL on any error
+      }
+    }
+    // Fallback: send as inline DataURL (web mode or write failure)
+    return {
+      type: "file",
+      url: await fileToDataUrl(attachment.file),
+      filename: attachment.name,
+      mime: attachment.mimeType,
+    } as FilePartInput;
+  };
 
   const buildPromptParts = async (draft: ComposerDraft): Promise<PartInput[]> => {
     const parts: PartInput[] = [];
@@ -188,7 +215,7 @@ export function createSessionActionsStore(options: {
       }
     }
 
-    parts.push(...(await Promise.all(draft.attachments.map(attachmentToFilePart))));
+    parts.push(...(await Promise.all(draft.attachments.map((a) => attachmentToFilePart(a, root)))));
     return parts;
   };
 
@@ -223,7 +250,7 @@ export function createSessionActionsStore(options: {
       } as FilePartInput);
     }
 
-    parts.push(...(await Promise.all(draft.attachments.map(attachmentToFilePart))));
+    parts.push(...(await Promise.all(draft.attachments.map((a) => attachmentToFilePart(a, root)))));
     return parts;
   };
 
@@ -609,6 +636,18 @@ export function createSessionActionsStore(options: {
         command: commandName,
         error: e instanceof Error ? e.message : safeStringify(e),
       });
+      // Optimistically reset liveStatus to idle so the UI unblocks immediately.
+      // Without this, after a request timeout the backend may still be running
+      // and keep pushing session.status=busy via SSE, leaving the composer
+      // locked (Stop button shown, Send button replaced) with no way to recover.
+      try {
+        getReactQueryClient().setQueryData(statusKey(workspaceId, sessionID), { type: "idle" });
+      } catch {
+        // ignore cache update failures; we still surface the error turn below.
+      }
+      // Fire-and-forget abort so the backend eventually stops. We don't await
+      // because the same network path that just timed out may hang here too.
+      void abortSessionSafe(c, sessionID);
       const message = e instanceof Error ? e.message : safeStringify(e);
       options.appendSessionErrorTurn(sessionID, addOpencodeCacheHint(message));
     } finally {

@@ -491,3 +491,44 @@ pub fn opencode_mcp_auth(
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
     })
 }
+
+/// Write a base64-encoded file attachment to a workspace directory.
+/// The `base64_data` may be a bare base64 string or a full data URI
+/// (e.g. `data:application/pdf;base64,JVBERi0...`).
+/// Returns the absolute path of the written file on success.
+#[tauri::command]
+pub fn write_attachment_to_workspace(
+    workspace_path: String,
+    filename: String,
+    base64_data: String,
+) -> Result<String, String> {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine as _;
+
+    // Strip data URI prefix if present
+    let raw_b64 = match base64_data.find(',') {
+        Some(pos) => &base64_data[pos + 1..],
+        None => base64_data.as_str(),
+    };
+
+    let bytes = STANDARD
+        .decode(raw_b64.trim())
+        .map_err(|e| format!("base64 decode error: {e}"))?;
+
+    // Prevent path traversal: only use the bare filename component
+    let safe_filename = Path::new(filename.trim())
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| "Invalid filename".to_string())?;
+
+    let workspace = Path::new(workspace_path.trim());
+    if !workspace.is_absolute() {
+        return Err("workspace_path must be an absolute path".to_string());
+    }
+
+    let dest = workspace.join(safe_filename);
+    fs::write(&dest, &bytes)
+        .map_err(|e| format!("Failed to write {}: {e}", dest.display()))?;
+
+    Ok(dest.to_string_lossy().into_owned())
+}

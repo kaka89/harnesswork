@@ -772,3 +772,29 @@ export async function opencodeMcpAuth(
 export async function setWindowDecorations(decorations: boolean): Promise<void> {
   return invoke<void>("set_window_decorations", { decorations });
 }
+
+/**
+ * Write a file attachment to the workspace directory so that OpenCode's AI
+ * agent can locate and read it via filesystem tools.
+ *
+ * @param workspacePath  Absolute path to the workspace root directory.
+ * @param filename       Bare filename (path traversal is blocked on the Rust side).
+ * @param base64Data     Raw base64 string OR a full data URI
+ *                       (`data:<mime>;base64,<data>`).
+ * @returns Absolute path of the written file, or null on failure.
+ */
+export async function writeAttachmentToWorkspace(
+  workspacePath: string,
+  filename: string,
+  base64Data: string,
+): Promise<string | null> {
+  try {
+    return await invoke<string>("write_attachment_to_workspace", {
+      workspacePath,
+      filename,
+      base64Data,
+    });
+  } catch {
+    return null;
+  }
+}

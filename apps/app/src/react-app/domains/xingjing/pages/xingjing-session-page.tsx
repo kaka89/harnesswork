@@ -1,16 +1,20 @@
 /** @jsxImportSource react */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   BarChart2,
   BookOpen,
   Bot,
+  Check,
+  ChevronDown,
   ChevronLeft,
+  ChevronRight,
   Code2,
   Copy,
   LayoutDashboard,
   Lightbulb,
   Moon,
+  Plus,
   RefreshCcw,
   Rocket,
   Settings,
@@ -34,12 +38,12 @@ import { ShareWorkspaceModal } from "../../workspace/share-workspace-modal";
 import { OwDotTicker } from "../../../shell/dot-ticker";
 import { useReactRenderWatchdog } from "../../../shell/react-render-watchdog";
 import { ArtifactsDrawer } from "../components/artifacts-drawer";
+import { HistorySessionDrawer } from "../components/history-session-drawer";
 import type { SessionPageProps } from "../../session/chat/session-page";
 
 // ── Nav section type ──────────────────────────────────────────────────────────
 
 type XingjingNavSection =
-  | "autopilot"
   | "cockpit"
   | "focus"
   | "product-insight"
@@ -50,14 +54,35 @@ type XingjingNavSection =
   | "ai-partner"
   | "settings";
 
-const NAV_ITEMS: { id: XingjingNavSection; label: string; icon: LucideIcon }[] = [
-  { id: "autopilot", label: "自动驾驶", icon: Zap },
-  { id: "cockpit", label: "驾驶舱", icon: LayoutDashboard },
-  { id: "focus", label: "今日焦点", icon: Target },
-  { id: "product-insight", label: "产品洞察", icon: Lightbulb },
-  { id: "product-dev", label: "产品研发", icon: Code2 },
-  { id: "release", label: "发布管理", icon: Rocket },
-  { id: "data-review", label: "数据复盘", icon: BarChart2 },
+type NavLeaf = { id: XingjingNavSection; label: string; icon: LucideIcon };
+type NavGroup = {
+  kind: "group";
+  id: "autopilot-group";
+  label: string;
+  icon: LucideIcon;
+  children: NavLeaf[];
+};
+type NavNode = NavLeaf | NavGroup;
+
+function isNavGroup(node: NavNode): node is NavGroup {
+  return (node as NavGroup).kind === "group";
+}
+
+const NAV_TREE: NavNode[] = [
+  {
+    kind: "group",
+    id: "autopilot-group",
+    label: "自动驾驶",
+    icon: Zap,
+    children: [
+      { id: "cockpit", label: "驾驶舱", icon: LayoutDashboard },
+      { id: "focus", label: "今日焦点", icon: Target },
+      { id: "product-insight", label: "产品洞察", icon: Lightbulb },
+      { id: "product-dev", label: "产品研发", icon: Code2 },
+      { id: "release", label: "发布管理", icon: Rocket },
+      { id: "data-review", label: "数据复盘", icon: BarChart2 },
+    ],
+  },
   { id: "knowledge", label: "个人知识库", icon: BookOpen },
   { id: "ai-partner", label: "AI搭档", icon: Bot },
   { id: "settings", label: "设置", icon: Settings },
@@ -75,6 +100,57 @@ function sessionTitleForId(
     if (match) return getDisplaySessionTitle(match.title);
   }
   return "";
+}
+
+// ── Section metadata（二级菜单占位页信息）───────────────────────────────────────
+
+const SECTION_META: Partial<
+  Record<XingjingNavSection, { label: string; icon: LucideIcon; description: string }>
+> = {
+  focus: {
+    label: "今日焦点",
+    icon: Target,
+    description: "用户今日需要处理的任务",
+  },
+  "product-insight": {
+    label: "产品洞察",
+    icon: Lightbulb,
+    description: "产品角色的工作页面",
+  },
+  "product-dev": {
+    label: "产品研发",
+    icon: Code2,
+    description: "研发角色的工作页面",
+  },
+  release: {
+    label: "发布管理",
+    icon: Rocket,
+    description: "产品发布的工作页面",
+  },
+  "data-review": {
+    label: "数据复盘",
+    icon: BarChart2,
+    description: "产品运营的数据页面",
+  },
+};
+
+// ── XingjingPlaceholderPage ───────────────────────────────────────────────────
+
+function XingjingPlaceholderPage({ section }: { section: XingjingNavSection }) {
+  const meta = SECTION_META[section];
+  if (!meta) return null;
+  const Icon = meta.icon;
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-5">
+      <div className="flex h-16 w-16 items-center justify-center rounded-3xl border border-dls-border bg-dls-hover/60">
+        <Icon size={28} className="text-dls-secondary" />
+      </div>
+      <div className="space-y-1.5 text-center">
+        <h2 className="text-[18px] font-semibold text-dls-text">{meta.label}</h2>
+        <p className="text-[13px] text-dls-secondary">{meta.description}</p>
+      </div>
+    </div>
+  );
 }
 
 // ── XingjingNavSidebar (180px left panel) ─────────────────────────────────────
@@ -127,15 +203,10 @@ function XingjingNavSidebar({
   openworkServerClient: OpenworkServerClient | null;
   openworkServerStatus: OpenworkServerStatus;
 }) {
+  // 一级分组"自动驾驶"的折叠态，默认展开
+  const [autopilotExpanded, setAutopilotExpanded] = useState(true);
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      {/* Logo */}
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-dls-border px-3">
-        <Moon size={15} className="shrink-0 text-yellow-9/70" />
-        <span className="text-[13px] font-semibold text-green-11">星静</span>
-        <span className="ml-1 text-[10px] text-dls-secondary/60">All-in-One</span>
-      </div>
-
       {/* Edition toggle */}
       <div className="flex shrink-0 gap-1 border-b border-dls-border px-2 py-1.5">
         <button
@@ -154,14 +225,56 @@ function XingjingNavSidebar({
 
       {/* Nav items */}
       <nav className="flex min-h-0 flex-1 flex-col overflow-y-auto py-1">
-        {NAV_ITEMS.map((item) => {
-          const Icon = item.icon;
-          const isActive = item.id === activeSection;
+        {NAV_TREE.map((node) => {
+          // 一级分组标题：自动驾驶（可折叠，默认展开，不参与 active 高亮）
+          if (isNavGroup(node)) {
+            const GroupIcon = node.icon;
+            const ChevronIcon = autopilotExpanded ? ChevronDown : ChevronRight;
+            return (
+              <div key={node.id} className="flex flex-col">
+                <button
+                  type="button"
+                  onClick={() => setAutopilotExpanded((v) => !v)}
+                  className="flex items-center gap-2 px-3 py-1.5 text-left text-[12px] font-medium text-dls-secondary transition-colors hover:bg-dls-hover hover:text-dls-text"
+                  aria-expanded={autopilotExpanded}
+                >
+                  <GroupIcon size={13} className="shrink-0" />
+                  <span className="flex-1">{node.label}</span>
+                  <ChevronIcon size={12} className="shrink-0 opacity-70" />
+                </button>
+                {autopilotExpanded
+                  ? node.children.map((child) => {
+                      const ChildIcon = child.icon;
+                      const isActive = child.id === activeSection;
+                      return (
+                        <button
+                          key={child.id}
+                          type="button"
+                          onClick={() => onSelect(child.id)}
+                          className={`flex items-center gap-2 py-1.5 pr-3 text-left text-[12px] transition-colors ${
+                            isActive
+                              ? "border-l-2 border-green-9 bg-green-2/50 pl-[26px] font-medium text-green-11"
+                              : "pl-7 text-dls-secondary hover:bg-dls-hover hover:text-dls-text"
+                          }`}
+                        >
+                          <ChildIcon size={13} className="shrink-0" />
+                          {child.label}
+                        </button>
+                      );
+                    })
+                  : null}
+              </div>
+            );
+          }
+
+          // 其余一级叶子项：个人知识库 / AI搭档 / 设置
+          const Icon = node.icon;
+          const isActive = node.id === activeSection;
           return (
             <button
-              key={item.id}
+              key={node.id}
               type="button"
-              onClick={() => onSelect(item.id)}
+              onClick={() => onSelect(node.id)}
               className={`flex items-center gap-2 px-3 py-1.5 text-left text-[12px] transition-colors ${
                 isActive
                   ? "bg-green-2/50 font-medium text-green-11"
@@ -169,7 +282,7 @@ function XingjingNavSidebar({
               }`}
             >
               <Icon size={13} className="shrink-0" />
-              {item.label}
+              {node.label}
             </button>
           );
         })}
@@ -227,6 +340,107 @@ function XingjingNavSidebar({
   );
 }
 
+// ── WorkspaceSwitcher ───────────────────────────────────────────────────────
+
+/**
+ * 产品（workspace）切换下拉组件。
+ * 触发器显示当前产品名，下拉面板列出所有产品并提供「新建产品」入口。
+ */
+function WorkspaceSwitcher({
+  workspaces,
+  selectedWorkspaceId,
+  selectedWorkspaceDisplay,
+  onSelectWorkspace,
+  onOpenCreateWorkspace,
+}: {
+  workspaces: SessionPageProps["workspaces"];
+  selectedWorkspaceId: string;
+  selectedWorkspaceDisplay: SessionPageProps["selectedWorkspaceDisplay"];
+  onSelectWorkspace: (id: string) => void;
+  onOpenCreateWorkspace: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const currentName =
+    selectedWorkspaceDisplay.displayName ||
+    selectedWorkspaceDisplay.name ||
+    workspaces.find((w) => w.id === selectedWorkspaceId)?.displayName ||
+    workspaces.find((w) => w.id === selectedWorkspaceId)?.name ||
+    "选择或新建产品";
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex h-7 items-center gap-1.5 rounded-md border border-dls-border px-3 text-[12px] hover:bg-dls-hover"
+      >
+        <span className="max-w-[160px] truncate">{currentName}</span>
+        <ChevronDown size={12} className="shrink-0 text-dls-secondary" />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full z-50 mt-1 w-[200px] overflow-hidden rounded-lg border border-dls-border bg-white shadow-lg">
+          {workspaces.length === 0 ? (
+            <div className="flex flex-col items-center py-8 text-dls-secondary">
+              <div className="mb-2 text-[32px] opacity-30">📭</div>
+              <span className="text-[12px]">暂无数据</span>
+            </div>
+          ) : (
+            <div className="py-1">
+              {workspaces.map((ws) => {
+                const isActive = ws.id === selectedWorkspaceId;
+                const wsName = ws.displayName || ws.name;
+                return (
+                  <button
+                    key={ws.id}
+                    type="button"
+                    onClick={() => {
+                      onSelectWorkspace(ws.id);
+                      setOpen(false);
+                    }}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] hover:bg-dls-hover"
+                  >
+                    <Check
+                      size={12}
+                      className={`shrink-0 ${isActive ? "text-green-11" : "opacity-0"}`}
+                    />
+                    <span className="flex-1 truncate">{wsName}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          <div className="border-t border-dls-border">
+            <button
+              type="button"
+              onClick={() => {
+                onOpenCreateWorkspace();
+                setOpen(false);
+              }}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] text-green-11 hover:bg-dls-hover"
+            >
+              <Plus size={12} className="shrink-0" />
+              新建产品
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── XingjingSessionPage ───────────────────────────────────────────────────────
 
 /**
@@ -253,12 +467,20 @@ export function XingjingSessionPage(props: SessionPageProps) {
 
   const [activeSection, setActiveSection] = useState<XingjingNavSection>("cockpit");
   const [rightExpanded, setRightExpanded] = useState(false);
+  const [historyExpanded, setHistoryExpanded] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameTitle, setRenameTitle] = useState("");
   const [renameBusy, setRenameBusy] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [showDelayedSessionLoadingState, setShowDelayedSessionLoadingState] = useState(false);
+
+  const currentWorkspaceSessions = useMemo(() => {
+    const group = props.sidebar.workspaceSessionGroups.find(
+      (g) => g.workspace.id === props.selectedWorkspaceId,
+    );
+    return group?.sessions ?? [];
+  }, [props.sidebar.workspaceSessionGroups, props.selectedWorkspaceId]);
 
   const selectedSessionTitle = useMemo(
     () => sessionTitleForId(props.sidebar.workspaceSessionGroups, props.selectedSessionId),
@@ -346,24 +568,36 @@ export function XingjingSessionPage(props: SessionPageProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-[#f7f7f8] text-dls-text">
-      {/* ── TitleBar h-10 ──────────────────────────────────────────────────── */}
-      <header className="flex h-10 shrink-0 items-center gap-2 border-b border-dls-border bg-white/80 px-3 backdrop-blur-sm">
+      {/* ── Row 1: 返回行 h-7 ────────────────────────────────────────── */}
+      <div className="flex h-7 shrink-0 items-center bg-white/60 px-2">
         <button
           type="button"
           onClick={() => {
             localStorage.removeItem("xingjing.app-mode");
             navigate("/mode-select");
           }}
-          className="flex items-center gap-1 rounded px-2 py-1 text-[12px] text-dls-secondary hover:bg-dls-hover hover:text-dls-text"
+          className="flex items-center gap-1 rounded px-2 py-0.5 text-[11px] text-dls-secondary hover:bg-dls-hover hover:text-dls-text"
         >
-          <ChevronLeft size={13} />
+          <ChevronLeft size={12} />
           返回模式选择
         </button>
-        <span className="mx-1 text-dls-border/60">|</span>
-        <Moon size={13} className="shrink-0 text-yellow-9/70" />
+      </div>
+
+      {/* ── Row 2: 全宽 Logo + slogan + WorkspaceSwitcher h-10 ────────────── */}
+      <div className="flex h-10 shrink-0 items-center gap-3 border-b border-dls-border bg-white/80 px-3">
+        <Moon size={15} className="shrink-0 text-yellow-9/70" />
         <span className="text-[13px] font-semibold text-green-11">星静</span>
-        <span className="text-[11px] text-dls-secondary">All-in-One 研发平台</span>
-      </header>
+        <span className="text-[10px] text-dls-secondary/60">All-in-One</span>
+        <span className="mx-2 text-dls-border/40">|</span>
+        <span className="flex-1 text-[12px] italic text-dls-secondary">万物并作，吾以观其复</span>
+        <WorkspaceSwitcher
+          workspaces={props.workspaces}
+          selectedWorkspaceId={props.selectedWorkspaceId}
+          selectedWorkspaceDisplay={props.selectedWorkspaceDisplay}
+          onSelectWorkspace={(id) => props.sidebar.onSelectWorkspace(id)}
+          onOpenCreateWorkspace={props.sidebar.onOpenCreateWorkspace}
+        />
+      </div>
 
       {/* ── Main area ──────────────────────────────────────────────────────── */}
       <div className="flex min-h-0 flex-1">
@@ -384,22 +618,32 @@ export function XingjingSessionPage(props: SessionPageProps) {
           />
         </div>
 
+        {/* History session drawer 40-240px */}
+        <div
+          className="flex shrink-0 flex-col border-r border-dls-border bg-white transition-[width] duration-200"
+          style={{ width: historyExpanded ? 240 : 40 }}
+        >
+          <HistorySessionDrawer
+            workspaceId={props.selectedWorkspaceId}
+            selectedSessionId={props.selectedSessionId}
+            sessions={currentWorkspaceSessions}
+            expanded={historyExpanded}
+            onToggle={() => setHistoryExpanded((v) => !v)}
+            onOpenSession={props.sidebar.onOpenSession}
+          />
+        </div>
+
         {/* Main content flex-1 */}
         <div className="flex min-w-0 flex-1 flex-col bg-dls-surface">
-          {/* Sub header h-10 */}
-          <div className="flex h-10 shrink-0 items-center justify-between border-b border-dls-border px-4">
-            <div className="flex items-center gap-2 text-[12px] text-dls-secondary">
-              <span className="font-medium text-dls-text">独立版</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" onClick={props.sidebar.onOpenCreateWorkspace}>
-                + 新建
-              </Button>
-            </div>
-          </div>
-
           {/* Session surface area */}
           <div className="relative min-h-0 flex-1 overflow-hidden">
+            {/* 非驾驶舱二级页占位覆盖层：用绝对定位覆盖 SessionSurface，保持内层 SSE 连接不被杀中 */}
+            {SECTION_META[activeSection] ? (
+              <div className="absolute inset-0 z-10 flex flex-col bg-dls-surface">
+                <XingjingPlaceholderPage section={activeSection} />
+              </div>
+            ) : null}
+
             {showStartupSkeleton ? (
               <div className="px-6 py-14" role="status" aria-live="polite">
                 <div className="mx-auto max-w-2xl space-y-6">

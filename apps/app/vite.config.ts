@@ -79,6 +79,14 @@ export default defineConfig({
   server: {
     port: devPort,
     strictPort: true,
+    hmr: {
+      // Extend HMR WebSocket timeout to tolerate macOS App Nap throttling the
+      // WKWebView. The default ~30s is too short: after a period of inactivity
+      // the OS slows down the WebView's JS timers, causing ping/pong to miss
+      // and the server to close the socket, which then triggers a full-page
+      // reload and a boot-sequence re-run that can leave the app black-screened.
+      timeout: 120000,
+    },
     ...(allowedHosts.size > 0 ? { allowedHosts: Array.from(allowedHosts) } : {}),
   },
   build: {

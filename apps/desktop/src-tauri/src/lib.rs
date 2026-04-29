@@ -26,7 +26,7 @@ use commands::engine::{
 use commands::migration::{migrate_to_electron, write_migration_snapshot};
 use commands::misc::{
     app_build_info, nuke_openwork_and_opencode_config_and_exit, opencode_mcp_auth,
-    reset_opencode_cache, reset_openwork_state,
+    reset_opencode_cache, reset_openwork_state, write_attachment_to_workspace,
 };
 use commands::openwork_server::{openwork_server_info, openwork_server_restart};
 use commands::orchestrator::{
@@ -196,6 +196,7 @@ pub fn run() {
             reset_openwork_state,
             reset_opencode_cache,
             opencode_mcp_auth,
+            write_attachment_to_workspace,
             set_window_decorations
         ])
         .build(tauri::generate_context!())

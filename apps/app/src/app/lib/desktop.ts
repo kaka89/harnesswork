@@ -208,6 +208,22 @@ export async function subscribeDesktopDeepLinks(
   return tauriBridge.subscribeDesktopDeepLinks(handler);
 }
 
+/**
+ * Write a file attachment to the workspace directory so the AI agent can find
+ * and read it via filesystem tools. Returns the absolute path on success, or
+ * null when the operation is unavailable (Electron / web) or fails.
+ */
+export async function writeAttachmentToWorkspace(
+  workspacePath: string,
+  filename: string,
+  base64Data: string,
+): Promise<string | null> {
+  if (isElectronDesktopRuntime()) {
+    return null; // Not supported in Electron
+  }
+  return tauriBridge.writeAttachmentToWorkspace(workspacePath, filename, base64Data);
+}
+
 const {
   resolveWorkspaceListSelectedId,
   engineStart,

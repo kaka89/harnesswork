@@ -132,10 +132,17 @@ export function useBootOverlayVisible(): boolean {
   const { phase, routeReady } = useBootState();
   // HMR can remount the provider while the route tree stays mounted. In that
   // state the boot phase falls back to `idle`, but the already-rendered route
-  // is interactive and can mark itself ready again. Treat `idle + routeReady`
-  // the same as `ready + routeReady` so the full-screen boot overlay never
-  // becomes a permanent pointer-events blocker during development.
-  const canHide = routeReady && (phase === "ready" || phase === "idle");
+  // is interactive and can mark itself ready again.
+  //
+  // Bug fix: `routeReady` is a one-way latch — once the route has successfully
+  // rendered, the overlay must stay hidden regardless of `phase`. The previous
+  // logic `routeReady && (phase === "ready" || phase === "idle")` had a gap:
+  // if HMR remounted the provider and `refreshRouteState()` transitioned phase
+  // to a mid-boot value (e.g. "starting-engine") before `routeReady` was set
+  // back to true, `canHide` became permanently false — black overlay, blocked
+  // interaction. Fix: `routeReady` alone is sufficient to hide; fall back to
+  // checking `phase === "ready"` only when the route hasn't reported in yet.
+  const canHide = routeReady || phase === "ready";
   const [visible, setVisible] = useState(!canHide);
 
   useEffect(() => {

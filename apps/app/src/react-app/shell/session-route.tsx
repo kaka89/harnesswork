@@ -11,6 +11,14 @@ import type {
 
 import { createClient, unwrap } from "../../app/lib/opencode";
 import { listCommands, shellInSession } from "../../app/lib/opencode-session";
+import { getReactQueryClient } from "../infra/query-client";
+import {
+  transcriptKey,
+  toUIPart,
+  upsertMessage,
+  upsertPart,
+} from "../domains/session/sync/session-sync";
+import type { UIMessage } from "ai";
 import {
   buildOpenworkWorkspaceBaseUrl,
   createOpenworkServerClient,
@@ -1120,6 +1128,30 @@ export function SessionRoute() {
           });
           if (result.error) {
             throw new Error(result.error instanceof Error ? result.error.message : String(result.error));
+          }
+          // session.command returns the fully-formed assistant message
+          // inline (info + parts). OpenCode doesn't publish SSE events for
+          // this path, so without this commit the UI would never see the
+          // reply on this turn. Merge into the transcript cache directly;
+          // upsertMessage/upsertPart are keyed by id so any SSE event that
+          // later carries the same ids will be a no-op.
+          const data = result.data as { info?: { id?: string }; parts?: unknown[] } | undefined;
+          const info = data?.info;
+          if (info?.id) {
+            const messageId = info.id;
+            const queryClient = getReactQueryClient();
+            queryClient.setQueryData<UIMessage[]>(
+              transcriptKey(selectedWorkspaceId, selectedSessionId),
+              (current = []) => {
+                let next = upsertMessage(current, { id: messageId, role: "assistant", parts: [] });
+                for (const rawPart of (data?.parts ?? []) as import("@opencode-ai/sdk/v2/client").Part[]) {
+                  const mapped = toUIPart(rawPart);
+                  if (!mapped) continue;
+                  next = upsertPart(next, messageId, rawPart.id, mapped);
+                }
+                return next;
+              },
+            );
           }
           return;
         }

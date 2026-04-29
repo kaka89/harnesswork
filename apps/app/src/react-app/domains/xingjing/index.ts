@@ -75,6 +75,16 @@ export {
   type ArtifactsDrawerProps,
 } from "./components/artifacts-drawer";
 
+/**
+ * 左侧历史会话抽屉组件（折叠/展开，按时间倒序列出当前 workspace 的历史会话）。
+ *
+ * @see 10-product-shell.md §4.1
+ */
+export {
+  HistorySessionDrawer,
+  type HistorySessionDrawerProps,
+} from "./components/history-session-drawer";
+
 // ============================================================================
 // Pages
 // ============================================================================

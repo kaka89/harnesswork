@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
 
 import { SUGGESTED_PLUGINS } from "../../app/constants";
-import { createClient } from "../../app/lib/opencode";
+import { createClient, unwrap } from "../../app/lib/opencode";
 import {
   buildOpenworkWorkspaceBaseUrl,
   createOpenworkServerClient,
@@ -34,6 +34,8 @@ import { useDebugViewModel } from "../domains/settings/state/debug-view-model";
 import { useBootState } from "./boot-state";
 import { SettingsShell } from "../domains/settings/shell/settings-shell";
 import { XingjingSettingsShell } from "../domains/xingjing/pages/xingjing-settings-shell";
+import { XingjingPipelineTab } from "../domains/xingjing/pages/xingjing-pipeline-tab";
+import { seedAndSyncDefaults } from "../domains/xingjing/pipeline/sync";
 import { createExtensionsStore, useExtensionsStoreSnapshot } from "../domains/settings/state/extensions-store";
 import { usePlatform } from "../kernel/platform";
 import { useLocal } from "../kernel/local-provider";
@@ -239,6 +241,7 @@ function parseSettingsPath(pathname: string): {
     case "general":
     case "den":
     case "skills":
+    case "pipeline":
     case "advanced":
     case "appearance":
     case "updates":
@@ -837,6 +840,12 @@ export function SettingsRoute({
     selectedWorkspaceRoot,
   ]);
 
+  // 星静流水线：workspace 首次连接/切换时种入 9 套预置模板
+  useEffect(() => {
+    if (!xingjingMode || !openworkClient || !selectedWorkspaceId) return;
+    void seedAndSyncDefaults(openworkClient, selectedWorkspaceId);
+  }, [xingjingMode, openworkClient, selectedWorkspaceId]);
+
   useEffect(() => {
     if (!activeClient) {
       setProviders([]);
@@ -1222,6 +1231,21 @@ export function SettingsRoute({
         );
       case "debug":
         return <DebugView {...debugViewProps} />;
+      case "pipeline":
+        return (
+          <XingjingPipelineTab
+            client={openworkClient}
+            workspaceId={selectedWorkspaceId || null}
+            listAgents={
+              opencodeClient
+                ? async () => {
+                    const list = unwrap(await opencodeClient.app.agents());
+                    return list.filter((a) => !a.hidden && a.mode !== "subagent");
+                  }
+                : undefined
+            }
+          />
+        );
       default:
         return null;
     }

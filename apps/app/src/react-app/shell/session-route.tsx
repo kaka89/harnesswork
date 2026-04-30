@@ -1587,6 +1587,12 @@ export function SessionRoute() {
         );
       }}
       onOpenSettings={() => navigate("/settings/general")}
+      listAgents={opencodeClient
+        ? async () => {
+            const list = unwrap(await opencodeClient.app.agents());
+            return list.filter((agent) => !agent.hidden && agent.mode !== "subagent");
+          }
+        : undefined}
       sidebar={{
         workspaceSessionGroups,
         selectedWorkspaceId,

@@ -9,6 +9,7 @@ import {
   RotateCcw,
   Settings2,
   UserCircle,
+  Workflow,
   Wrench,
   type LucideIcon,
 } from "lucide-react";
@@ -29,6 +30,7 @@ const XINGJING_SETTINGS_TABS: XingjingSettingsTabItem[] = [
   { tab: "appearance", label: "外观",      icon: Palette    },
   { tab: "general",    label: "AI 模型",   icon: Brain      },
   { tab: "skills",     label: "Skills",   icon: Settings2  },
+  { tab: "pipeline",   label: "流水线",    icon: Workflow   },
   { tab: "extensions", label: "工具与插件", icon: Wrench     },
   { tab: "den",        label: "账户",      icon: UserCircle },
   { tab: "advanced",   label: "高级",      icon: Puzzle     },

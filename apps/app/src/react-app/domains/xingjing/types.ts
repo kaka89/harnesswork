@@ -1,5 +1,5 @@
 import type { WorkspacePreset } from "../../../app/types";
-import type { OpenworkWorkspaceInfo } from "../../../app/lib/openwork-server";
+import type { OpenworkSkillItem, OpenworkWorkspaceInfo } from "../../../app/lib/openwork-server";
 
 /**
  * 星静产品 = OpenWork workspace + 已知的 WorkspacePreset。
@@ -32,3 +32,64 @@ export type AutopilotStatus =
  * - todos:     SSE todo.updated 事件产生的待办项
  */
 export type ArtifactPanelTab = "artifacts" | "tools" | "todos";
+
+// ── AI 搭档（Agent）类型 ──────────────────────────────────────────────────────
+
+/**
+ * 星静扩展字段，写入 Agent 文件的 `options` 对象。
+ * OpenWork 允许 unknown keys 自动归入 options，不破坏兼容性。
+ */
+export interface XingjingAgentOptions {
+  /** 卡片图标 emoji，如 "🧠"，默认 "🤖" */
+  icon?: string;
+  /** 展示名，如 "AI产品搭档"（缺省用文件名/name 字段）*/
+  displayName?: string;
+  /** 卡片副标题，如 "产品搭档" */
+  subtitle?: string;
+  /** 关联的 skill slug 列表（仅存引用，不内嵌 Skill 定义）*/
+  skills?: string[];
+}
+
+/**
+ * Agent 文件解析后的元数据（frontmatter 字段）。
+ * 对应 OpenWork 官方字段集（prds/new-plugin-arch/config-types/agents.md）。
+ */
+export interface XingjingAgentMeta {
+  /** 文件名即 slug，也作为唯一标识 */
+  name: string;
+  /** LLM 模型 */
+  model?: string;
+  /** 模型变体（如推理模式）*/
+  variant?: string;
+  /** 采样温度 */
+  temperature?: number;
+  /** 核心采样 */
+  top_p?: number;
+  /** 运行模式：subagent / primary / all */
+  mode?: "subagent" | "primary" | "all";
+  /** 是否隐藏 */
+  hidden?: boolean;
+  /** 是否禁用 */
+  disable?: boolean;
+  /** 描述（搜索/展示用）*/
+  description?: string;
+  /** 最大步骤数 */
+  steps?: number;
+  /** UI 颜色 */
+  color?: string;
+  /** 星静扩展字段 */
+  options?: XingjingAgentOptions & Record<string, unknown>;
+  /** system prompt（文件 body）*/
+  systemPrompt?: string;
+  /** 文件路径（相对 workspace root） */
+  filePath?: string;
+}
+
+/**
+ * 视图层辅助类型：XingjingAgentMeta + 已解析的 Skill 对象列表。
+ * resolvedSkills 由 useAgents() hook 在返回数据前注入。
+ */
+export type XingjingAgentView = XingjingAgentMeta & {
+  /** 已解析的 Skill 对象列表（缺失 Skill 以 null 填充）*/
+  resolvedSkills: (OpenworkSkillItem | null)[];
+};

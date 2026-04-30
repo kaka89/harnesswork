@@ -261,16 +261,23 @@ export function ReactSessionComposer(props: ComposerProps) {
   const slashQuery = slashMatch?.[1] ?? "";
   const mentionMatch = props.draft.match(/@([^\s@]*)$/);
   const mentionQuery = mentionMatch?.[1] ?? "";
-
+  
+  // Use stable string primitives as deps instead of new array references on every render.
+  // String.prototype.match() returns a new array object each time, causing Object.is()
+  // comparison to always fail and re-running the effect on every render, which was
+  // resetting menuIndex to 0 after every keypress (breaking keyboard navigation).
+  const slashMatchText = slashMatch?.[0] ?? null;
+  const mentionMatchText = mentionMatch?.[0] ?? null;
+  
   useEffect(() => {
-    setSlashOpen(Boolean(slashMatch));
+    setSlashOpen(Boolean(slashMatchText));
     setMenuIndex(0);
-  }, [slashMatch]);
-
+  }, [slashMatchText]);
+  
   useEffect(() => {
-    setMentionOpen(Boolean(mentionMatch));
+    setMentionOpen(Boolean(mentionMatchText));
     setMenuIndex(0);
-  }, [mentionMatch]);
+  }, [mentionMatchText]);
 
   useEffect(() => {
     if (!agentMenuOpen) return;
@@ -450,7 +457,7 @@ export function ReactSessionComposer(props: ComposerProps) {
   useEffect(() => {
     const target = menuItemRefs.current[menuIndex];
     target?.scrollIntoView({ block: "nearest" });
-  }, [menuIndex, activeItems.length]);
+  }, [menuIndex]);
 
   const applyCommandSelection = (command: SlashCommandOption) => {
     props.onDraftChange(`/${command.name} `);

@@ -91,3 +91,34 @@ export {
 
 export { XingjingSessionPage } from "./pages/xingjing-session-page";
 export { ModeSelectPage, APP_MODE_KEY } from "./pages/mode-select-page";
+
+// ============================================================================
+// Pipeline（流水线）
+// ============================================================================
+
+/**
+ * 流水线功能模块：在设置页可视化编辑端到端产品交付流水线，
+ * 编译为 OpenCode agent + slash command 在 Composer 触发。
+ *
+ * @see ../../../../product/features/xingjing-pipeline/SDD.md
+ */
+export type {
+  PipelineDefinition,
+  PipelineNode,
+  PipelineNodeKind,
+  PipelineScope,
+  PipelineInputField,
+  PipelineLaunchContext,
+  PipelineValidationError,
+  PipelineRuntimeSnapshot,
+} from "./pipeline";
+
+export {
+  PIPELINE_SCOPES_WITH_MENU,
+  PIPELINE_SCOPE_LABELS,
+  PIPELINE_LIMITS,
+  createPipelineStorage,
+  PIPELINES_DIR,
+  type PipelineStorage,
+} from "./pipeline";
+

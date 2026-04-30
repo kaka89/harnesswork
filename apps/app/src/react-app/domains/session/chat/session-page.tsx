@@ -4,6 +4,7 @@ import { Check, ChevronLeft, HardDrive, Loader2, Minimize2, RefreshCcw, Redo2, S
 import { useNavigate } from "react-router-dom";
 
 import { t } from "../../../../i18n";
+import type { Agent } from "@opencode-ai/sdk/v2/client";
 import { buildOpenworkWorkspaceBaseUrl, type OpenworkServerClient, type OpenworkServerStatus } from "../../../../app/lib/openwork-server";
 import { getDisplaySessionTitle } from "../../../../app/lib/session-title";
 import type { BootPhase } from "../../../../app/lib/startup-boot";
@@ -125,6 +126,8 @@ export type SessionPageProps = {
   statusBar?: Partial<StatusBarOverrides>;
   onRenameSession?: (sessionId: string, title: string) => Promise<void> | void;
   onDeleteSession?: (sessionId: string) => Promise<void> | void;
+  /** 列出原生 OpenWork agents（由 session-route 注入，供 AI 搭档页面使用）。 */
+  listAgents?: () => Promise<Agent[]>;
 };
 
 function describePermissionRequest(permission: PendingPermission | null | undefined) {

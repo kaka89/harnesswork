@@ -41,7 +41,15 @@ import { useReactRenderWatchdog } from "../../../shell/react-render-watchdog";
 import { SettingsRoute } from "../../../shell/settings-route";
 import { ArtifactsDrawer } from "../components/artifacts-drawer";
 import { HistorySessionDrawer } from "../components/history-session-drawer";
+import { AiPartnerPage } from "./ai-partner-page";
 import type { SessionPageProps } from "../../session/chat/session-page";
+import { PipelineLaunchDialog } from "../components/pipeline/pipeline-launch-dialog";
+import { PipelineTriggerBar } from "../components/pipeline/pipeline-trigger-bar";
+import { SessionHeaderExtensions } from "../components/pipeline/session-header-extensions";
+import type { PipelineLaunchMode } from "../components/pipeline/session-header-extensions";
+import { usePipelineDefinitions } from "../hooks/use-pipeline-definitions";
+import { usePipelineLauncher } from "../hooks/use-pipeline-launcher";
+import type { PipelineDefinition, PipelineScope } from "../pipeline/types";
 
 // ── Nav section type ──────────────────────────────────────────────────────────
 
@@ -136,21 +144,108 @@ const SECTION_META: Partial<
   },
 };
 
+// ── Section → PipelineScope 映射 ─────────────────────────────────────────────
+
+const SECTION_SCOPE: Partial<Record<XingjingNavSection, PipelineScope>> = {
+  "product-insight": "product-insight",
+  "product-dev": "product-dev",
+  "release": "release-ops",
+};
+
+// ── XingjingPlaceholderPage launch props ─────────────────────────────────────
+
+interface PlaceholderLaunchProps {
+  openworkServerClient: import("../../../../app/lib/openwork-server").OpenworkServerClient | null;
+  workspaceId: string | null;
+  opencodeBaseUrl: string;
+  token: string;
+  workspacePath?: string;
+  onNavigateToSettings: () => void;
+  onSessionCreated: (sessionId: string) => void;
+}
+
 // ── XingjingPlaceholderPage ───────────────────────────────────────────────────
 
-function XingjingPlaceholderPage({ section }: { section: XingjingNavSection }) {
+function XingjingPlaceholderPage({
+  section,
+  launchProps,
+}: {
+  section: XingjingNavSection;
+  launchProps: PlaceholderLaunchProps;
+}) {
   const meta = SECTION_META[section];
   if (!meta) return null;
   const Icon = meta.icon;
+
+  const scope = SECTION_SCOPE[section] ?? null;
+
+  const { pipelines, isLoading } = usePipelineDefinitions(
+    launchProps.openworkServerClient,
+    launchProps.workspaceId,
+  );
+
+  const scopedPipelines = scope ? pipelines.filter((p) => p.scope === scope) : [];
+
+  const [launchDialogDef, setLaunchDialogDef] = useState<PipelineDefinition | null>(null);
+
+  const { launch, launching, launchError, clearError } = usePipelineLauncher({
+    opencodeBaseUrl: launchProps.opencodeBaseUrl,
+    token: launchProps.token,
+    workspacePath: launchProps.workspacePath,
+    onSessionCreated: launchProps.onSessionCreated,
+  });
+
+  const handleLaunchRequest = (def: PipelineDefinition) => {
+    clearError();
+    if (def.inputs.length === 0) {
+      // 无需收集 inputs，直接用空 goal 启动（兜底）
+      void launch(def, "", {});
+    } else {
+      setLaunchDialogDef(def);
+    }
+  };
+
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-5">
-      <div className="flex h-16 w-16 items-center justify-center rounded-3xl border border-dls-border bg-dls-hover/60">
-        <Icon size={28} className="text-dls-secondary" />
+    <div className="flex h-full flex-col">
+      {/* Pipeline trigger bar */}
+      {scope ? (
+        <PipelineTriggerBar
+          scope={scope}
+          pipelines={scopedPipelines}
+          isLoading={isLoading}
+          launching={launching}
+          launchError={launchError}
+          onLaunch={handleLaunchRequest}
+          onOpenSettings={launchProps.onNavigateToSettings}
+        />
+      ) : null}
+
+      {/* Main placeholder content */}
+      <div className="flex flex-1 flex-col items-center justify-center gap-5">
+        <div className="flex h-16 w-16 items-center justify-center rounded-3xl border border-dls-border bg-dls-hover/60">
+          <Icon size={28} className="text-dls-secondary" />
+        </div>
+        <div className="space-y-1.5 text-center">
+          <h2 className="text-[18px] font-semibold text-dls-text">{meta.label}</h2>
+          <p className="text-[13px] text-dls-secondary">{meta.description}</p>
+        </div>
       </div>
-      <div className="space-y-1.5 text-center">
-        <h2 className="text-[18px] font-semibold text-dls-text">{meta.label}</h2>
-        <p className="text-[13px] text-dls-secondary">{meta.description}</p>
-      </div>
+
+      {/* Launch dialog */}
+      <PipelineLaunchDialog
+        open={Boolean(launchDialogDef)}
+        def={launchDialogDef}
+        launching={launching}
+        launchError={launchError}
+        onLaunch={(def, goal, inputValues) => {
+          setLaunchDialogDef(null);
+          void launch(def, goal, inputValues);
+        }}
+        onClose={() => {
+          setLaunchDialogDef(null);
+          clearError();
+        }}
+      />
     </div>
   );
 }
@@ -468,6 +563,8 @@ export function XingjingSessionPage(props: SessionPageProps) {
   });
 
   const [activeSection, setActiveSection] = useState<XingjingNavSection>("cockpit");
+  // 仅在驾驶舱（cockpit）挂载左右两栏（历史会话、产物抽屉）；切到其他 Section 时整块从 DOM 移除
+  const isCockpit = activeSection === "cockpit";
     const [activeSettingsTab, setActiveSettingsTab] = useState<SettingsTab>("appearance");
   const [rightExpanded, setRightExpanded] = useState(false);
   const [historyExpanded, setHistoryExpanded] = useState(false);
@@ -489,9 +586,6 @@ export function XingjingSessionPage(props: SessionPageProps) {
     () => sessionTitleForId(props.sidebar.workspaceSessionGroups, props.selectedSessionId),
     [props.selectedSessionId, props.sidebar.workspaceSessionGroups],
   );
-
-  // 仅驾驶舱（对话页面）才渲染左右两个抽屉；其他二级导航页隐藏。
-  const isCockpit = activeSection === "cockpit";
 
   const showWorkspaceSetupEmptyState = props.workspaces.length === 0 && !props.selectedSessionId;
   const showStartupSkeleton =
@@ -523,6 +617,57 @@ export function XingjingSessionPage(props: SessionPageProps) {
       reactSessionToken &&
       props.surface,
   );
+
+  // ── launchProps — 传给 XingjingPlaceholderPage 的启动参数 ──────────────────
+  const workspacePath = useMemo(() => {
+    const ws = props.workspaces.find((w) => w.id === props.selectedWorkspaceId);
+    return ws?.path?.trim() || undefined;
+  }, [props.workspaces, props.selectedWorkspaceId]);
+
+  const placeholderLaunchProps = useMemo<PlaceholderLaunchProps>(
+    () => ({
+      openworkServerClient: props.openworkServerClient,
+      workspaceId: props.selectedWorkspaceId || null,
+      opencodeBaseUrl: reactSessionBaseUrl,
+      token: reactSessionToken,
+      workspacePath,
+      onNavigateToSettings: () => setActiveSection("settings"),
+      onSessionCreated: (sessionId: string) => {
+        setActiveSection("cockpit");
+        navigate(`/session/${sessionId}`);
+      },
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [props.openworkServerClient, props.selectedWorkspaceId, reactSessionBaseUrl, reactSessionToken, workspacePath, navigate],
+  );
+
+  // ── 驾驶舱 HeaderExtensions 的流水线启动 hook ─────────────────────────────
+  const { pipelines: allPipelines, isLoading: pipelinesLoading } = usePipelineDefinitions(
+    props.openworkServerClient,
+    props.selectedWorkspaceId || null,
+  );
+
+  const { launch: headerLaunch, launching: headerLaunching } = usePipelineLauncher({
+    opencodeBaseUrl: reactSessionBaseUrl,
+    token: reactSessionToken,
+    workspacePath,
+    onSessionCreated: (sessionId: string) => {
+      setActiveSection("cockpit");
+      navigate(`/session/${sessionId}`);
+    },
+  });
+
+  const [headerLaunchDialogDef, setHeaderLaunchDialogDef] = useState<PipelineDefinition | null>(null);
+  const [headerLaunchMode, setHeaderLaunchMode] = useState<PipelineLaunchMode>("new-session");
+
+  const handleHeaderLaunchRequest = (def: PipelineDefinition, mode: PipelineLaunchMode) => {
+    setHeaderLaunchMode(mode);
+    if (def.inputs.length === 0) {
+      void headerLaunch(def, "", {}, { mode, parentSessionId: mode === "current-session" ? (props.selectedSessionId ?? undefined) : undefined });
+    } else {
+      setHeaderLaunchDialogDef(def);
+    }
+  };
 
   useEffect(() => {
     if (!showSessionLoadingState) {
@@ -596,6 +741,15 @@ export function XingjingSessionPage(props: SessionPageProps) {
         <span className="text-[10px] text-dls-secondary/60">All-in-One</span>
         <span className="mx-2 text-dls-border/40">|</span>
         <span className="flex-1 text-[12px] italic text-dls-secondary">万物并作，吾以观其复</span>
+        {/* 驾驶舱模式下显示流水线启动入口 */}
+        <SessionHeaderExtensions
+          pipelines={allPipelines}
+          isLoading={pipelinesLoading}
+          hasActiveSession={Boolean(props.selectedSessionId)}
+          launching={headerLaunching}
+          onLaunch={handleHeaderLaunchRequest}
+          onOpenSettings={() => setActiveSection("settings")}
+        />
         <WorkspaceSwitcher
           workspaces={props.workspaces}
           selectedWorkspaceId={props.selectedWorkspaceId}
@@ -620,7 +774,7 @@ export function XingjingSessionPage(props: SessionPageProps) {
           />
         </div>
 
-        {/* History session drawer 40-240px（仅在驾驶舱页显示） */}
+        {/* History session drawer 40-240px —— 仅驾驶舱挂载 */}
         {isCockpit ? (
           <div
             className="flex shrink-0 flex-col border-r border-dls-border bg-white transition-[width] duration-200"
@@ -644,7 +798,10 @@ export function XingjingSessionPage(props: SessionPageProps) {
             {/* 非驾驶舱二级页占位覆盖层：用绝对定位覆盖 SessionSurface，保持内层 SSE 连接不被杀中 */}
             {SECTION_META[activeSection] ? (
               <div className="absolute inset-0 z-40 flex flex-col bg-dls-surface">
-                <XingjingPlaceholderPage section={activeSection} />
+                <XingjingPlaceholderPage
+                  section={activeSection}
+                  launchProps={placeholderLaunchProps}
+                />
               </div>
             ) : null}
 
@@ -655,6 +812,17 @@ export function XingjingSessionPage(props: SessionPageProps) {
                   xingjingMode
                   controlledTab={activeSettingsTab}
                   onControlledTabChange={setActiveSettingsTab}
+                />
+              </div>
+            ) : null}
+
+            {/* AI 搭档页面覆盖层 */}
+            {activeSection === "ai-partner" ? (
+              <div className="absolute inset-0 z-40 flex flex-col overflow-hidden bg-dls-surface">
+                <AiPartnerPage
+                  openworkServerClient={props.openworkServerClient}
+                  workspaceId={props.runtimeWorkspaceId ?? props.selectedWorkspaceId}
+                  listAgents={props.listAgents}
                 />
               </div>
             ) : null}
@@ -753,7 +921,7 @@ export function XingjingSessionPage(props: SessionPageProps) {
           </div>
         </div>
 
-        {/* Right ArtifactsDrawer（仅在驾驶舱页显示） */}
+        {/* Right ArtifactsDrawer —— 仅驾驶舱挂载 */}
         {isCockpit ? (
           <div
             className="flex shrink-0 flex-col border-l border-dls-border bg-dls-sidebar transition-[width] duration-200"
@@ -862,6 +1030,21 @@ export function XingjingSessionPage(props: SessionPageProps) {
             props.respondQuestion?.(props.activeQuestion.id, answers);
           }
         }}
+      />
+
+      {/* 驾驶舱 Header 流水线启动对话框（有 inputs 字段时弹出） */}
+      <PipelineLaunchDialog
+        open={Boolean(headerLaunchDialogDef)}
+        def={headerLaunchDialogDef}
+        launching={headerLaunching}
+        onLaunch={(def, goal, inputValues) => {
+          setHeaderLaunchDialogDef(null);
+          void headerLaunch(def, goal, inputValues, {
+            mode: headerLaunchMode,
+            parentSessionId: headerLaunchMode === "current-session" ? (props.selectedSessionId ?? undefined) : undefined,
+          });
+        }}
+        onClose={() => setHeaderLaunchDialogDef(null)}
       />
     </div>
   );

@@ -173,6 +173,7 @@ export type SettingsTab =
   | "general"
   | "den"
   | "skills"
+  | "pipeline"
   | "extensions"
   | "advanced"
   | "appearance"

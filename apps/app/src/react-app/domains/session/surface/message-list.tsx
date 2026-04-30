@@ -14,6 +14,7 @@ import {
 import { groupMessageParts, isDesktopRuntime, summarizeStep } from "../../../../app/utils";
 import { MarkdownBlock } from "./markdown";
 import { applyTextHighlights } from "./text-highlights";
+import { OwDotTicker } from "../../../shell/dot-ticker";
 
 type TranscriptPart = Part;
 
@@ -499,11 +500,54 @@ function FileCard(props: {
   );
 }
 
+function ReasoningBlock(props: {
+  text: string;
+  isStreamingThisMessage: boolean;
+}) {
+  // userExpanded: null = 使用默认值（streaming 中=open，完成后=closed）
+  const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
+
+  // streaming 结束时重置为 null（默认 closed），清除用户之前的展开状态
+  const prevRef = useRef(props.isStreamingThisMessage);
+  useEffect(() => {
+    if (prevRef.current && !props.isStreamingThisMessage) {
+      setUserExpanded(null);
+    }
+    prevRef.current = props.isStreamingThisMessage;
+  }, [props.isStreamingThisMessage]);
+
+  // streaming 中强制展开；streaming 结束后尊重用户点击，默认 closed
+  const expanded = props.isStreamingThisMessage || (userExpanded ?? false);
+
+  return (
+    <div className="mb-3 rounded-[14px] border border-dls-border/60 bg-dls-sidebar/40 overflow-hidden">
+      <button
+        type="button"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] text-dls-secondary hover:bg-dls-hover/40 transition-colors"
+        onClick={() => setUserExpanded(!expanded)}
+      >
+        <span className="flex-1 font-medium tracking-wide">思考过程</span>
+        {props.isStreamingThisMessage ? <OwDotTicker size="sm" /> : null}
+        <ChevronDown
+          size={13}
+          className={`shrink-0 transition-transform ${expanded ? "" : "-rotate-90"}`}
+        />
+      </button>
+      {expanded ? (
+        <div className="px-3 pb-3 text-[13px] leading-[1.7] text-dls-secondary whitespace-pre-wrap border-t border-dls-border/40">
+          {cleanReasoningPreview(props.text)}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function StepRow(props: {
   id: string;
   part: TranscriptPart;
   expanded: boolean;
   onToggle: () => void;
+  isStreamingThisMessage?: boolean;
 }) {
   const summary = useMemo(() => summarizeStep(props.part), [props.part]);
   const toolState = useMemo(() => {
@@ -525,9 +569,10 @@ function StepRow(props: {
       ? (props.part as { text: string }).text
       : "";
     return (
-      <div className="text-[14px] leading-[1.7] text-gray-9 whitespace-pre-wrap">
-        <div className="max-w-[720px]">{cleanReasoningPreview(raw) || headline}</div>
-      </div>
+      <ReasoningBlock
+        text={raw}
+        isStreamingThisMessage={props.isStreamingThisMessage ?? false}
+      />
     );
   }
 
@@ -593,6 +638,7 @@ function StepsContainer(props: {
   isInline?: boolean;
   isNestedVariant: boolean;
   isStreaming: boolean;
+  isStreamingThisMessage?: boolean;
   expandedStepIds: Set<string>;
   onExpandedStepIdsChange: (updater: (current: Set<string>) => Set<string>) => void;
 }) {
@@ -632,6 +678,7 @@ function StepsContainer(props: {
                     part={part}
                     expanded={props.expandedStepIds.has(rowId)}
                     onToggle={() => toggleSteps(rowId)}
+                    isStreamingThisMessage={props.isStreamingThisMessage}
                   />
                 );
               })}
@@ -905,6 +952,7 @@ function SessionTranscriptInner(props: SessionTranscriptProps) {
               isUser={block.isUser}
               isNestedVariant={isNestedVariant}
               isStreaming={props.isStreaming}
+              isStreamingThisMessage={!block.isUser && props.isStreaming && block.messageIds.includes(latestAssistantMessageId ?? "")}
               expandedStepIds={expandedStepIds}
               onExpandedStepIdsChange={onExpandedStepIdsChange}
             />
@@ -1038,6 +1086,7 @@ function SessionTranscriptInner(props: SessionTranscriptProps) {
                     isInline={true}
                     isNestedVariant={isNestedVariant}
                     isStreaming={props.isStreaming}
+                    isStreamingThisMessage={isStreamingLatestAssistant}
                     expandedStepIds={expandedStepIds}
                     onExpandedStepIdsChange={onExpandedStepIdsChange}
                   />

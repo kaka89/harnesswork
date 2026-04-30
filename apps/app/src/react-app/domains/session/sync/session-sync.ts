@@ -34,6 +34,10 @@ type SyncEntry = {
   // the user like the app "freezes after 2 words."
   deltaFlushBuffer: PendingDelta[];
   deltaFlushScheduled: boolean;
+  // Track IDs of reasoning-type parts so that delta events with field="text"
+  // (which is what the SSE backend sends for reasoning deltas) are correctly
+  // routed to the reasoning part rather than creating a spurious text part.
+  reasoningPartIds: Set<string>;
 };
 
 const idleStatus: SessionStatus = { type: "idle" };
@@ -249,12 +253,6 @@ function appendDelta(messages: UIMessage[], messageId: string, partId: string, d
 
 function applyEvent(entry: SyncEntry, workspaceId: string, event: OpencodeEvent) {
   const queryClient = getReactQueryClient();
-  // [DIAG] 诊断日志：确认 applyEvent 被调用、以及事件类型
-  const diagBuf = ((window as unknown as Record<string, unknown>).__diagBuffer ??= []) as unknown[];
-  (diagBuf as string[]).push(`[SYNC:applyEvent] type=${event.type}`);
-  if (event.type === "message.part.updated" || event.type === "message.part.delta") {
-    console.warn(`[SYNC:applyEvent] type=${event.type}`, event.properties);
-  }
 
   if (event.type === "session.status") {
     const props = (event.properties ?? {}) as { sessionID?: string; status?: SessionStatus };
@@ -291,9 +289,11 @@ function applyEvent(entry: SyncEntry, workspaceId: string, event: OpencodeEvent)
     const part = props.part;
     if (!part?.sessionID || !part.messageID) return;
     if (!isTrackedSession(entry, part.sessionID)) return;
-    // [DIAG] 诊断日志：记录 part 类型，确认 reasoning 是否走独立 part 路径
-    console.warn(`[SYNC:part.updated] type=${part.type} id=${part.id}`, String((part as Record<string, unknown>).text ?? "").slice(0, 120));
-    (((window as unknown as Record<string, unknown>).__diagBuffer ??= []) as string[]).push(`part.updated type=${part.type} id=${part.id}`);
+    // Record reasoning part IDs so delta events can be correctly routed
+    // even when the SSE backend sends field="text" for reasoning deltas.
+    if (part.type === "reasoning") {
+      entry.reasoningPartIds.add(part.id);
+    }
     const mapped = toUIPart(part);
     if (!mapped) return;
     const pending = entry.pendingDeltas.get(part.id);
@@ -326,16 +326,16 @@ function applyEvent(entry: SyncEntry, workspaceId: string, event: OpencodeEvent)
     };
     if (!props.sessionID || !props.messageID || !props.partID || !props.delta) return;
     if (!isTrackedSession(entry, props.sessionID)) return;
-    // [DIAG] 诊断日志：记录 delta 事件的 field 值，判断 reasoning 路径
-    console.warn(`[SYNC:part.delta] field=${props.field} partID=${props.partID}`, String(props.delta).slice(0, 80));
-    (((window as unknown as Record<string, unknown>).__diagBuffer ??= []) as string[]).push(`part.delta field=${props.field} partID=${props.partID}`);
     // Buffer this delta and let the frame flusher apply all queued deltas
     // for this entry in a single setQueryData call per affected session.
+    // Use reasoningPartIds to correctly identify reasoning deltas: the SSE
+    // backend sends field="text" for reasoning part deltas, so checking
+    // field alone is insufficient — we must also check the part's known type.
     entry.deltaFlushBuffer.push({
       sessionId: props.sessionID!,
       messageId: props.messageID!,
       partId: props.partID!,
-      reasoning: props.field === "reasoning",
+      reasoning: entry.reasoningPartIds.has(props.partID!) || props.field === "reasoning",
       delta: props.delta!,
     });
     scheduleDeltaFlush(entry, workspaceId);
@@ -457,6 +457,7 @@ export function ensureWorkspaceSessionSync(input: SyncOptions) {
     pendingDeltas: new Map(),
     deltaFlushBuffer: [],
     deltaFlushScheduled: false,
+    reasoningPartIds: new Set(),
   });
 
   const created = syncs.get(key)!;

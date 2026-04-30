@@ -647,6 +647,7 @@ export function SessionSurface(props: SessionSurfaceProps) {
                     messages={renderedMessages}
                     isStreaming={chatStreaming}
                     developerMode={props.developerMode}
+                    showThinking={true}
                     scrollElement={() => scrollRef.current}
                   />
                   {showAssistantWaitState ? <AssistantWaitingCard /> : null}

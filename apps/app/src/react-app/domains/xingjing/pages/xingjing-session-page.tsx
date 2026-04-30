@@ -28,6 +28,7 @@ import { t } from "../../../../i18n";
 import type { OpenworkServerClient, OpenworkServerStatus } from "../../../../app/lib/openwork-server";
 import { buildOpenworkWorkspaceBaseUrl } from "../../../../app/lib/openwork-server";
 import { getDisplaySessionTitle } from "../../../../app/lib/session-title";
+import type { SettingsTab } from "../../../../app/types";
 import { Button } from "../../../design-system/button";
 import { ConfirmModal } from "../../../design-system/modals/confirm-modal";
 import ProviderAuthModal from "../../connections/provider-auth/provider-auth-modal";
@@ -37,6 +38,7 @@ import { SessionSurface } from "../../session/surface/session-surface";
 import { ShareWorkspaceModal } from "../../workspace/share-workspace-modal";
 import { OwDotTicker } from "../../../shell/dot-ticker";
 import { useReactRenderWatchdog } from "../../../shell/react-render-watchdog";
+import { SettingsRoute } from "../../../shell/settings-route";
 import { ArtifactsDrawer } from "../components/artifacts-drawer";
 import { HistorySessionDrawer } from "../components/history-session-drawer";
 import type { SessionPageProps } from "../../session/chat/session-page";
@@ -466,6 +468,7 @@ export function XingjingSessionPage(props: SessionPageProps) {
   });
 
   const [activeSection, setActiveSection] = useState<XingjingNavSection>("cockpit");
+    const [activeSettingsTab, setActiveSettingsTab] = useState<SettingsTab>("appearance");
   const [rightExpanded, setRightExpanded] = useState(false);
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
@@ -606,11 +609,7 @@ export function XingjingSessionPage(props: SessionPageProps) {
           <XingjingNavSidebar
             activeSection={activeSection}
             onSelect={(section) => {
-              if (section === "settings") {
-                navigate("/settings/general");
-              } else {
-                setActiveSection(section);
-              }
+              setActiveSection(section);
             }}
             clientConnected={props.clientConnected}
             openworkServerClient={props.openworkServerClient}
@@ -639,8 +638,19 @@ export function XingjingSessionPage(props: SessionPageProps) {
           <div className="relative min-h-0 flex-1 overflow-hidden">
             {/* 非驾驶舱二级页占位覆盖层：用绝对定位覆盖 SessionSurface，保持内层 SSE 连接不被杀中 */}
             {SECTION_META[activeSection] ? (
-              <div className="absolute inset-0 z-10 flex flex-col bg-dls-surface">
+              <div className="absolute inset-0 z-40 flex flex-col bg-dls-surface">
                 <XingjingPlaceholderPage section={activeSection} />
+              </div>
+            ) : null}
+
+            {/* 设置页内联覆盖层：保持左侧主菜单可见，仅覆盖内容区 */}
+            {activeSection === "settings" ? (
+              <div className="absolute inset-0 z-40 flex flex-col overflow-hidden bg-dls-surface">
+                <SettingsRoute
+                  xingjingMode
+                  controlledTab={activeSettingsTab}
+                  onControlledTabChange={setActiveSettingsTab}
+                />
               </div>
             ) : null}
 

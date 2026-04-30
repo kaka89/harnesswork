@@ -249,6 +249,12 @@ function appendDelta(messages: UIMessage[], messageId: string, partId: string, d
 
 function applyEvent(entry: SyncEntry, workspaceId: string, event: OpencodeEvent) {
   const queryClient = getReactQueryClient();
+  // [DIAG] 诊断日志：确认 applyEvent 被调用、以及事件类型
+  const diagBuf = ((window as unknown as Record<string, unknown>).__diagBuffer ??= []) as unknown[];
+  (diagBuf as string[]).push(`[SYNC:applyEvent] type=${event.type}`);
+  if (event.type === "message.part.updated" || event.type === "message.part.delta") {
+    console.warn(`[SYNC:applyEvent] type=${event.type}`, event.properties);
+  }
 
   if (event.type === "session.status") {
     const props = (event.properties ?? {}) as { sessionID?: string; status?: SessionStatus };
@@ -285,6 +291,9 @@ function applyEvent(entry: SyncEntry, workspaceId: string, event: OpencodeEvent)
     const part = props.part;
     if (!part?.sessionID || !part.messageID) return;
     if (!isTrackedSession(entry, part.sessionID)) return;
+    // [DIAG] 诊断日志：记录 part 类型，确认 reasoning 是否走独立 part 路径
+    console.warn(`[SYNC:part.updated] type=${part.type} id=${part.id}`, String((part as Record<string, unknown>).text ?? "").slice(0, 120));
+    (((window as unknown as Record<string, unknown>).__diagBuffer ??= []) as string[]).push(`part.updated type=${part.type} id=${part.id}`);
     const mapped = toUIPart(part);
     if (!mapped) return;
     const pending = entry.pendingDeltas.get(part.id);
@@ -317,6 +326,9 @@ function applyEvent(entry: SyncEntry, workspaceId: string, event: OpencodeEvent)
     };
     if (!props.sessionID || !props.messageID || !props.partID || !props.delta) return;
     if (!isTrackedSession(entry, props.sessionID)) return;
+    // [DIAG] 诊断日志：记录 delta 事件的 field 值，判断 reasoning 路径
+    console.warn(`[SYNC:part.delta] field=${props.field} partID=${props.partID}`, String(props.delta).slice(0, 80));
+    (((window as unknown as Record<string, unknown>).__diagBuffer ??= []) as string[]).push(`part.delta field=${props.field} partID=${props.partID}`);
     // Buffer this delta and let the frame flusher apply all queued deltas
     // for this entry in a single setQueryData call per affected session.
     entry.deltaFlushBuffer.push({

@@ -33,6 +33,7 @@ import { UpdatesView } from "../domains/settings/pages/updates-view";
 import { useDebugViewModel } from "../domains/settings/state/debug-view-model";
 import { useBootState } from "./boot-state";
 import { SettingsShell } from "../domains/settings/shell/settings-shell";
+import { XingjingSettingsShell } from "../domains/xingjing/pages/xingjing-settings-shell";
 import { createExtensionsStore, useExtensionsStoreSnapshot } from "../domains/settings/state/extensions-store";
 import { usePlatform } from "../kernel/platform";
 import { useLocal } from "../kernel/local-provider";
@@ -222,9 +223,15 @@ function parseSettingsPath(pathname: string): {
   redirectPath: string | null;
   extensionsSection?: "all" | "mcp" | "plugins";
 } {
-  const trimmed = pathname.replace(/^\/settings\/?/, "").replace(/^\/+|\/+$/g, "");
+  const isXingjingPath = /^\/xingjing\/settings/.test(pathname);
+  const trimmed = pathname
+    .replace(/^\/xingjing\/settings\/?/, "")  // 支持星静路径前缀
+    .replace(/^\/settings\/?/, "")
+    .replace(/^\/+|\/+$/g, "");
   if (!trimmed) {
-    return { tab: "general", redirectPath: "/settings/general" };
+    return isXingjingPath
+      ? { tab: "appearance", redirectPath: "/xingjing/settings/appearance" }
+      : { tab: "general", redirectPath: "/settings/general" };
   }
 
   const [head, tail] = trimmed.split("/");
@@ -243,7 +250,9 @@ function parseSettingsPath(pathname: string): {
       if (tail === "plugins") return { tab: "extensions", redirectPath: null, extensionsSection: "plugins" };
       return { tab: "extensions", redirectPath: null, extensionsSection: "all" };
     default:
-      return { tab: "general", redirectPath: "/settings/general" };
+      return isXingjingPath
+        ? { tab: "appearance", redirectPath: "/xingjing/settings/appearance" }
+        : { tab: "general", redirectPath: "/settings/general" };
   }
 }
 
@@ -293,14 +302,25 @@ function PlaceholderSettingsView(props: { title: string; detail: string }) {
   );
 }
 
-export function SettingsRoute() {
+export function SettingsRoute({
+  xingjingMode = false,
+  controlledTab,
+  onControlledTabChange,
+}: {
+  xingjingMode?: boolean;
+  controlledTab?: SettingsTab;
+  onControlledTabChange?: (tab: SettingsTab) => void;
+} = {}) {
   const navigate = useNavigate();
   const location = useLocation();
   const local = useLocal();
   const platform = usePlatform();
   const checkDesktopRestriction = useCheckDesktopRestriction();
   const reloadCoordinator = useReloadCoordinator();
-  const route = parseSettingsPath(location.pathname);
+  // When controlledTab is provided (inline mode), bypass URL parsing
+  const route = controlledTab
+    ? { tab: controlledTab, redirectPath: null as null, extensionsSection: undefined }
+    : parseSettingsPath(location.pathname);
 
   const [loading, setLoading] = useState(true);
   const [workspaces, setWorkspaces] = useState<RouteWorkspace[]>([]);
@@ -433,6 +453,9 @@ export function SettingsRoute() {
   }, [openworkClient, selectedWorkspaceId]);
 
   useEffect(() => {
+    // Skip registering reload controls when rendered inline (controlled mode)
+    // to avoid conflicting with the parent SessionRoute's already-registered controls
+    if (controlledTab !== undefined) return;
     return reloadCoordinator.registerWorkspaceReloadControls({
       canReloadWorkspaceEngine: () => Boolean(openworkClient && (selectedWorkspace?.id || selectedWorkspaceId)),
       reloadWorkspaceEngine: reloadWorkspaceEngineFromUi,
@@ -826,7 +849,8 @@ export function SettingsRoute() {
     void connectionsStore.refreshMcpServers();
   }, [activeClient, connectionsStore, providerAuthStore, selectedWorkspace?.id]);
 
-  if (route.redirectPath) {
+  // Only redirect when NOT in inline (controlled) mode
+  if (!controlledTab && route.redirectPath) {
     return <Navigate to={route.redirectPath} replace />;
   }
 
@@ -1203,45 +1227,65 @@ export function SettingsRoute() {
     }
   })();
 
+  const handleXingjingTabSelect = (tab: SettingsTab) => {
+    if (onControlledTabChange) {
+      onControlledTabChange(tab);
+    } else {
+      navigate(`/xingjing/settings/${tab}`);
+    }
+  };
+
+  const settingsShell = xingjingMode ? (
+    <XingjingSettingsShell
+      activeTab={route.tab}
+      onSelectTab={handleXingjingTabSelect}
+      onNavigateToOpenWork={() => navigate("/settings/general")}
+    >
+      {settingsView}
+    </XingjingSettingsShell>
+  ) : (
+    <SettingsShell
+      activeTab={route.tab}
+      onSelectTab={(tab) => navigate(`/settings/${tab}`)}
+      developerMode={developerMode}
+      selectedWorkspaceName={selectedWorkspaceName}
+      headerStatus={routeOpenworkStatus}
+      busyHint={loading ? t("session.loading_detail") : busyLabel}
+      workspaceSessionListProps={{
+        workspaceSessionGroups,
+        selectedWorkspaceId,
+        developerMode,
+        selectedSessionId: null,
+        connectingWorkspaceId: null,
+        workspaceConnectionStateById: {},
+        newTaskDisabled: !opencodeClient,
+        onSelectWorkspace: async (workspaceId) => {
+          setSelectedWorkspaceId(workspaceId);
+          return true;
+        },
+        onOpenSession: (_workspaceId, sessionId) => navigate(`/session/${sessionId}`),
+        onCreateTaskInWorkspace: () => navigate("/session"),
+        onOpenRenameWorkspace: () => {},
+        onShareWorkspace: () => {},
+        onRevealWorkspace: () => {},
+        onRecoverWorkspace: async () => true,
+        onTestWorkspaceConnection: async () => true,
+        onEditWorkspaceConnection: () => {},
+        onForgetWorkspace: () => {},
+        onOpenCreateWorkspace: handleOpenCreateWorkspace,
+      }}
+      onClose={() => navigate("/session")}
+      sidebarWidth={shellLayout.leftSidebarWidth}
+      onSidebarResizeStart={shellLayout.startLeftSidebarResize}
+      error={routeError}
+    >
+      {settingsView}
+    </SettingsShell>
+  );
+
   return (
     <>
-      <SettingsShell
-        activeTab={route.tab}
-        onSelectTab={(tab) => navigate(`/settings/${tab}`)}
-        developerMode={developerMode}
-        selectedWorkspaceName={selectedWorkspaceName}
-        headerStatus={routeOpenworkStatus}
-        busyHint={loading ? t("session.loading_detail") : busyLabel}
-        workspaceSessionListProps={{
-          workspaceSessionGroups,
-          selectedWorkspaceId,
-          developerMode,
-          selectedSessionId: null,
-          connectingWorkspaceId: null,
-          workspaceConnectionStateById: {},
-          newTaskDisabled: !opencodeClient,
-          onSelectWorkspace: async (workspaceId) => {
-            setSelectedWorkspaceId(workspaceId);
-            return true;
-          },
-          onOpenSession: (_workspaceId, sessionId) => navigate(`/session/${sessionId}`),
-          onCreateTaskInWorkspace: () => navigate("/session"),
-          onOpenRenameWorkspace: () => {},
-          onShareWorkspace: () => {},
-          onRevealWorkspace: () => {},
-          onRecoverWorkspace: async () => true,
-          onTestWorkspaceConnection: async () => true,
-          onEditWorkspaceConnection: () => {},
-          onForgetWorkspace: () => {},
-          onOpenCreateWorkspace: handleOpenCreateWorkspace,
-        }}
-        onClose={() => navigate("/session")}
-        sidebarWidth={shellLayout.leftSidebarWidth}
-        onSidebarResizeStart={shellLayout.startLeftSidebarResize}
-        error={routeError}
-      >
-        {settingsView}
-      </SettingsShell>
+      {settingsShell}
 
       <ProviderAuthModal
         open={providerAuthSnapshot.providerAuthModalOpen}

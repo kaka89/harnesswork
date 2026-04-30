@@ -490,6 +490,9 @@ export function XingjingSessionPage(props: SessionPageProps) {
     [props.selectedSessionId, props.sidebar.workspaceSessionGroups],
   );
 
+  // 仅驾驶舱（对话页面）才渲染左右两个抽屉；其他二级导航页隐藏。
+  const isCockpit = activeSection === "cockpit";
+
   const showWorkspaceSetupEmptyState = props.workspaces.length === 0 && !props.selectedSessionId;
   const showStartupSkeleton =
     !props.selectedSessionId &&
@@ -617,20 +620,22 @@ export function XingjingSessionPage(props: SessionPageProps) {
           />
         </div>
 
-        {/* History session drawer 40-240px */}
-        <div
-          className="flex shrink-0 flex-col border-r border-dls-border bg-white transition-[width] duration-200"
-          style={{ width: historyExpanded ? 240 : 40 }}
-        >
-          <HistorySessionDrawer
-            workspaceId={props.selectedWorkspaceId}
-            selectedSessionId={props.selectedSessionId}
-            sessions={currentWorkspaceSessions}
-            expanded={historyExpanded}
-            onToggle={() => setHistoryExpanded((v) => !v)}
-            onOpenSession={props.sidebar.onOpenSession}
-          />
-        </div>
+        {/* History session drawer 40-240px（仅在驾驶舱页显示） */}
+        {isCockpit ? (
+          <div
+            className="flex shrink-0 flex-col border-r border-dls-border bg-white transition-[width] duration-200"
+            style={{ width: historyExpanded ? 240 : 40 }}
+          >
+            <HistorySessionDrawer
+              workspaceId={props.selectedWorkspaceId}
+              selectedSessionId={props.selectedSessionId}
+              sessions={currentWorkspaceSessions}
+              expanded={historyExpanded}
+              onToggle={() => setHistoryExpanded((v) => !v)}
+              onOpenSession={props.sidebar.onOpenSession}
+            />
+          </div>
+        ) : null}
 
         {/* Main content flex-1 */}
         <div className="flex min-w-0 flex-1 flex-col bg-dls-surface">
@@ -748,18 +753,20 @@ export function XingjingSessionPage(props: SessionPageProps) {
           </div>
         </div>
 
-        {/* Right ArtifactsDrawer */}
-        <div
-          className="flex shrink-0 flex-col border-l border-dls-border bg-dls-sidebar transition-[width] duration-200"
-          style={{ width: rightExpanded ? 280 : 40 }}
-        >
-          <ArtifactsDrawer
-            workspaceId={props.selectedWorkspaceId}
-            sessionId={props.selectedSessionId}
-            expanded={rightExpanded}
-            onToggle={() => setRightExpanded((v) => !v)}
-          />
-        </div>
+        {/* Right ArtifactsDrawer（仅在驾驶舱页显示） */}
+        {isCockpit ? (
+          <div
+            className="flex shrink-0 flex-col border-l border-dls-border bg-dls-sidebar transition-[width] duration-200"
+            style={{ width: rightExpanded ? 280 : 40 }}
+          >
+            <ArtifactsDrawer
+              workspaceId={props.selectedWorkspaceId}
+              sessionId={props.selectedSessionId}
+              expanded={rightExpanded}
+              onToggle={() => setRightExpanded((v) => !v)}
+            />
+          </div>
+        ) : null}
       </div>
 
       {/* ── Modals ─────────────────────────────────────────────────────────── */}

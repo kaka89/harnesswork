@@ -10,6 +10,10 @@
 import { useState, useCallback } from "react";
 import { createClient, unwrap } from "../../../../app/lib/opencode";
 import type { PipelineDefinition } from "../pipeline/types";
+import type { OpenworkServerClient } from "../../../../app/lib/openwork-server";
+import { useOpenworkStore } from "../../../kernel/store";
+import { loadDirGraph } from "../workspace-knowledge/services/dir-graph-loader";
+import { buildWorkspaceContext } from "../workspace-knowledge/services/context-builder";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -25,6 +29,8 @@ export interface UsePipelineLauncherParams {
    * 上层应导航到该 session 并切换 activeSection 为 "cockpit"。
    */
   onSessionCreated: (sessionId: string) => void;
+  /** OpenWork server client（可选），用于注入 <workspace_context> */
+  owClient?: OpenworkServerClient | null;
 }
 
 export interface UsePipelineLauncherReturn {
@@ -72,6 +78,7 @@ export function usePipelineLauncher({
   token,
   workspacePath,
   onSessionCreated,
+  owClient,
 }: UsePipelineLauncherParams): UsePipelineLauncherReturn {
   const [launching, setLaunching] = useState(false);
   const [launchError, setLaunchError] = useState<string | null>(null);
@@ -104,7 +111,21 @@ export function usePipelineLauncher({
         );
 
         // 构建初始 prompt
-        const promptText = buildLaunchPrompt(def, goal, inputValues);
+        let promptText = buildLaunchPrompt(def, goal, inputValues);
+
+        // 注入 workspace context（静默降级：任何失败都不阻塞 launch）
+        const wsId = useOpenworkStore.getState().activeWorkspaceId;
+        if (owClient && wsId) {
+          try {
+            const graph = await loadDirGraph(owClient, wsId);
+            const ctx = await buildWorkspaceContext(owClient, wsId, graph);
+            if (ctx) {
+              promptText = ctx + "\n\n" + promptText;
+            }
+          } catch {
+            // silent degradation
+          }
+        }
 
         if (mode === "current-session" && parentSessionId) {
           // 在当前 session 继续执行，不创建新 session
@@ -163,7 +184,7 @@ export function usePipelineLauncher({
         setLaunching(false);
       }
     },
-    [opencodeBaseUrl, token, workspacePath, onSessionCreated],
+    [opencodeBaseUrl, token, workspacePath, onSessionCreated, owClient],
   );
 
   return { launch, launching, launchError, clearError };

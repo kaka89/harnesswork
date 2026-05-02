@@ -118,12 +118,35 @@ export function toUIPart(part: Part): UIMessage["parts"][number] | null {
       input: state.input,
     };
   }
-  if (part.type === "step-start") return { type: "step-start" };
+  if (part.type === "step-start") {
+    // [DUP-BUG] A1: 验证 step-start 是否携带 id（SDK 侧是否提供）
+    console.warn("[DUP-BUG][A1] toUIPart step-start", {
+      partId: (part as { id?: string }).id,
+      messageID: (part as { messageID?: string }).messageID,
+    });
+    // [Phase B fix] 保留 SDK 提供的 partId，使 upsertPart 能正确定位已有 step-start 而非无限 append
+    // StepStartUIPart 类型不包含 providerMetadata，用 unknown 中转追加
+    return {
+      type: "step-start",
+      providerMetadata: { opencode: { partId: (part as { id?: string }).id } },
+    } as unknown as UIMessage["parts"][number];
+  }
   return null;
 }
 
 function getPartMetadataId(part: UIMessage["parts"][number]) {
-  if (part.type !== "text" && part.type !== "reasoning" && part.type !== "file") return null;
+  // Special case: step-start 不包含 providerMetadata 类型定义，但 Phase B fix 在运行时注入了 partId
+  if (part.type === "step-start") {
+    const meta = (part as unknown as { providerMetadata?: { opencode?: { partId?: string } } })
+      .providerMetadata?.opencode;
+    if (meta && typeof meta === "object" && "partId" in meta) return meta.partId ?? null;
+    return null;
+  }
+  if (
+    part.type !== "text" &&
+    part.type !== "reasoning" &&
+    part.type !== "file"
+  ) return null;
   const metadata = part.providerMetadata?.opencode;
   if (!metadata || typeof metadata !== "object") return null;
   return "partId" in metadata ? (metadata as { partId?: string }).partId ?? null : null;
@@ -172,6 +195,18 @@ export function upsertPart(messages: UIMessage[], messageId: string, partId: str
       ("toolCallId" in part && part.toolCallId === partId) || getPartMetadataId(part) === partId,
     );
     if (index === -1) {
+      // [DUP-BUG] A2: 追加新 part 时打印现场，确认是否在已有 text/reasoning part 之后又 append 了同类型 part
+      console.warn("[DUP-BUG][A2] upsertPart APPEND", {
+        messageId,
+        incomingType: next.type,
+        incomingPartId: partId,
+        existingParts: message.parts.map((p) => ({
+          type: p.type,
+          id: getPartMetadataId(p),
+          toolCallId: "toolCallId" in p ? p.toolCallId : undefined,
+          textLen: (p.type === "text" || p.type === "reasoning") ? p.text?.length : undefined,
+        })),
+      });
       return { ...message, parts: [...message.parts, next] };
     }
     const parts = message.parts.slice();
@@ -212,6 +247,17 @@ function appendDelta(messages: UIMessage[], messageId: string, partId: string, d
 
   let nextParts: UIMessage["parts"];
   if (partIndex === -1) {
+    // [DUP-BUG] A3: delta 找不到目标 part，将创建新 part
+    console.warn("[DUP-BUG][A3] appendDelta no target part — will create new", {
+      messageId,
+      partId,
+      reasoning,
+      existingParts: target.parts.map((p) => ({
+        type: p.type,
+        id: getPartMetadataId(p),
+        textLen: (p.type === "text" || p.type === "reasoning") ? p.text?.length : undefined,
+      })),
+    });
     // No existing matching part — append a fresh one so the delta is not lost.
     const newPart: UIMessage["parts"][number] = reasoning
       ? {
@@ -423,7 +469,12 @@ function flushDeltas(entry: SyncEntry, workspaceId: string) {
 }
 
 function startSync(input: SyncOptions) {
-  const client = createClient(input.baseUrl, undefined, { token: input.openworkToken, mode: "openwork" });
+  const client = createClient(
+    input.baseUrl,
+    undefined,
+    { token: input.openworkToken, mode: "openwork" },
+    { source: "session-sync" },
+  );
   const controller = new AbortController();
   const entry = syncs.get(syncKey(input));
 
@@ -512,6 +563,30 @@ export function seedSessionState(workspaceId: string, snapshot: OpenworkSessionS
         for (let i = incomingMsg.parts.length; i < cachedMsg.parts.length; i++) {
           parts.push(cachedMsg.parts[i]);
         }
+      }
+      // [DUP-BUG] A4: 打印 assistant 消息的 incoming/existing/merged parts 摘要
+      if (incomingMsg.role === "assistant") {
+        const cachedForLog = existing.find((m) => m.id === incomingMsg.id);
+        // parts 此时已包含 extra cached parts，直接拷贝即可
+        console.warn("[DUP-BUG][A4] seedSessionState merge", {
+          msgId: incomingMsg.id,
+          sessionStatus: snapshot.status.type,
+          incomingParts: incomingMsg.parts.map((p) => ({
+            type: p.type,
+            id: getPartMetadataId(p),
+            textLen: (p.type === "text" || p.type === "reasoning") ? p.text?.length : undefined,
+          })),
+          existingParts: cachedForLog?.parts.map((p) => ({
+            type: p.type,
+            id: getPartMetadataId(p),
+            textLen: (p.type === "text" || p.type === "reasoning") ? p.text?.length : undefined,
+          })),
+          mergedParts: parts.map((p) => ({
+            type: p.type,
+            id: getPartMetadataId(p),
+            textLen: (p.type === "text" || p.type === "reasoning") ? p.text?.length : undefined,
+          })),
+        });
       }
       return { ...incomingMsg, parts };
     });

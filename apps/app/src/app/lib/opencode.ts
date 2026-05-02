@@ -54,12 +54,40 @@ type SessionMessagesParameters = {
   limit?: number;
 };
 
+type SessionCreateParameters = {
+  directory?: string;
+  workspace?: string;
+  parentID?: string;
+  title?: string;
+  permission?: string;
+  workspaceID?: string;
+};
+
 export type OpencodeAuth = {
   username?: string;
   password?: string;
   token?: string;
   mode?: "basic" | "openwork";
 };
+
+/**
+ * Pipeline-level context propagated into opencode client so every HTTP
+ * request/response can be traced by `[pipeline:<id>]` prefix in devtools.
+ * When no pipelineId is provided, `source` becomes the disambiguator so we
+ * can still tell which call site created the session (e.g. `session-route.retry`
+ * vs `actions-store` vs `xingjing.retry-from-node`).
+ */
+export type OpencodeLogContext = {
+  pipelineId?: string;
+  triggerCommand?: string;
+  source?: string;
+};
+
+function resolveLogPrefix(ctx?: OpencodeLogContext): string {
+  if (ctx?.pipelineId) return `[pipeline:${ctx.pipelineId}]`;
+  if (ctx?.source) return `[opencode:${ctx.source}]`;
+  return "[opencode]";
+}
 
 const DEFAULT_OPENCODE_REQUEST_TIMEOUT_MS = 10_000;
 const OAUTH_OPENCODE_REQUEST_TIMEOUT_MS = 5 * 60_000;
@@ -95,7 +123,12 @@ async function postSessionRequest<T>(
   baseUrl: string,
   path: string,
   body: Record<string, unknown>,
-  options?: { headers?: Record<string, string>; directory?: string; throwOnError?: boolean },
+  options?: {
+    headers?: Record<string, string>;
+    directory?: string;
+    throwOnError?: boolean;
+    logContext?: OpencodeLogContext;
+  },
 ): Promise<FieldsResult<T>> {
   const headers = new Headers(options?.headers);
   headers.set("Content-Type", "application/json");
@@ -103,6 +136,20 @@ async function postSessionRequest<T>(
   if (directoryHeader) {
     headers.set("x-opencode-directory", directoryHeader);
   }
+
+  const ctxPrefix = resolveLogPrefix(options?.logContext);
+  const ctxBase = {
+    pipelineId: options?.logContext?.pipelineId,
+    triggerCommand: options?.logContext?.triggerCommand,
+    source: options?.logContext?.source,
+  };
+  console.log(`${ctxPrefix}[opencode.postSession] request`, {
+    ...ctxBase,
+    ts: Date.now(),
+    method: "POST",
+    path,
+    bodyKeys: Object.keys(body),
+  });
 
   const response = await fetchImpl(`${baseUrl}${path}`, {
     method: "POST",
@@ -118,6 +165,12 @@ async function postSessionRequest<T>(
 
   if (response.ok) {
     const data = response.status === 204 ? ({} as T) : ((await response.json()) as T);
+    console.log(`${ctxPrefix}[opencode.postSession] ok`, {
+      ...ctxBase,
+      ts: Date.now(),
+      path,
+      status: response.status,
+    });
     return { data, request, response };
   }
 
@@ -128,6 +181,13 @@ async function postSessionRequest<T>(
   } catch {
     // ignore
   }
+  console.error(`${ctxPrefix}[opencode.postSession] error`, {
+    ...ctxBase,
+    ts: Date.now(),
+    path,
+    status: response.status,
+    body: error,
+  });
   if (options?.throwOnError) throw error;
   return { error, request, response };
 }
@@ -344,7 +404,18 @@ export function unwrap<T>(result: FieldsResult<T>): NonNullable<T> {
   throw new Error(message || "Unknown error");
 }
 
-export function createClient(baseUrl: string, directory?: string, auth?: OpencodeAuth) {
+export function createClient(
+  baseUrl: string,
+  directory?: string,
+  auth?: OpencodeAuth,
+  logContext?: OpencodeLogContext,
+) {
+  const logPrefix = resolveLogPrefix(logContext);
+  const logBase = {
+    pipelineId: logContext?.pipelineId,
+    triggerCommand: logContext?.triggerCommand,
+    source: logContext?.source,
+  };
   const headers: Record<string, string> = {};
   if (!isDesktopRuntime()) {
     const authHeader = resolveAuthHeader(auth);
@@ -377,6 +448,7 @@ export function createClient(baseUrl: string, directory?: string, auth?: Opencod
     get: (parameters: SessionLookupParameters, options?: { throwOnError?: boolean }) => Promise<FieldsResult<Session>>;
     messages: (parameters: SessionMessagesParameters, options?: { throwOnError?: boolean }) => Promise<FieldsResult<Array<{ info: Message; parts: Part[] }>>>;
     todo: (parameters: SessionLookupParameters, options?: { throwOnError?: boolean }) => Promise<FieldsResult<Todo[]>>;
+    create: (parameters?: SessionCreateParameters, options?: { throwOnError?: boolean }) => Promise<FieldsResult<Session>>;
     promptAsync: (parameters: PromptAsyncParameters, options?: { throwOnError?: boolean }) => Promise<FieldsResult<{}>>;
     command: (parameters: CommandParameters, options?: { throwOnError?: boolean }) => Promise<FieldsResult<{}>>;
   };
@@ -447,30 +519,111 @@ export function createClient(baseUrl: string, directory?: string, auth?: Opencod
     );
   };
 
+  sessionOverrides.create = async (parameters?: SessionCreateParameters, options?: { throwOnError?: boolean }) => {
+    const { directory: requestDirectory, workspace, ...body } = parameters ?? {};
+    const effectiveDirectory = (requestDirectory ?? directory)?.trim();
+    const query = new URLSearchParams();
+    if (effectiveDirectory) query.set("directory", effectiveDirectory);
+    if (workspace) query.set("workspace", workspace);
+    const path = `/session${query.size ? `?${query}` : ""}`;
+    console.log(`${logPrefix}[opencode.session.create] request`, {
+      ...logBase,
+      ts: Date.now(),
+      keys: Object.keys(parameters ?? {}),
+      effectiveDirectory,
+      workspace,
+      bodyKeys: Object.keys(body),
+    });
+    const result = await postSessionRequest<Session>(fetchImpl, baseUrl, path, body as Record<string, unknown>, {
+      headers: Object.keys(headers).length ? headers : undefined,
+      throwOnError: options?.throwOnError,
+      logContext,
+    });
+    if (result.error !== undefined) {
+      console.error(`${logPrefix}[opencode.session.create] error`, {
+        ...logBase,
+        ts: Date.now(),
+        status: result.response.status,
+        error: result.error,
+      });
+    } else {
+      console.log(`${logPrefix}[opencode.session.create] ok`, {
+        ...logBase,
+        ts: Date.now(),
+        sessionId: result.data?.id,
+      });
+    }
+    return result;
+  };
+
   const promptAsyncOriginal = sessionOverrides.promptAsync.bind(session);
-  sessionOverrides.promptAsync = (parameters: PromptAsyncParameters, options?: { throwOnError?: boolean }) => {
+  sessionOverrides.promptAsync = async (parameters: PromptAsyncParameters, options?: { throwOnError?: boolean }) => {
     if (!("reasoning_effort" in parameters)) {
       return promptAsyncOriginal(parameters, options);
     }
     const { sessionID, directory: requestDirectory, ...body } = parameters;
-    return postSessionRequest(fetchImpl, baseUrl, `/session/${encodeURIComponent(sessionID)}/prompt_async`, body, {
+    const logBaseWithSession = { ...logBase, sessionId: sessionID };
+    console.log(`${logPrefix}[opencode.session.promptAsync] request`, {
+      ...logBaseWithSession,
+      ts: Date.now(),
+      parts: Array.isArray(body.parts) ? body.parts.length : 0,
+      agent: body.agent,
+    });
+    const result = await postSessionRequest<{}>(fetchImpl, baseUrl, `/session/${encodeURIComponent(sessionID)}/prompt_async`, body, {
       headers: Object.keys(headers).length ? headers : undefined,
       directory: requestDirectory ?? directory,
       throwOnError: options?.throwOnError,
+      logContext,
     });
+    if (result.error !== undefined) {
+      console.error(`${logPrefix}[opencode.session.promptAsync] error`, {
+        ...logBaseWithSession,
+        ts: Date.now(),
+        status: result.response.status,
+        error: result.error,
+      });
+    } else {
+      console.log(`${logPrefix}[opencode.session.promptAsync] ok`, {
+        ...logBaseWithSession,
+        ts: Date.now(),
+      });
+    }
+    return result;
   };
 
   const commandOriginal = sessionOverrides.command.bind(session);
-  sessionOverrides.command = (parameters: CommandParameters, options?: { throwOnError?: boolean }) => {
+  sessionOverrides.command = async (parameters: CommandParameters, options?: { throwOnError?: boolean }) => {
     if (!("reasoning_effort" in parameters)) {
       return commandOriginal(parameters, options);
     }
     const { sessionID, directory: requestDirectory, ...body } = parameters;
-    return postSessionRequest(fetchImpl, baseUrl, `/session/${encodeURIComponent(sessionID)}/command`, body, {
+    const logBaseWithSession = { ...logBase, sessionId: sessionID };
+    console.log(`${logPrefix}[opencode.session.command] request`, {
+      ...logBaseWithSession,
+      ts: Date.now(),
+      command: body.command,
+      parts: Array.isArray(body.parts) ? body.parts.length : 0,
+    });
+    const result = await postSessionRequest<{}>(fetchImpl, baseUrl, `/session/${encodeURIComponent(sessionID)}/command`, body, {
       headers: Object.keys(headers).length ? headers : undefined,
       directory: requestDirectory ?? directory,
       throwOnError: options?.throwOnError,
+      logContext,
     });
+    if (result.error !== undefined) {
+      console.error(`${logPrefix}[opencode.session.command] error`, {
+        ...logBaseWithSession,
+        ts: Date.now(),
+        status: result.response.status,
+        error: result.error,
+      });
+    } else {
+      console.log(`${logPrefix}[opencode.session.command] ok`, {
+        ...logBaseWithSession,
+        ts: Date.now(),
+      });
+    }
+    return result;
   };
 
   return client;

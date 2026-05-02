@@ -27,7 +27,7 @@ import { PIPELINE_LIMITS } from "./types";
 // ── 常量 ─────────────────────────────────────────────────────────────────────
 
 export const AGENTS_DIR = ".opencode/agents";
-export const COMMAND_DIR = ".opencode/command";
+export const COMMAND_DIR = ".opencode/commands";
 export const DOCS_BASE = ".opencode/docs";
 
 /** 节点产出文件路径（相对 workspace root） */
@@ -158,8 +158,10 @@ export function validatePipeline(
     }
 
     // agent/skill ref 存在性
-    if (node.kind === "agent" && node.ref && opts.knownAgentNames) {
-      if (!opts.knownAgentNames.has(node.ref)) {
+    if (node.kind === "agent") {
+      if (!node.ref?.trim()) {
+        errors.push({ code: "AGENT_REF_REQUIRED", nodeId: node.id });
+      } else if (opts.knownAgentNames && !opts.knownAgentNames.has(node.ref)) {
         errors.push({ code: "UNKNOWN_AGENT_REF", nodeId: node.id, ref: node.ref });
       }
     }
@@ -247,7 +249,10 @@ function buildNodeSection(
         ? `\n**给子 agent 的指令**：\n${node.prompt}`
         : "";
       lines.push(
-        `使用 Task tool 派发子 agent \`@${node.ref ?? "developer"}\`。${promptLine}`,
+        `使用 Task tool 派发子 agent \`@${node.ref}\`。\n` +
+        `**Task 工具参数约束（CRITICAL）**：仅传入 \`description\`、\`prompt\`、\`subagent_type\` 三个字段；` +
+        `严禁传入 \`task_id\`、\`id\`、\`taskId\` 等任何额外字段，否则 binary 会以 Zod schema 校验失败。` +
+        `${promptLine}`,
       );
       break;
     }
@@ -313,7 +318,8 @@ function buildNodeSection(
 
 /** 生成并行组块说明 */
 function buildParallelGroupNote(nodes: PipelineNode[]): string {
-  return `> **并行组**（${nodes.length} 个节点）：通过 Task tool 一次性派发以下所有节点，等待全部完成后统一更新 Todo，不允许单个子 session 直接修改 Todo。并行节点间只读共享文件，不得写入同名文件。最多同时派发 ${PIPELINE_LIMITS.parallelGroupSize} 个。`;
+  return `> **并行组**（${nodes.length} 个节点）：通过 Task tool 一次性派发以下所有节点，等待全部完成后统一更新 Todo，不允许单个子 session 直接修改 Todo。并行节点间只读共享文件，不得写入同名文件。最多同时派发 ${PIPELINE_LIMITS.parallelGroupSize} 个。
+> **Task 工具参数约束（CRITICAL）**：每次派发仅传入 \`description\`、\`prompt\`、\`subagent_type\` 三个字段；严禁传入 \`task_id\`、\`id\`、\`taskId\` 等任何额外字段。`;
 }
 
 /**

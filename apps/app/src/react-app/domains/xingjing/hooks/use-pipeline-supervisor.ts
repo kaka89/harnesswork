@@ -54,6 +54,9 @@ export interface PipelineSupervisorResult {
   progress: number;
 }
 
+// ── 稳定空数组常量（避免 useSyncExternalStore 快照每次返回新引用引发无限循环）────
+const EMPTY_TODOS: Todo[] = [];
+
 // ── 本地存储：记录节点进入 in_progress 的时间 ─────────────────────────────────
 
 const inProgressTimestamps = new Map<string, number>();
@@ -93,10 +96,10 @@ export function usePipelineSupervisor({
   const todos = useSyncExternalStore(
     (callback) => queryClient.getQueryCache().subscribe(callback),
     () => {
-      if (!workspaceId || !sessionId) return [] as Todo[];
-      return queryClient.getQueryData<Todo[]>(todoKey(workspaceId, sessionId)) ?? [];
+      if (!workspaceId || !sessionId) return EMPTY_TODOS;
+      return queryClient.getQueryData<Todo[]>(todoKey(workspaceId, sessionId)) ?? EMPTY_TODOS;
     },
-    () => [] as Todo[],
+    () => EMPTY_TODOS,
   );
 
   const result = useMemo<PipelineSupervisorResult>(() => {

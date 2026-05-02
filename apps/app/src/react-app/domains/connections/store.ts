@@ -174,10 +174,12 @@ export function createConnectionsStore(options: {
 
     const mountedBaseUrl =
       buildOpenworkWorkspaceBaseUrl(openworkBaseUrl, options.runtimeWorkspaceId()) ?? openworkBaseUrl;
-    activeClient = createClient(`${mountedBaseUrl.replace(/\/+$/, "")}/opencode`, undefined, {
-      token,
-      mode: "openwork",
-    });
+    activeClient = createClient(
+      `${mountedBaseUrl.replace(/\/+$/, "")}/opencode`,
+      undefined,
+      { token, mode: "openwork" },
+      { source: "connections-store" },
+    );
     options.setClient(activeClient);
     return activeClient;
   };

@@ -148,10 +148,21 @@ export function SessionSurface(props: SessionSurfaceProps) {
   const [toolMcpStatus, setToolMcpStatus] = useState<string | null>(null);
   const [toolMcpStatuses, setToolMcpStatuses] = useState<McpStatusMap>({});
   const hydratedKeyRef = useRef<string | null>(null);
+  // Tracks the original user-typed text for each pending send, so we can
+  // display it in the user bubble instead of the backend-expanded skill text.
+  const pendingUserTextsRef = useRef<string[]>([]);
+  const processedUserMsgIdsRef = useRef<Set<string>>(new Set());
+  const [originalUserMessageTexts, setOriginalUserMessageTexts] = useState<ReadonlyMap<string, string>>(() => new Map());
   const attachmentsRef = useRef<ComposerAttachment[]>([]);
   attachmentsRef.current = attachments;
   const opencodeClient = useMemo(
-    () => createClient(props.opencodeBaseUrl, undefined, { token: props.openworkToken, mode: "openwork" }),
+    () =>
+      createClient(
+        props.opencodeBaseUrl,
+        undefined,
+        { token: props.openworkToken, mode: "openwork" },
+        { source: "session-surface" },
+      ),
     [props.opencodeBaseUrl, props.openworkToken],
   );
 
@@ -400,6 +411,14 @@ export function SessionSurface(props: SessionSurfaceProps) {
     setDraft("");
     setAttachments([]);
     props.onDraftChange(buildDraft("", []));
+    // Mark all currently-known user messages as processed so they don't
+    // accidentally consume the pending original text when the effect fires.
+    renderedMessages.forEach((msg) => {
+      if (msg.role === "user") processedUserMsgIdsRef.current.add(msg.id);
+    });
+    // Record the original typed text — this is what we'll display in the
+    // user bubble instead of the backend-expanded agent skill template.
+    pendingUserTextsRef.current.push(text);
     try {
       await props.onSendDraft(nextDraft);
       // Revoke preview object-URLs only after a confirmed send so that a
@@ -410,6 +429,8 @@ export function SessionSurface(props: SessionSurfaceProps) {
       // Restore draft + attachments so the user can retry.
       setDraft(prevDraft);
       setAttachments(prevAttachments);
+      // Remove the pending text we just pushed since the send failed.
+      pendingUserTextsRef.current.pop();
       setError(nextError instanceof Error ? nextError.message : "Failed to send prompt.");
       setAwaitingAssistantBaseline(null);
       setSending(false);
@@ -440,6 +461,36 @@ export function SessionSurface(props: SessionSurfaceProps) {
       setSending(false);
     }
   }, [liveStatus.type]);
+
+  // Reset original-text tracking when the session changes.
+  useEffect(() => {
+    pendingUserTextsRef.current = [];
+    processedUserMsgIdsRef.current = new Set();
+    setOriginalUserMessageTexts(new Map());
+  }, [props.sessionId]);
+
+  // When new user messages arrive from the server, associate them with the
+  // original typed text we stored in pendingUserTextsRef so the bubble shows
+  // what the user actually typed instead of the backend-expanded skill text.
+  useEffect(() => {
+    if (pendingUserTextsRef.current.length === 0) return;
+    const newEntries: Array<[string, string]> = [];
+    for (const msg of renderedMessages) {
+      if (msg.role !== "user") continue;
+      if (processedUserMsgIdsRef.current.has(msg.id)) continue;
+      const originalText = pendingUserTextsRef.current.shift();
+      if (originalText === undefined) break;
+      processedUserMsgIdsRef.current.add(msg.id);
+      newEntries.push([msg.id, originalText]);
+    }
+    if (newEntries.length > 0) {
+      setOriginalUserMessageTexts((prev) => {
+        const next = new Map(prev);
+        newEntries.forEach(([id, txt]) => next.set(id, txt));
+        return next;
+      });
+    }
+  }, [renderedMessages]);
 
   useEffect(() => {
     props.onDraftChange(buildDraft(draft, attachments));
@@ -649,6 +700,7 @@ export function SessionSurface(props: SessionSurfaceProps) {
                     developerMode={props.developerMode}
                     showThinking={true}
                     scrollElement={() => scrollRef.current}
+                    originalUserTexts={originalUserMessageTexts}
                   />
                   {showAssistantWaitState ? <AssistantWaitingCard /> : null}
                 </>

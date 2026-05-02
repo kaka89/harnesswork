@@ -38,6 +38,9 @@ export type UsePipelineDefinitionsReturn = {
 
 // ── Hook ──────────────────────────────────────────────────────────────────────
 
+// ── 稳定空数组常量（避免 query.data 为 undefined 时每次返回新 [] 引用引发无限循环）
+const EMPTY_PIPELINES: PipelineDefinition[] = [];
+
 /**
  * 订阅当前 workspace 的所有 pipeline 定义。
  *
@@ -64,7 +67,7 @@ export function usePipelineDefinitions(
     staleTime: 30_000,
   });
 
-  const pipelines = query.data ?? [];
+  const pipelines = query.data ?? EMPTY_PIPELINES;
 
   const byScope = useMemo(() => {
     const map = new Map<PipelineScope, PipelineDefinition[]>();

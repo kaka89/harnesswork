@@ -1,5 +1,5 @@
 /** @jsxImportSource react */
-import { useState, type ReactNode } from "react";
+import { useState, useEffect, type ReactNode } from "react";
 import {
   Check,
   ChevronLeft,
@@ -7,6 +7,7 @@ import {
   FileText,
   Files,
   ListTodo,
+  Workflow,
   Wrench,
 } from "lucide-react";
 
@@ -14,6 +15,9 @@ import type { ArtifactPanelTab } from "../types";
 import type { ArtifactEntry, ToolEntry } from "../hooks/use-xingjing-artifacts";
 import { useXingjingArtifacts } from "../hooks/use-xingjing-artifacts";
 import type { Todo } from "@opencode-ai/sdk/v2/client";
+import { PipelineProgressPanel } from "./pipeline/pipeline-progress-panel";
+import type { PipelineDefinition } from "../pipeline/types";
+import type { PipelineSupervisorResult } from "../hooks/use-pipeline-supervisor";
 
 export type ArtifactsDrawerProps = {
   workspaceId: string | null;
@@ -22,6 +26,14 @@ export type ArtifactsDrawerProps = {
   expanded: boolean;
   /** 来自 useWorkspaceShellLayout().toggleRightSidebar */
   onToggle: () => void;
+  /** 当前 session 对应的 pipeline 定义（非 pipeline session 时为 null） */
+  pipelineDef?: PipelineDefinition | null;
+  /** usePipelineSupervisor 的对账结果 */
+  supervisorResult?: PipelineSupervisorResult | null;
+  /** 点击「终止 Pipeline」回调（v1 stub） */
+  onPipelineTerminate?: () => void;
+  /** 点击「回到节点 N 重跑」回调 */
+  onPipelineRetryFromNode?: (nodeIndex: number) => void;
 };
 
 /**
@@ -37,9 +49,25 @@ export function ArtifactsDrawer({
   sessionId,
   expanded,
   onToggle,
+  pipelineDef,
+  supervisorResult,
+  onPipelineTerminate,
+  onPipelineRetryFromNode,
 }: ArtifactsDrawerProps) {
   const [activeTab, setActiveTab] = useState<ArtifactPanelTab>("todos");
   const { artifacts, tools, todos } = useXingjingArtifacts(workspaceId, sessionId);
+
+  const hasPipeline = Boolean(pipelineDef);
+
+  // 切换到 pipeline session 时自动跳「流水线」tab；切换回普通 session 时退回「todos」
+  useEffect(() => {
+    if (hasPipeline) {
+      setActiveTab("pipeline");
+    } else {
+      setActiveTab((prev) => (prev === "pipeline" ? "todos" : prev));
+    }
+  }, [hasPipeline, sessionId]);
+  const pipelineHasAnomaly = Boolean(supervisorResult?.hasAnomaly);
 
   if (!expanded) {
     return (
@@ -74,6 +102,25 @@ export function ArtifactsDrawer({
             onToggle();
           }}
         />
+        {hasPipeline ? (
+          <CollapsedTabButton
+            icon={
+              <div className="relative">
+                <Workflow size={15} />
+                {pipelineHasAnomaly ? (
+                  <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-red-9" />
+                ) : null}
+              </div>
+            }
+            count={0}
+            active={activeTab === "pipeline"}
+            label="流水线"
+            onClick={() => {
+              setActiveTab("pipeline");
+              onToggle();
+            }}
+          />
+        ) : null}
         <div className="mt-auto pb-3">
           <button
             type="button"
@@ -92,28 +139,40 @@ export function ArtifactsDrawer({
     <div className="flex min-h-0 flex-1 flex-col">
       {/* Tab bar */}
       <div className="flex shrink-0 items-center border-b border-dls-border pl-1 pr-2">
-        <div className="flex min-w-0 flex-1">
-          {(["artifacts", "tools", "todos"] as const).map((tab) => {
+        <div className="flex min-w-0 flex-1 overflow-x-auto">
+          {(["artifacts", "tools", "todos", ...(hasPipeline ? ["pipeline"] : [])] as ArtifactPanelTab[]).map((tab) => {
             const label =
-              tab === "artifacts" ? "Files" : tab === "tools" ? "Tools" : "Tasks";
+              tab === "artifacts" ? "Files"
+              : tab === "tools" ? "Tools"
+              : tab === "todos" ? "Tasks"
+              : "流水线";
             const count =
-              tab === "artifacts"
-                ? artifacts.length
-                : tab === "tools"
-                  ? tools.length
-                  : todos.length;
+              tab === "artifacts" ? artifacts.length
+              : tab === "tools" ? tools.length
+              : tab === "todos" ? todos.length
+              : 0;
+            const showRedDot = tab === "pipeline" && pipelineHasAnomaly;
             return (
               <button
                 key={tab}
                 type="button"
-                className={`relative flex items-center gap-1.5 px-3 py-2.5 text-[12px] font-medium transition-colors ${
+                className={`relative flex shrink-0 items-center gap-1.5 px-3 py-2.5 text-[12px] font-medium transition-colors ${
                   activeTab === tab
                     ? "text-dls-text after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:rounded-full after:bg-blue-9"
                     : "text-gray-9 hover:text-gray-11"
                 }`}
                 onClick={() => setActiveTab(tab)}
               >
-                {label}
+                {tab === "pipeline" ? (
+                  <span className="relative">
+                    {label}
+                    {showRedDot ? (
+                      <span className="absolute -right-2 -top-0.5 h-1.5 w-1.5 rounded-full bg-red-9" />
+                    ) : null}
+                  </span>
+                ) : (
+                  label
+                )}
                 {count > 0 ? (
                   <span className="rounded-full bg-gray-3 px-1.5 py-0.5 text-[10px] leading-none text-gray-10">
                     {count}
@@ -138,6 +197,21 @@ export function ArtifactsDrawer({
         {activeTab === "artifacts" && <ArtifactsTab artifacts={artifacts} />}
         {activeTab === "tools" && <ToolsTab tools={tools} />}
         {activeTab === "todos" && <TodosTab todos={todos} />}
+        {activeTab === "pipeline" && pipelineDef && supervisorResult ? (
+          <div className="p-3">
+            <PipelineProgressPanel
+              def={pipelineDef}
+              supervisorResult={supervisorResult}
+              onTerminate={onPipelineTerminate}
+              onRetryFromNode={onPipelineRetryFromNode}
+            />
+          </div>
+        ) : activeTab === "pipeline" ? (
+          <div className="flex flex-col items-center gap-2 px-4 py-8 text-center">
+            <Workflow size={20} className="text-gray-7" />
+            <span className="text-[12px] text-gray-9">加载流水线中…</span>
+          </div>
+        ) : null}
       </div>
     </div>
   );

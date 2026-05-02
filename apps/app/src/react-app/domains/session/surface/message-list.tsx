@@ -144,6 +144,9 @@ type SessionTranscriptProps = {
   ) => void;
   footer?: ReactNode;
   variant?: "default" | "nested";
+  /** Map of messageId → original user-typed text, used to display the raw
+   * input in the user bubble instead of the backend-expanded skill template. */
+  originalUserTexts?: ReadonlyMap<string, string>;
 };
 
 // 500 was too high for real-world OpenWork sessions: a handful of giant
@@ -744,8 +747,16 @@ function SessionTranscriptInner(props: SessionTranscriptProps) {
       if (!renderableParts.length) return;
 
       const isUser = message.role === "user";
-      const attachments = attachmentsForParts(renderableParts);
-      const nonAttachmentParts = renderableParts.filter((part) => !isAttachmentPart(part));
+      // For user messages: if we have the original typed text, use a synthetic
+      // text part so the bubble shows what the user actually typed instead of
+      // the backend-expanded agent skill template text.
+      const userOriginalText = isUser ? props.originalUserTexts?.get(message.id) : undefined;
+      const displayParts: TranscriptPart[] =
+        userOriginalText !== undefined
+          ? [{ id: `${message.id}:original`, type: "text", text: userOriginalText } as TranscriptPart]
+          : renderableParts;
+      const attachments = attachmentsForParts(displayParts);
+      const nonAttachmentParts = displayParts.filter((part) => !isAttachmentPart(part));
       const groups = groupMessageParts(nonAttachmentParts, message.id);
       const isStepsOnly = groups.length > 0 && groups.every((group) => group.kind === "steps");
       const stepGroups = isStepsOnly
@@ -776,7 +787,7 @@ function SessionTranscriptInner(props: SessionTranscriptProps) {
       blocks.push({
         kind: "message",
         message: message.source,
-        renderableParts,
+        renderableParts: displayParts,
         attachments,
         groups,
         isUser,
@@ -785,7 +796,7 @@ function SessionTranscriptInner(props: SessionTranscriptProps) {
     });
 
     return blocks;
-  }, [props.developerMode, showThinking, transcriptMessages]);
+  }, [props.developerMode, props.originalUserTexts, showThinking, transcriptMessages]);
 
   // Structural sharing: reuse the previous block object reference for any
   // block whose content is equivalent. During streaming, only the active

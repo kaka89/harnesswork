@@ -12,7 +12,7 @@ import {
   Code2,
   Copy,
   LayoutDashboard,
-  Lightbulb,
+  Briefcase,
   Moon,
   Plus,
   RefreshCcw,
@@ -27,6 +27,7 @@ import type { LucideIcon } from "lucide-react";
 import { t } from "../../../../i18n";
 import type { OpenworkServerClient, OpenworkServerStatus } from "../../../../app/lib/openwork-server";
 import { buildOpenworkWorkspaceBaseUrl } from "../../../../app/lib/openwork-server";
+import { createClient } from "../../../../app/lib/opencode";
 import { getDisplaySessionTitle } from "../../../../app/lib/session-title";
 import type { SettingsTab } from "../../../../app/types";
 import { Button } from "../../../design-system/button";
@@ -37,18 +38,23 @@ import { RenameSessionModal } from "../../session/modals/rename-session-modal";
 import { SessionSurface } from "../../session/surface/session-surface";
 import { ShareWorkspaceModal } from "../../workspace/share-workspace-modal";
 import { OwDotTicker } from "../../../shell/dot-ticker";
+import { AiPartnerPage } from "./ai-partner-page";
+import { ProductWorkbenchPage } from "./product-workbench-page";
+import { DevWorkbenchPage } from "./dev-workbench-page";
+import { FocusPage } from "./focus-page";
+import type { SessionPageProps } from "../../session/chat/session-page";
+import { PipelineLaunchDialog } from "../components/pipeline/pipeline-launch-dialog";
+import { PipelineTriggerBar } from "../components/pipeline/pipeline-trigger-bar";
 import { useReactRenderWatchdog } from "../../../shell/react-render-watchdog";
 import { SettingsRoute } from "../../../shell/settings-route";
 import { ArtifactsDrawer } from "../components/artifacts-drawer";
 import { HistorySessionDrawer } from "../components/history-session-drawer";
-import { AiPartnerPage } from "./ai-partner-page";
-import type { SessionPageProps } from "../../session/chat/session-page";
-import { PipelineLaunchDialog } from "../components/pipeline/pipeline-launch-dialog";
-import { PipelineTriggerBar } from "../components/pipeline/pipeline-trigger-bar";
 import { SessionHeaderExtensions } from "../components/pipeline/session-header-extensions";
 import type { PipelineLaunchMode } from "../components/pipeline/session-header-extensions";
 import { usePipelineDefinitions } from "../hooks/use-pipeline-definitions";
 import { usePipelineLauncher } from "../hooks/use-pipeline-launcher";
+import { usePipelineSession } from "../hooks/use-pipeline-session";
+import { usePipelineSupervisor } from "../hooks/use-pipeline-supervisor";
 import type { PipelineDefinition, PipelineScope } from "../pipeline/types";
 
 // ── Nav section type ──────────────────────────────────────────────────────────
@@ -87,8 +93,8 @@ const NAV_TREE: NavNode[] = [
     children: [
       { id: "cockpit", label: "驾驶舱", icon: LayoutDashboard },
       { id: "focus", label: "今日焦点", icon: Target },
-      { id: "product-insight", label: "产品洞察", icon: Lightbulb },
-      { id: "product-dev", label: "产品研发", icon: Code2 },
+      { id: "product-insight", label: "产品工作台", icon: Briefcase },
+      { id: "product-dev", label: "研发工作台", icon: Code2 },
       { id: "release", label: "发布管理", icon: Rocket },
       { id: "data-review", label: "数据复盘", icon: BarChart2 },
     ],
@@ -122,15 +128,10 @@ const SECTION_META: Partial<
     icon: Target,
     description: "用户今日需要处理的任务",
   },
-  "product-insight": {
-    label: "产品洞察",
-    icon: Lightbulb,
-    description: "产品角色的工作页面",
-  },
   "product-dev": {
-    label: "产品研发",
+    label: "研发工作台",
     icon: Code2,
-    description: "研发角色的工作页面",
+    description: "架构设计 · 开发执行 · 成果评审",
   },
   release: {
     label: "发布管理",
@@ -277,7 +278,7 @@ function CopyUrlButton({ owUrl, owToken }: { owUrl: string; owToken: string }) {
     <button
       type="button"
       onClick={handleCopy}
-      className="flex w-full items-center gap-1 rounded px-1 py-0.5 text-[10px] text-dls-secondary hover:bg-dls-hover hover:text-dls-text"
+      className="flex w-full items-center gap-1 rounded px-1 py-0.5 text-[11px] text-dls-secondary hover:bg-dls-hover hover:text-dls-text"
       title={copied ? "已复制" : "点击复制浏览器访问链接"}
     >
       <Copy size={10} className="shrink-0" />
@@ -308,13 +309,13 @@ function XingjingNavSidebar({
       <div className="flex shrink-0 gap-1 border-b border-dls-border px-2 py-1.5">
         <button
           type="button"
-          className="flex-1 rounded py-0.5 text-[11px] text-dls-secondary hover:bg-dls-hover"
+          className="flex-1 rounded py-0.5 text-[12px] text-dls-secondary hover:bg-dls-hover"
         >
           团队版
         </button>
         <button
           type="button"
-          className="flex-1 rounded bg-green-2/70 py-0.5 text-[11px] font-medium text-green-11"
+          className="flex-1 rounded bg-green-2/70 py-0.5 text-[12px] font-medium text-green-11"
         >
           独立版
         </button>
@@ -332,7 +333,7 @@ function XingjingNavSidebar({
                 <button
                   type="button"
                   onClick={() => setAutopilotExpanded((v) => !v)}
-                  className="flex items-center gap-2 px-3 py-1.5 text-left text-[12px] font-medium text-dls-secondary transition-colors hover:bg-dls-hover hover:text-dls-text"
+                  className="flex items-center gap-2 px-3 py-1.5 text-left text-[13px] font-medium text-dls-secondary transition-colors hover:bg-dls-hover hover:text-dls-text"
                   aria-expanded={autopilotExpanded}
                 >
                   <GroupIcon size={13} className="shrink-0" />
@@ -348,7 +349,7 @@ function XingjingNavSidebar({
                           key={child.id}
                           type="button"
                           onClick={() => onSelect(child.id)}
-                          className={`flex items-center gap-2 py-1.5 pr-3 text-left text-[12px] transition-colors ${
+                          className={`flex items-center gap-2 py-1.5 pr-3 text-left text-[13px] transition-colors ${
                             isActive
                               ? "border-l-2 border-green-9 bg-green-2/50 pl-[26px] font-medium text-green-11"
                               : "pl-7 text-dls-secondary hover:bg-dls-hover hover:text-dls-text"
@@ -372,7 +373,7 @@ function XingjingNavSidebar({
               key={node.id}
               type="button"
               onClick={() => onSelect(node.id)}
-              className={`flex items-center gap-2 px-3 py-1.5 text-left text-[12px] transition-colors ${
+              className={`flex items-center gap-2 px-3 py-1.5 text-left text-[13px] transition-colors ${
                 isActive
                   ? "bg-green-2/50 font-medium text-green-11"
                   : "text-dls-secondary hover:bg-dls-hover hover:text-dls-text"
@@ -389,7 +390,7 @@ function XingjingNavSidebar({
       <div className="shrink-0 space-y-1.5 border-t border-dls-border p-2">
         {/* OpenWork 状态行 */}
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-1.5 text-[10px]">
+          <div className="flex items-center gap-1.5 text-[11px]">
             <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${
               clientConnected ? "bg-green-9" : "bg-gray-7"
             }`} />
@@ -397,7 +398,7 @@ function XingjingNavSidebar({
               OpenWork
             </span>
           </div>
-          <span className={`text-[10px] ${
+          <span className={`text-[11px] ${
             clientConnected ? "text-green-10" : "text-gray-9"
           }`}>
             {clientConnected ? "已连接" : "断开"}
@@ -409,7 +410,7 @@ function XingjingNavSidebar({
           const opencodeConnected = clientConnected && Boolean(baseUrl);
           return (
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1.5 text-[10px]">
+              <div className="flex items-center gap-1.5 text-[11px]">
                 <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${
                   opencodeConnected ? "bg-green-9" : "bg-gray-7"
                 }`} />
@@ -417,7 +418,7 @@ function XingjingNavSidebar({
                   OpenCode
                 </span>
               </div>
-              <span className={`text-[10px] ${
+              <span className={`text-[11px] ${
                 opencodeConnected ? "text-green-10" : "text-gray-9"
               }`}>
                 {opencodeConnected ? "已连接" : "断开"}
@@ -482,7 +483,7 @@ function WorkspaceSwitcher({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex h-7 items-center gap-1.5 rounded-md border border-dls-border px-3 text-[12px] hover:bg-dls-hover"
+        className="flex h-7 items-center gap-1.5 rounded-md border border-dls-border px-3 text-[13px] hover:bg-dls-hover"
       >
         <span className="max-w-[160px] truncate">{currentName}</span>
         <ChevronDown size={12} className="shrink-0 text-dls-secondary" />
@@ -492,7 +493,7 @@ function WorkspaceSwitcher({
           {workspaces.length === 0 ? (
             <div className="flex flex-col items-center py-8 text-dls-secondary">
               <div className="mb-2 text-[32px] opacity-30">📭</div>
-              <span className="text-[12px]">暂无数据</span>
+              <span className="text-[13px]">暂无数据</span>
             </div>
           ) : (
             <div className="py-1">
@@ -507,7 +508,7 @@ function WorkspaceSwitcher({
                       onSelectWorkspace(ws.id);
                       setOpen(false);
                     }}
-                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] hover:bg-dls-hover"
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] hover:bg-dls-hover"
                   >
                     <Check
                       size={12}
@@ -526,7 +527,7 @@ function WorkspaceSwitcher({
                 onOpenCreateWorkspace();
                 setOpen(false);
               }}
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] text-green-11 hover:bg-dls-hover"
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] text-green-11 hover:bg-dls-hover"
             >
               <Plus size={12} className="shrink-0" />
               新建产品
@@ -669,6 +670,57 @@ export function XingjingSessionPage(props: SessionPageProps) {
     }
   };
 
+  // ── 驾驶舱 Pipeline Supervisor 对账 ──────────────────────────────────────
+  const { def: pipelineDef, isPipelineSession } = usePipelineSession(
+    props.openworkServerClient,
+    props.selectedWorkspaceId || null,
+    props.selectedSessionId || null,
+  );
+
+  const supervisorResult = usePipelineSupervisor({
+    workspaceId: props.selectedWorkspaceId || null,
+    sessionId: props.selectedSessionId || null,
+    def: pipelineDef,
+  });
+
+  // 当切换到 pipeline session 时，自动展开右侧面板并跳到 pipeline tab
+  useEffect(() => {
+    if (isPipelineSession && !rightExpanded) {
+      setRightExpanded(true);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPipelineSession, props.selectedSessionId]);
+
+  // onRetryFromNode v1：向当前 session 发送重跑提示 prompt
+  const handlePipelineRetryFromNode = useMemo(() => {
+    if (!pipelineDef || !props.selectedSessionId || !reactSessionBaseUrl || !reactSessionToken) return undefined;
+    return (nodeIndex: number) => {
+      const node = pipelineDef.nodes[nodeIndex];
+      if (!node) return;
+      const client = createClient(
+        reactSessionBaseUrl,
+        workspacePath,
+        { token: reactSessionToken, mode: "openwork" },
+        { source: "xingjing.retry-from-node" },
+      );
+      void client.session.promptAsync({
+        sessionID: props.selectedSessionId!,
+        parts: [{
+          type: "text",
+          text: `请从节点 ${nodeIndex + 1}「${node.label}」重新开始执行。`,
+        }],
+      });
+    };
+  }, [pipelineDef, props.selectedSessionId, reactSessionBaseUrl, reactSessionToken, workspacePath]);
+
+  // onTerminate v1： stub，打印警告（实际 session cancel 待 M6）
+  const handlePipelineTerminate = useMemo(() => {
+    if (!pipelineDef) return undefined;
+    return () => {
+      console.warn("[XingjingSessionPage] Pipeline terminate stub — not yet implemented");
+    };
+  }, [pipelineDef]);
+
   useEffect(() => {
     if (!showSessionLoadingState) {
       setShowDelayedSessionLoadingState(false);
@@ -727,7 +779,7 @@ export function XingjingSessionPage(props: SessionPageProps) {
             localStorage.removeItem("xingjing.app-mode");
             navigate("/mode-select");
           }}
-          className="flex items-center gap-1 rounded px-2 py-0.5 text-[11px] text-dls-secondary hover:bg-dls-hover hover:text-dls-text"
+          className="flex items-center gap-1 rounded px-2 py-0.5 text-[12px] text-dls-secondary hover:bg-dls-hover hover:text-dls-text"
         >
           <ChevronLeft size={12} />
           返回模式选择
@@ -737,10 +789,10 @@ export function XingjingSessionPage(props: SessionPageProps) {
       {/* ── Row 2: 全宽 Logo + slogan + WorkspaceSwitcher h-10 ────────────── */}
       <div className="flex h-10 shrink-0 items-center gap-3 border-b border-dls-border bg-white/80 px-3">
         <Moon size={15} className="shrink-0 text-yellow-9/70" />
-        <span className="text-[13px] font-semibold text-green-11">星静</span>
-        <span className="text-[10px] text-dls-secondary/60">All-in-One</span>
+        <span className="text-[14px] font-semibold text-green-11">星静</span>
+        <span className="text-[11px] text-dls-secondary/60">All-in-One</span>
         <span className="mx-2 text-dls-border/40">|</span>
-        <span className="flex-1 text-[12px] italic text-dls-secondary">万物并作，吾以观其复</span>
+        <span className="flex-1 text-[13px] italic text-dls-secondary">万物并作，吾以观其复</span>
         {/* 驾驶舱模式下显示流水线启动入口 */}
         <SessionHeaderExtensions
           pipelines={allPipelines}
@@ -787,6 +839,12 @@ export function XingjingSessionPage(props: SessionPageProps) {
               expanded={historyExpanded}
               onToggle={() => setHistoryExpanded((v) => !v)}
               onOpenSession={props.sidebar.onOpenSession}
+              onCreateSession={() => {
+                const wsId = props.selectedWorkspaceId;
+                if (!wsId || props.sidebar.newTaskDisabled) return;
+                void props.sidebar.onCreateTaskInWorkspace(wsId);
+              }}
+              createDisabled={!props.selectedWorkspaceId || props.sidebar.newTaskDisabled}
             />
           </div>
         ) : null}
@@ -795,8 +853,37 @@ export function XingjingSessionPage(props: SessionPageProps) {
         <div className="flex min-w-0 flex-1 flex-col bg-dls-surface">
           {/* Session surface area */}
           <div className="relative min-h-0 flex-1 overflow-hidden">
+            {/* 产品工作台覆盖层 */}
+            {activeSection === "product-insight" ? (
+              <div className="absolute inset-0 z-40 flex flex-col overflow-hidden bg-dls-surface">
+                <ProductWorkbenchPage
+                  openworkServerClient={props.openworkServerClient}
+                  workspaceId={props.runtimeWorkspaceId ?? props.selectedWorkspaceId}
+                  opencodeBaseUrl={reactSessionBaseUrl}
+                  token={reactSessionToken}
+                  workspacePath={workspacePath}
+                  listAgents={props.listAgents}
+                  onSessionCreated={(sessionId) => {
+                    setActiveSection("cockpit");
+                    navigate(`/session/${sessionId}`);
+                  }}
+                  onNavigate={(section) => setActiveSection(section as XingjingNavSection)}
+                />
+              </div>
+            ) : null}
+
+            {/* 研发工作台覆盖层 */}
+            {activeSection === "product-dev" ? (
+              <div className="absolute inset-0 z-40 flex flex-col bg-dls-surface">
+                <DevWorkbenchPage
+                  launchProps={placeholderLaunchProps}
+                  onGoToCockpit={() => setActiveSection("cockpit")}
+                />
+              </div>
+            ) : null}
+
             {/* 非驾驶舱二级页占位覆盖层：用绝对定位覆盖 SessionSurface，保持内层 SSE 连接不被杀中 */}
-            {SECTION_META[activeSection] ? (
+            {SECTION_META[activeSection] && activeSection !== "product-dev" ? (
               <div className="absolute inset-0 z-40 flex flex-col bg-dls-surface">
                 <XingjingPlaceholderPage
                   section={activeSection}
@@ -824,6 +911,13 @@ export function XingjingSessionPage(props: SessionPageProps) {
                   workspaceId={props.runtimeWorkspaceId ?? props.selectedWorkspaceId}
                   listAgents={props.listAgents}
                 />
+              </div>
+            ) : null}
+
+            {/* 今日焦点页面覆盖层 */}
+            {activeSection === "focus" ? (
+              <div className="absolute inset-0 z-40 flex flex-col overflow-hidden bg-dls-surface">
+                <FocusPage onNavigate={setActiveSection} />
               </div>
             ) : null}
 
@@ -932,6 +1026,10 @@ export function XingjingSessionPage(props: SessionPageProps) {
               sessionId={props.selectedSessionId}
               expanded={rightExpanded}
               onToggle={() => setRightExpanded((v) => !v)}
+              pipelineDef={pipelineDef}
+              supervisorResult={supervisorResult}
+              onPipelineTerminate={handlePipelineTerminate}
+              onPipelineRetryFromNode={handlePipelineRetryFromNode}
             />
           </div>
         ) : null}

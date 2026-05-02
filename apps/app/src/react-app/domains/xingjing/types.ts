@@ -31,7 +31,7 @@ export type AutopilotStatus =
  * - tools:     工具调用记录（tool-call/tool-result）
  * - todos:     SSE todo.updated 事件产生的待办项
  */
-export type ArtifactPanelTab = "artifacts" | "tools" | "todos";
+export type ArtifactPanelTab = "artifacts" | "tools" | "todos" | "pipeline";
 
 // ── AI 搭档（Agent）类型 ──────────────────────────────────────────────────────
 

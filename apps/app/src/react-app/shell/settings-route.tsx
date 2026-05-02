@@ -596,10 +596,12 @@ export function SettingsRoute({
   const opencodeClient = useMemo(
     () =>
       opencodeBaseUrl && token
-        ? createClient(opencodeBaseUrl, selectedWorkspaceRoot || undefined, {
-            token,
-            mode: "openwork",
-          })
+        ? createClient(
+            opencodeBaseUrl,
+            selectedWorkspaceRoot || undefined,
+            { token, mode: "openwork" },
+            { source: "settings-route" },
+          )
         : null,
     [opencodeBaseUrl, selectedWorkspaceRoot, token],
   );

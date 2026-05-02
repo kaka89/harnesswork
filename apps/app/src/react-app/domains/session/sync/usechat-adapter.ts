@@ -360,10 +360,12 @@ function handleEventChunk(
 export function createOpenworkChatTransport(options: TransportOptions): ChatTransport<UIMessage> {
   return {
     async sendMessages({ messages, abortSignal }) {
-      const client = createClient(options.baseUrl, undefined, {
-        token: options.openworkToken,
-        mode: "openwork",
-      });
+      const client = createClient(
+        options.baseUrl,
+        undefined,
+        { token: options.openworkToken, mode: "openwork" },
+        { source: "usechat-adapter" },
+      );
 
       return new ReadableStream<UIMessageChunk>({
         async start(controller) {

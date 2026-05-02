@@ -234,6 +234,7 @@ export type PipelineValidationError =
   | { code: "DUPLICATE_TRIGGER_COMMAND"; command: string }
   | { code: "UNKNOWN_AGENT_REF"; nodeId: string; ref: string }
   | { code: "UNKNOWN_SKILL_REF"; nodeId: string; ref: string }
+  | { code: "AGENT_REF_REQUIRED"; nodeId: string }
   | { code: "BRANCH_TARGET_NOT_FOUND"; nodeId: string; target: string }
   | { code: "REVIEWER_IS_SELF"; nodeId: string; ref: string }
   | { code: "MISSING_REQUIRED_FIELD"; nodeId: string; field: string };

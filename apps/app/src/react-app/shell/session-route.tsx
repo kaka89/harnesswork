@@ -94,6 +94,8 @@ import { ensureDesktopLocalOpenworkConnection } from "./desktop-local-openwork";
 import { resolveOpenworkConnection } from "./openwork-connection";
 import { useReloadCoordinator } from "./reload-coordinator";
 import { useXingjingAutopilot } from "../domains/xingjing";
+import { usePipelineDefinitions } from "../domains/xingjing/hooks/use-pipeline-definitions";
+import { launchPipelineCore } from "../domains/xingjing/hooks/use-pipeline-launcher";
 
 type RouteWorkspace = OpenworkWorkspaceInfo & {
   displayNameResolved: string;
@@ -224,6 +226,24 @@ async function fileToDataUrl(file: File) {
     reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
     reader.readAsDataURL(file);
   });
+}
+
+/**
+ * 读取当前浏览器中由 launchPipelineCore 写入的 session -> pipeline 映射。
+ * 可用于判断某个 session 是否已由某条 pipeline 启动。存储不可用时
+ * 返回空对象，等价于"不拦截"，避免因存储异常阻断核心流程。
+ */
+function readPipelineSessionMap(): Record<
+  string,
+  { pipelineId: string; launchedAt: number }
+> {
+  try {
+    return JSON.parse(
+      localStorage.getItem("xingjing.pipeline-sessions") ?? "{}",
+    );
+  } catch {
+    return {};
+  }
 }
 
 async function draftToParts(draft: ComposerDraft, workspaceRoot: string) {
@@ -361,6 +381,12 @@ export function SessionRoute() {
   const { todos: xingjingTodos } = useXingjingAutopilot(
     selectedWorkspaceId || null,
     selectedSessionId,
+  );
+  // 订阅当前 workspace 的 pipeline 定义，用于 onSendDraft 拦截 @xingjing-pipeline-<id>
+  // mention 时查找对应 PipelineDefinition 并转发到 launchPipelineCore。
+  const { pipelines: knownPipelines } = usePipelineDefinitions(
+    client,
+    selectedWorkspaceId || null,
   );
   // ────────────────────────────────────────────────────────────────────────────
 
@@ -865,13 +891,24 @@ export function SessionRoute() {
   const opencodeClient = useMemo(
     () =>
       opencodeBaseUrl && token && !selectedWorkspaceError
-        ? createClient(opencodeBaseUrl, selectedWorkspaceRoot || undefined, {
-            token,
-            mode: "openwork",
-          })
+        ? createClient(
+            opencodeBaseUrl,
+            selectedWorkspaceRoot || undefined,
+            { token, mode: "openwork" },
+            { source: "session-route.surface" },
+          )
         : null,
     [opencodeBaseUrl, selectedWorkspaceError, selectedWorkspaceRoot, token],
   );
+  const listAgents = useCallback(
+    async () => {
+      if (!opencodeClient) return [];
+      const list = unwrap(await opencodeClient.app.agents());
+      return list.filter((agent) => !agent.hidden && agent.mode !== "subagent");
+    },
+    [opencodeClient],
+  );
+
   const canCreateTask = Boolean(
     opencodeClient && selectedWorkspaceId && !loading && !selectedWorkspaceError,
   );
@@ -1120,6 +1157,68 @@ export function SessionRoute() {
           return;
         }
 
+        // ── @xingjing-pipeline-<id> mention 拦截 ──────────────────────────
+        // 用户在对话中通过 @ 选中 pipeline agent 时，draft.parts 会包含一个
+        // { type: "agent", name: "xingjing-pipeline-<id>" } part。我们识别它
+        // 并转发到 launchPipelineCore（current-session 模式），复用 launcher
+        // 完整的日志埋点 + workspace context 注入链路。
+        const PIPELINE_AGENT_PREFIX = "xingjing-pipeline-";
+        const pipelineMention = draft.parts.find(
+          (p): p is Extract<ComposerPart, { type: "agent" }> =>
+            p.type === "agent" && p.name.startsWith(PIPELINE_AGENT_PREFIX),
+        );
+        if (pipelineMention) {
+          const pipelineId = pipelineMention.name.slice(PIPELINE_AGENT_PREFIX.length);
+          const def = knownPipelines.find((p) => p.id === pipelineId);
+          if (def && selectedSessionId) {
+            // 单 session 约束：同一会话只允许启动一条 pipeline。
+            // localStorage 映射由 launchPipelineCore 写入（new-session
+            // 和 current-session 两种模式统一写入），这里读取后
+            // 发现已存在记录则拒绝本次发送。
+            const existing = readPipelineSessionMap()[selectedSessionId];
+            if (existing) {
+              console.warn(
+                "[session-route][pipeline] duplicate-launch-blocked",
+                {
+                  sessionId: selectedSessionId,
+                  existingPipelineId: existing.pipelineId,
+                  requestedPipelineId: pipelineId,
+                },
+              );
+              const message =
+                existing.pipelineId === pipelineId
+                  ? `当前会话已启动过「${def.name}」，请新建会话重新触发。`
+                  : `当前会话已由 pipeline「${existing.pipelineId}」占用，请新建会话以触发「${def.name}」。`;
+              if (typeof window !== "undefined" && typeof window.alert === "function") {
+                window.alert(message);
+              }
+              return;
+            }
+            const goal = draft.parts
+              .filter((p) => p !== pipelineMention)
+              .map((p) => (p.type === "text" ? p.text : ""))
+              .join("")
+              .trim();
+            await launchPipelineCore({
+              opencodeBaseUrl,
+              token,
+              workspacePath: selectedWorkspaceRoot || undefined,
+              def,
+              goal,
+              mode: "current-session",
+              parentSessionId: selectedSessionId,
+              owClient: client,
+              workspaceId: selectedWorkspaceId || null,
+            });
+            return;
+          }
+          // fallback: 找不到对应 pipeline 定义则继续走默认 prompt 流
+          console.warn(
+            "[session-route] @pipeline mention found but no matching definition, fallback to default prompt",
+            { pipelineId, hasSession: Boolean(selectedSessionId) },
+          );
+        }
+
         if (draft.command) {
           const result = await opencodeClient.session.command({
             sessionID: selectedSessionId,
@@ -1157,11 +1256,23 @@ export function SessionRoute() {
         }
 
         const parts = await draftToParts(draft, selectedWorkspaceRoot);
+
+        // 提取普通 @agent mention 作为 per-turn agent override。
+        // 优先级：draft.parts 中非 pipeline 的 agent mention > UI selectedAgent。
+        // 场景：pipeline 启动后 session 主 agent 被锁定为编排 agent，用户再 @
+        // 其他 agent 时，通过 promptAsync 的 agent 参数覆盖本 turn 的主 agent，
+        // 避免被 pipeline system prompt 误解释为 Task tool subagent 派发。
+        const mentionedAgent = draft.parts.find(
+          (p): p is Extract<ComposerPart, { type: "agent" }> =>
+            p.type === "agent" && !p.name.startsWith(PIPELINE_AGENT_PREFIX),
+        );
+        const turnAgent = mentionedAgent?.name ?? selectedAgent ?? undefined;
+
         const result = await opencodeClient.session.promptAsync({
           sessionID: selectedSessionId,
           parts,
           model: local.prefs.defaultModel ?? undefined,
-          agent: selectedAgent ?? undefined,
+          agent: turnAgent,
           ...(local.prefs.modelVariant ? { variant: local.prefs.modelVariant } : {}),
         });
         if (result.error) {
@@ -1181,10 +1292,7 @@ export function SessionRoute() {
       },
       agentLabel: selectedAgent ? selectedAgent.charAt(0).toUpperCase() + selectedAgent.slice(1) : t("session.default_agent"),
       selectedAgent,
-      listAgents: async () => {
-        const list = unwrap(await opencodeClient.app.agents());
-        return list.filter((agent) => !agent.hidden && agent.mode !== "subagent");
-      },
+      listAgents,
       onSelectAgent: (agent: string | null) => setSelectedAgent(agent),
       listCommands: async (): Promise<SlashCommandOption[]> => {
         const list = await listCommands(opencodeClient, selectedWorkspaceRoot || undefined);
@@ -1209,6 +1317,7 @@ export function SessionRoute() {
     };
   }, [
     client,
+    knownPipelines,
     local,
     modelLabel,
     navigate,
@@ -1372,6 +1481,7 @@ export function SessionRoute() {
       workspaceOpencodeBaseUrl,
       workspace.path?.trim() || undefined,
       { token, mode: "openwork" },
+      { source: "session-route.retry-workspace" },
     );
     try {
       const session = unwrap(
@@ -1587,12 +1697,7 @@ export function SessionRoute() {
         );
       }}
       onOpenSettings={() => navigate("/settings/general")}
-      listAgents={opencodeClient
-        ? async () => {
-            const list = unwrap(await opencodeClient.app.agents());
-            return list.filter((agent) => !agent.hidden && agent.mode !== "subagent");
-          }
-        : undefined}
+      listAgents={opencodeClient ? listAgents : undefined}
       sidebar={{
         workspaceSessionGroups,
         selectedWorkspaceId,
@@ -1643,6 +1748,7 @@ export function SessionRoute() {
             workspaceOpencodeBaseUrl,
             workspace.path?.trim() || undefined,
             { token, mode: "openwork" },
+            { source: "session-route.create-task-in-workspace" },
           );
           const session = unwrap(
             await workspaceClient.session.create({ directory: workspace.path?.trim() || undefined }),

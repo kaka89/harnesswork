@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import { useMemo } from "react";
-import { ChevronLeft, History, MessageSquare } from "lucide-react";
+import { ChevronLeft, History, MessageSquare, Plus } from "lucide-react";
 
 import { getDisplaySessionTitle } from "../../../../app/lib/session-title";
 import type { SidebarSessionItem } from "../../../../app/types";
@@ -12,6 +12,10 @@ export type HistorySessionDrawerProps = {
   expanded: boolean;
   onToggle: () => void;
   onOpenSession: (workspaceId: string, sessionId: string) => void;
+  /** 点击 "+ 新建会话" 按钮时触发（复用 OpenWork 原生 onCreateTaskInWorkspace）。 */
+  onCreateSession: () => void;
+  /** 新建按钮是否禁用（如无 workspace 或 sidebar.newTaskDisabled）。 */
+  createDisabled?: boolean;
 };
 
 /**
@@ -28,7 +32,13 @@ export function HistorySessionDrawer({
   expanded,
   onToggle,
   onOpenSession,
+  onCreateSession,
+  createDisabled = false,
 }: HistorySessionDrawerProps) {
+  const handleCreate = () => {
+    if (createDisabled || !workspaceId) return;
+    onCreateSession();
+  };
   // 按 time.updated 倒序排列，时间缺失的排最后
   const sortedSessions = useMemo(
     () =>
@@ -41,8 +51,9 @@ export function HistorySessionDrawer({
   );
 
   if (!expanded) {
+    const createBtnDisabled = createDisabled || !workspaceId;
     return (
-      <div className="flex min-h-0 flex-1 flex-col items-center pt-3">
+      <div className="flex min-h-0 flex-1 flex-col items-center gap-1 pt-3">
         <button
           type="button"
           title="历史会话"
@@ -52,29 +63,61 @@ export function HistorySessionDrawer({
         >
           <History size={15} />
         </button>
+        <button
+          type="button"
+          title="新建会话"
+          onClick={handleCreate}
+          disabled={createBtnDisabled}
+          className={`flex h-8 w-8 items-center justify-center rounded-md transition-colors ${
+            createBtnDisabled
+              ? "cursor-not-allowed text-gray-7 opacity-50"
+              : "text-gray-9 hover:bg-dls-hover hover:text-dls-text"
+          }`}
+          aria-label="新建会话"
+        >
+          <Plus size={15} />
+        </button>
       </div>
     );
   }
+
+  const createBtnDisabled = createDisabled || !workspaceId;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* Header */}
       <div className="flex h-10 shrink-0 items-center justify-between border-b border-dls-border pl-3 pr-2">
-        <span className="text-[12px] font-medium text-dls-text">历史会话</span>
-        <button
-          type="button"
-          onClick={onToggle}
-          className="rounded-md p-1.5 text-gray-9 transition-colors hover:bg-dls-hover hover:text-dls-text"
-          aria-label="收起历史会话"
-        >
-          <ChevronLeft size={13} />
-        </button>
+        <span className="text-[13px] font-medium text-dls-text">历史会话</span>
+        <div className="flex items-center gap-0.5">
+          <button
+            type="button"
+            onClick={handleCreate}
+            disabled={createBtnDisabled}
+            title="新建会话"
+            aria-label="新建会话"
+            className={`rounded-md p-1.5 transition-colors ${
+              createBtnDisabled
+                ? "cursor-not-allowed text-gray-7 opacity-50"
+                : "text-gray-9 hover:bg-dls-hover hover:text-dls-text"
+            }`}
+          >
+            <Plus size={13} />
+          </button>
+          <button
+            type="button"
+            onClick={onToggle}
+            className="rounded-md p-1.5 text-gray-9 transition-colors hover:bg-dls-hover hover:text-dls-text"
+            aria-label="收起历史会话"
+          >
+            <ChevronLeft size={13} />
+          </button>
+        </div>
       </div>
 
       {/* Session list */}
       <div className="min-h-0 flex-1 overflow-y-auto py-1">
         {sortedSessions.length === 0 ? (
-          <div className="px-3 py-6 text-center text-[12px] text-dls-secondary">
+          <div className="px-3 py-6 text-center text-[13px] text-dls-secondary">
             暂无历史会话
           </div>
         ) : (
@@ -104,7 +147,7 @@ export function HistorySessionDrawer({
                     className={`shrink-0 ${isSelected ? "text-blue-9" : "text-gray-8 group-hover:text-gray-10"}`}
                   />
                   <span
-                    className={`min-w-0 truncate text-[12px] leading-4 ${
+                    className={`min-w-0 truncate text-[13px] leading-4 ${
                       isSelected ? "font-medium text-dls-text" : "text-dls-secondary group-hover:text-dls-text"
                     }`}
                   >
@@ -112,7 +155,7 @@ export function HistorySessionDrawer({
                   </span>
                 </div>
                 {timeLabel ? (
-                  <span className="pl-[20px] text-[10px] text-gray-8">{timeLabel}</span>
+                  <span className="pl-[20px] text-[11px] text-gray-8">{timeLabel}</span>
                 ) : null}
               </button>
             );

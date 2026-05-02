@@ -2109,9 +2109,10 @@ function createRoutes(
     const requested = (ctx.url.searchParams.get("path") ?? "").trim();
     const relativePath = normalizeWorkspaceRelativePath(requested, { allowSubdirs: true });
     const lowered = relativePath.toLowerCase();
-    const isMarkdown = lowered.endsWith(".md") || lowered.endsWith(".mdx") || lowered.endsWith(".markdown");
-    if (!isMarkdown) {
-      throw new ApiError(400, "invalid_path", "Only markdown files are supported");
+    const isSupported = lowered.endsWith(".md") || lowered.endsWith(".mdx") || lowered.endsWith(".markdown") ||
+      lowered.endsWith(".yml") || lowered.endsWith(".yaml") || lowered.endsWith(".json");
+    if (!isSupported) {
+      throw new ApiError(400, "invalid_path", "Only markdown, YAML, and JSON files are supported");
     }
 
     const absPath = resolveSafeChildPath(workspace.path, relativePath);
@@ -2141,9 +2142,10 @@ function createRoutes(
     const requestedPath = String(body.path ?? "");
     const relativePath = normalizeWorkspaceRelativePath(requestedPath, { allowSubdirs: true });
     const lowered = relativePath.toLowerCase();
-    const isMarkdown = lowered.endsWith(".md") || lowered.endsWith(".mdx") || lowered.endsWith(".markdown");
-    if (!isMarkdown) {
-      throw new ApiError(400, "invalid_path", "Only markdown files are supported");
+    const isSupported = lowered.endsWith(".md") || lowered.endsWith(".mdx") || lowered.endsWith(".markdown") ||
+      lowered.endsWith(".yml") || lowered.endsWith(".yaml") || lowered.endsWith(".json");
+    if (!isSupported) {
+      throw new ApiError(400, "invalid_path", "Only markdown, YAML, and JSON files are supported");
     }
 
     if (typeof body.content !== "string") {

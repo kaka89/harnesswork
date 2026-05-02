@@ -900,8 +900,8 @@ export function createWorkspaceFileService(input: {
       }
       const workspace = resolveWorkspaceOrThrow(input.repositories, workspaceId);
       const relativePath = normalizeWorkspaceRelativePath(relativePathInput, { allowSubdirs: true });
-      if (!/\.(md|mdx|markdown)$/i.test(relativePath)) {
-        throw new RouteError(400, "invalid_request", "Only markdown files are supported by the simple content routes.");
+      if (!/\.(md|mdx|markdown|yml|yaml|json)$/i.test(relativePath)) {
+        throw new RouteError(400, "invalid_request", "Only markdown, YAML, and JSON files are supported by the simple content routes.");
       }
       const absolutePath = resolveSafeChildPath(resolveWorkspaceRoot(workspace), relativePath);
       if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) {
@@ -1086,8 +1086,8 @@ export function createWorkspaceFileService(input: {
       }
       const workspace = resolveWorkspaceOrThrow(input.repositories, workspaceId);
       const relativePath = normalizeWorkspaceRelativePath(inputValue.path, { allowSubdirs: true });
-      if (!/\.(md|mdx|markdown)$/i.test(relativePath)) {
-        throw new RouteError(400, "invalid_request", "Only markdown files are supported by the simple content routes.");
+      if (!/\.(md|mdx|markdown|yml|yaml|json)$/i.test(relativePath)) {
+        throw new RouteError(400, "invalid_request", "Only markdown, YAML, and JSON files are supported by the simple content routes.");
       }
       const absolutePath = resolveSafeChildPath(resolveWorkspaceRoot(workspace), relativePath);
       const before = fs.existsSync(absolutePath) ? fs.statSync(absolutePath) : null;

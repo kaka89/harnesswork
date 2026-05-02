@@ -39,6 +39,7 @@ import { SessionSurface } from "../../session/surface/session-surface";
 import { ShareWorkspaceModal } from "../../workspace/share-workspace-modal";
 import { OwDotTicker } from "../../../shell/dot-ticker";
 import { AiPartnerPage } from "./ai-partner-page";
+import { KnowledgeBasePage } from "./knowledge-base-page";
 import { ProductWorkbenchPage } from "./product-workbench-page";
 import { DevWorkbenchPage } from "./dev-workbench-page";
 import { FocusPage } from "./focus-page";
@@ -910,6 +911,16 @@ export function XingjingSessionPage(props: SessionPageProps) {
                   openworkServerClient={props.openworkServerClient}
                   workspaceId={props.runtimeWorkspaceId ?? props.selectedWorkspaceId}
                   listAgents={props.listAgents}
+                />
+              </div>
+            ) : null}
+
+            {/* 个人知识库页面覆盖层 */}
+            {activeSection === "knowledge" ? (
+              <div className="absolute inset-0 z-40 flex flex-col overflow-hidden bg-dls-surface">
+                <KnowledgeBasePage
+                  openworkServerClient={props.openworkServerClient}
+                  workspaceId={props.runtimeWorkspaceId ?? props.selectedWorkspaceId}
                 />
               </div>
             ) : null}

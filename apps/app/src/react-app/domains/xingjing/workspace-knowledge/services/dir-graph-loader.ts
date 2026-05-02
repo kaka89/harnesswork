@@ -3,7 +3,7 @@ import type { DirGraph, DirGraphNodes, ValidationWarning } from "../types/dir-gr
 import { readFile } from "./fs-primitives";
 
 export const DIR_GRAPH_FILENAME = "dir-graph.yaml";
-export const DIR_GRAPH_PATH = `.xingjing/${DIR_GRAPH_FILENAME}`;
+export const DIR_GRAPH_PATH = "dir-graph.yaml";
 
 export const DEFAULT_DIR_GRAPH: DirGraph = {
   schema: "xingjing.dir-graph/v1",
@@ -102,21 +102,54 @@ function parseScalar(s: string): YamlValue {
 export function parseSimpleYaml(text: string): YamlObject {
   const lines = text.split("\n");
   const root: YamlObject = {};
-  const stack: Array<{ keyIndent: number; obj: YamlObject }> = [{ keyIndent: -2, obj: root }];
+  // Each frame: keyIndent = indent of the key that created this object
+  //             obj = the mapping object
+  //             arrayCtx = if this object may be converted to an array, the parent ref
+  type StackFrame = {
+    keyIndent: number;
+    obj: YamlObject;
+    arrayCtx?: { parent: YamlObject; key: string };
+  };
+  const stack: StackFrame[] = [{ keyIndent: -2, obj: root }];
   for (const raw of lines) {
     const stripped = stripLineComment(raw); const trimmed = stripped.trim();
     if (!trimmed) continue;
     const indent = stripped.length - stripped.trimStart().length;
     const colonIdx = findFirstColon(trimmed);
-    if (colonIdx === -1) continue;
+
+    if (colonIdx === -1) {
+      // Could be a block sequence item: "- value"
+      const seqMatch = trimmed.match(/^-\s+(.*)/s);
+      if (!seqMatch) continue;
+      const itemValue = parseScalar(seqMatch[1].trim());
+      // Pop stack to find the frame at indent level (sequence items are children of parent frame)
+      while (stack.length > 1 && stack[stack.length - 1].keyIndent >= indent) stack.pop();
+      const frame = stack[stack.length - 1];
+      if (frame.arrayCtx) {
+        const { parent: arrParent, key: arrKey } = frame.arrayCtx;
+        const existing = arrParent[arrKey];
+        if (Array.isArray(existing)) {
+          (existing as YamlValue[]).push(itemValue);
+        } else {
+          // First sequence item: convert {} to [item]
+          arrParent[arrKey] = [itemValue] as unknown as YamlValue;
+        }
+      }
+      continue;
+    }
+
     const key = trimmed.slice(0, colonIdx).trim();
     const valueStr = trimmed.slice(colonIdx + 1).trim();
     while (stack.length > 1 && stack[stack.length - 1].keyIndent >= indent) stack.pop();
     const parent = stack[stack.length - 1].obj;
     if (!valueStr) {
-      const child: YamlObject = {}; parent[key] = child;
-      stack.push({ keyIndent: indent, obj: child });
-    } else { parent[key] = parseScalar(valueStr); }
+      const child: YamlObject = {};
+      parent[key] = child;
+      // Push with arrayCtx so that if children are sequence items, we can convert
+      stack.push({ keyIndent: indent, obj: child, arrayCtx: { parent, key } });
+    } else {
+      parent[key] = parseScalar(valueStr);
+    }
   }
   return root;
 }
@@ -141,8 +174,10 @@ export async function loadDirGraph(
 ): Promise<DirGraph> {
   try {
     const result = await client.readWorkspaceFile(workspaceId, DIR_GRAPH_PATH);
-    const parsed = parseSimpleYaml(result.content) as unknown as Partial<DirGraph>;
-    return defaultMerge(parsed, DEFAULT_DIR_GRAPH);
+    const parsed = parseSimpleYaml(result.content) as unknown as Record<string, unknown>;
+    // 透传 raw，同时保留 v1 兼容（nodes 字段若存在则 merge，否则为空）
+    const merged = defaultMerge(parsed as Partial<DirGraph>, DEFAULT_DIR_GRAPH);
+    return { ...merged, _raw: parsed } as unknown as DirGraph;
   } catch {
     return { ...DEFAULT_DIR_GRAPH };
   }

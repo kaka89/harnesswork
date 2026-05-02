@@ -6,7 +6,6 @@ import type {
   MarketInsight,
   MarketInsightPanelProps,
 } from "../../types/product-workbench";
-import { AgentInvokeButton } from "./agent-invoke-button";
 import { SkillQuickActions } from "./skill-quick-actions";
 
 const CATEGORY_TABS: Array<{ id: InsightCategory | "all"; label: string }> = [
@@ -258,12 +257,6 @@ export function MarketInsightPanel(props: MarketInsightPanelProps) {
           </div>
         </div>
       ) : null}
-
-      {/* Header-level agent shortcut is rendered at parent Header; here Panel-level not needed */}
-      {/* Keep import usage for AgentInvokeButton is avoided by not rendering; imported for future */}
-      <div hidden>
-        <AgentInvokeButton agents={agents} onInvoke={async () => ""} />
-      </div>
     </div>
   );
 }

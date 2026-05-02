@@ -12,7 +12,7 @@ import {
   Code2,
   Copy,
   LayoutDashboard,
-  Lightbulb,
+  Briefcase,
   Moon,
   Plus,
   RefreshCcw,
@@ -42,6 +42,7 @@ import { SettingsRoute } from "../../../shell/settings-route";
 import { ArtifactsDrawer } from "../components/artifacts-drawer";
 import { HistorySessionDrawer } from "../components/history-session-drawer";
 import { AiPartnerPage } from "./ai-partner-page";
+import { ProductWorkbenchPage } from "./product-workbench-page";
 import type { SessionPageProps } from "../../session/chat/session-page";
 import { PipelineLaunchDialog } from "../components/pipeline/pipeline-launch-dialog";
 import { PipelineTriggerBar } from "../components/pipeline/pipeline-trigger-bar";
@@ -87,7 +88,7 @@ const NAV_TREE: NavNode[] = [
     children: [
       { id: "cockpit", label: "驾驶舱", icon: LayoutDashboard },
       { id: "focus", label: "今日焦点", icon: Target },
-      { id: "product-insight", label: "产品洞察", icon: Lightbulb },
+      { id: "product-insight", label: "产品工作台", icon: Briefcase },
       { id: "product-dev", label: "产品研发", icon: Code2 },
       { id: "release", label: "发布管理", icon: Rocket },
       { id: "data-review", label: "数据复盘", icon: BarChart2 },
@@ -121,11 +122,6 @@ const SECTION_META: Partial<
     label: "今日焦点",
     icon: Target,
     description: "用户今日需要处理的任务",
-  },
-  "product-insight": {
-    label: "产品洞察",
-    icon: Lightbulb,
-    description: "产品角色的工作页面",
   },
   "product-dev": {
     label: "产品研发",
@@ -795,6 +791,25 @@ export function XingjingSessionPage(props: SessionPageProps) {
         <div className="flex min-w-0 flex-1 flex-col bg-dls-surface">
           {/* Session surface area */}
           <div className="relative min-h-0 flex-1 overflow-hidden">
+            {/* 产品工作台覆盖层 */}
+            {activeSection === "product-insight" ? (
+              <div className="absolute inset-0 z-40 flex flex-col overflow-hidden bg-dls-surface">
+                <ProductWorkbenchPage
+                  openworkServerClient={props.openworkServerClient}
+                  workspaceId={props.runtimeWorkspaceId ?? props.selectedWorkspaceId}
+                  opencodeBaseUrl={reactSessionBaseUrl}
+                  token={reactSessionToken}
+                  workspacePath={workspacePath}
+                  listAgents={props.listAgents}
+                  onSessionCreated={(sessionId) => {
+                    setActiveSection("cockpit");
+                    navigate(`/session/${sessionId}`);
+                  }}
+                  onNavigate={(section) => setActiveSection(section as XingjingNavSection)}
+                />
+              </div>
+            ) : null}
+
             {/* 非驾驶舱二级页占位覆盖层：用绝对定位覆盖 SessionSurface，保持内层 SSE 连接不被杀中 */}
             {SECTION_META[activeSection] ? (
               <div className="absolute inset-0 z-40 flex flex-col bg-dls-surface">
